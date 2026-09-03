@@ -2,7 +2,7 @@
 name = "casper"
 version = "0.1.0"
 edition = "2024"
-description = "casper"
+description = "The tooling interface: what a tool is, what it says, and what it shows"
 license = "MIT"
 readme = "README.md"
 publish = false
@@ -10,7 +10,30 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+[[bin]]
+name = "casper"
+path = "src/main.rs"
+
+# Nothing that knows what a harness is. casper is asked to run a tool and to describe what it
+# produced; who asked, and what they will do with it, is not its business. What crosses does so as
+# data on a pipe -- see `DESIGN.md`.
 [dependencies]
+rustix = { version = "0.38", features = ["process"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+tokio = { version = "1", features = ["rt", "net", "io-util", "fs", "time", "sync", "macros", "process"] }
+anyhow = "1"
+luna = { git = "https://github.com/onix-os/luna", tag = "v0.5.0" }
+thiserror = "2.0"
 
 [dev-dependencies]
 
+# The same gate the siblings are written under.
+[lints.rust]
+unsafe_code = "deny"
+unused = { level = "deny", priority = -1 }
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "deny"

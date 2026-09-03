@@ -1,0 +1,221 @@
+//! What a tool is, and what running one produced.
+//!
+//! A tool is a name, a description, a schema, and the permission verb it acts under. casper
+//! *describes*; the harness decides. A sibling that could grant itself a permission would make
+//! the ledger a suggestion, so nothing here carries an answer to the question a card raises.
+
+use crate::paint::Line;
+use serde::{Deserialize, Serialize};
+
+/// One tool, as casper describes it to whoever asks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Card {
+    /// The name the model calls it by.
+    pub name: String,
+    /// What it does, in the model's terms.
+    pub description: String,
+    /// JSON Schema for its arguments.
+    pub parameters: serde_json::Value,
+    /// The permission verb this tool acts under, if it needs one.
+    ///
+    /// The harness's own vocabulary — `read`, `write`, `run`, `reach` — because the harness is
+    /// what answers. `None` for a tool that touches nothing a person would want a say over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs: Option<String>,
+}
+
+/// One call, as it arrives.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Call {
+    /// Which tool.
+    pub tool: String,
+    /// Its arguments, as the model gave them.
+    #[serde(default)]
+    pub args: serde_json::Value,
+    /// Where the session is rooted, so a relative path means what the person means.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cwd: String,
+    /// An answer to the question the last [`Ask`] posed, when this call resumes one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered: Option<String>,
+}
+
+/// What a tool produced.
+///
+/// Two faces, and either may be absent: a `bash` has a result and no view, a permission question
+/// has a view and no result. One field could not hold both without meaning something different
+/// each time it was read.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Ran {
+    /// What the model reads.
+    ///
+    /// Empty for a call that has not finished. Sending the model an empty result would end a
+    /// call that is still waiting on a person.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub said: String,
+    /// Whether it failed.
+    ///
+    /// A tool that ran and reported a problem is still a result: the model needs to read what
+    /// went wrong in order to do something about it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub failed: bool,
+    /// What the person sees, when it is more than the text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shown: Option<Shown>,
+}
+
+impl Ran {
+    /// A result the model reads, with nothing to show beyond it.
+    #[must_use]
+    pub fn said(text: impl Into<String>) -> Self {
+        Self {
+            said: text.into(),
+            ..Self::default()
+        }
+    }
+
+    /// A failure the model should read and react to.
+    #[must_use]
+    pub fn failed(text: impl Into<String>) -> Self {
+        Self {
+            said: text.into(),
+            failed: true,
+            ..Self::default()
+        }
+    }
+
+    /// The same, with a painted view of it.
+    #[must_use]
+    pub fn shown(mut self, lines: Vec<Line>) -> Self {
+        self.shown = Some(Shown::Painted { lines });
+        self
+    }
+
+    /// A question for the person, and no result yet.
+    #[must_use]
+    pub fn asking(ask: Ask) -> Self {
+        Self {
+            shown: Some(Shown::Ask(ask)),
+            ..Self::default()
+        }
+    }
+
+    /// Whether this call is waiting on an answer rather than finished.
+    #[must_use]
+    pub fn waiting(&self) -> bool {
+        matches!(self.shown, Some(Shown::Ask(_)))
+    }
+}
+
+/// What the harness draws for this result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "shown")]
+pub enum Shown {
+    /// Painted lines, in roles the harness resolves against its palette.
+    Painted {
+        /// Each line, as the spans it is made of.
+        lines: Vec<Line>,
+    },
+    /// A question for the person, and the answers they may give.
+    Ask(Ask),
+}
+
+/// A question a tool is putting to the person.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Ask {
+    /// What is being asked, in one line.
+    pub question: String,
+    /// What may be answered. Never empty: a question with no answers is a message.
+    pub options: Vec<Answer>,
+    /// More about what is being asked, for the rows under the question.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub detail: Vec<Line>,
+}
+
+/// One answer to an [`Ask`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Answer {
+    /// What comes back as [`Call::answered`].
+    pub id: String,
+    /// What the row says.
+    pub label: String,
+    /// A second line, when the label alone does not say what it means.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub about: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paint::{Role, Span};
+
+    #[test]
+    fn a_plain_result_carries_nothing_it_is_not() {
+        // What every tool does before anybody writes it a view. A `bash` result should not
+        // travel with three nulls describing what it does not have.
+        let wire = serde_json::to_string(&Ran::said("a\nb")).expect("encodes");
+        assert_eq!(wire, r#"{"said":"a\nb"}"#);
+    }
+
+    #[test]
+    fn a_question_is_not_a_result_and_says_so() {
+        // The distinction the two faces exist for. A reader that took this for a finished call
+        // would hand the model an empty string and end a turn that is still waiting on a person.
+        let ran = Ran::asking(Ask {
+            question: "run `rm -rf build`?".to_owned(),
+            options: vec![Answer {
+                id: "no".to_owned(),
+                label: "Deny".to_owned(),
+                about: String::new(),
+            }],
+            detail: Vec::new(),
+        });
+        assert!(ran.waiting());
+        assert!(ran.said.is_empty());
+        let wire = serde_json::to_string(&ran).expect("encodes");
+        assert!(!wire.contains(r#""said""#), "{wire}");
+        assert!(wire.contains(r#""shown":"ask""#), "{wire}");
+    }
+
+    #[test]
+    fn a_painted_result_is_still_a_result() {
+        let ran = Ran::said("-was").shown(crate::paint::diff("-was"));
+        assert!(!ran.waiting());
+        assert_eq!(ran.said, "-was");
+        let wire = serde_json::to_string(&ran).expect("encodes");
+        assert!(wire.contains(r#""shown":"painted""#), "{wire}");
+        assert!(wire.contains(r#""role":"removed""#), "{wire}");
+    }
+
+    #[test]
+    fn a_failure_is_a_result_the_model_reads() {
+        // Not an error the caller has to invent a message for: whatever went wrong is what the
+        // model needs in order to do something about it.
+        let ran = Ran::failed("no such file");
+        assert!(ran.failed);
+        assert_eq!(ran.said, "no such file");
+    }
+
+    #[test]
+    fn a_card_carries_the_verb_and_no_answer_to_it() {
+        // casper describes what a tool would do; the harness decides whether it may. There is
+        // nothing here a sibling could set to "allowed".
+        let card = Card {
+            name: "bash".to_owned(),
+            description: "Run a command.".to_owned(),
+            parameters: serde_json::json!({"type": "object"}),
+            needs: Some("run".to_owned()),
+        };
+        let wire = serde_json::to_string(&card).expect("encodes");
+        assert!(!wire.contains("allow") && !wire.contains("grant"), "{wire}");
+        assert_eq!(serde_json::from_str::<Card>(&wire).expect("decodes"), card);
+    }
+
+    #[test]
+    fn a_view_travels_with_its_roles_intact() {
+        let ran = Ran::said("fn").shown(vec![vec![Span::new(Role::Keyword, "fn")]]);
+        let wire = serde_json::to_string(&ran).expect("encodes");
+        let back: Ran = serde_json::from_str(&wire).expect("decodes");
+        assert_eq!(back, ran);
+    }
+}
