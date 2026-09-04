@@ -26,8 +26,28 @@ use std::io::{Read, Write};
 use std::sync::Arc;
 
 pub mod keying;
+pub mod noticing;
 pub mod painting;
 pub mod rewriting;
+
+/// Append a line to `$CASPER_DEBUG_LOG`, if it is set.
+///
+/// A surface owns its pipes — stdout carries frames and stderr is thrown away by the harness — so
+/// printing is not available for diagnosis. This is the only way anything in here can say
+/// something to a person. Off unless the variable is set, because a tool that wrote a file nobody
+/// asked for is a tool that fills a disk.
+fn noted(line: &str) {
+    let Some(path) = std::env::var_os("CASPER_DEBUG_LOG") else {
+        return;
+    };
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{line}");
+    }
+}
 
 /// What to run, as a declaration described it.
 #[derive(Debug, Clone, Default)]
@@ -100,7 +120,7 @@ pub struct Screen {
     /// blocked would freeze the whole surface until the program next said something, which for
     /// anything waiting on input is forever.
     output: std::sync::mpsc::Receiver<Vec<u8>>,
-    vt: vt100::Parser,
+    vt: vt100::Parser<noticing::Noticing>,
     /// The one dialect difference the emulator does not speak. See [`rewriting`].
     fixing: rewriting::Rewriting,
     named: String,
@@ -148,7 +168,14 @@ impl Screen {
             pty,
             child,
             output,
-            vt: vt100::Parser::new(rows.max(1), cols.max(1), 0),
+            // With the canary attached: anything the emulator cannot read is counted
+            // rather than silently dropped. See [`noticing`].
+            vt: vt100::Parser::new_with_callbacks(
+                rows.max(1),
+                cols.max(1),
+                0,
+                noticing::Noticing::new(),
+            ),
             fixing: rewriting::Rewriting::new(),
             named: spec.command.clone(),
         })
@@ -235,8 +262,23 @@ impl Screen {
         }
     }
 
+    /// What the emulator could not read, and how often.
+    ///
+    /// Empty when it understood everything, which is what a screen that came out right looks like
+    /// from in here. See [`noticing`].
+    #[must_use]
+    pub fn dropped(&self) -> Vec<(String, usize)> {
+        self.vt.callbacks().dropped()
+    }
+
     /// Ask it to go, and make sure it has.
     pub fn close(&mut self) {
+        // **Said on the way out, if anything was lost.** A screen that renders wrong is the one
+        // failure here with no clue attached: the program ran, it drew, and what came out is
+        // quietly not what it meant. One line naming the sequence turns that into a fact.
+        if let Some(said) = self.vt.callbacks().summary() {
+            noted(&format!("{}: {said}", self.named));
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

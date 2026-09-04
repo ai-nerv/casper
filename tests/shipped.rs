@@ -170,3 +170,91 @@ mod games {
         );
     }
 }
+
+/// What the emulator behind a `screen` tool cannot read.
+///
+/// The canary, pointed at real programs. A gap here is a screen that renders subtly wrong with
+/// nothing on it to say why — which cost a pty-sniffing expedition and three wrong theories the
+/// one time it happened. Now it is a failing test.
+mod conformance {
+    use casper::pty::{Screen, Spec};
+    use std::time::{Duration, Instant};
+
+    /// Run `command` for long enough to draw, and report what the emulator threw away.
+    fn dropped_by(command: &str, rows: u16, cols: u16) -> Vec<(String, usize)> {
+        let spec = Spec {
+            command: "sh".to_owned(),
+            args: vec!["-c".to_owned(), command.to_owned()],
+            ..Spec::default()
+        };
+        let Ok(mut screen) = Screen::open(&spec, rows, cols) else {
+            return Vec::new();
+        };
+        let until = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < until {
+            if !screen.read() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        screen.dropped()
+    }
+
+    /// Whether a program is on this machine, so a missing one skips rather than fails.
+    fn here(program: &str) -> bool {
+        std::process::Command::new("sh")
+            .args(["-c", &format!("command -v {program}")])
+            .output()
+            .is_ok_and(|out| out.status.success())
+    }
+
+    /// Sequences the emulator drops that change nothing about what is drawn.
+    ///
+    /// Each of these was looked at once and judged harmless, and the reason is written down beside
+    /// it — because the next person to see one in a log needs to know whether it explains their
+    /// problem. Anything *not* on this list is a gap nobody has looked at yet, which is exactly
+    /// what `CSI f` was.
+    const HARMLESS: &[(&str, &str)] = &[
+        ("CSI ?2026h", "synchronized output: a hint to hold the repaint until the frame is whole"),
+        ("CSI ?2026l", "and the end of one. Nothing here repaints mid-frame anyway"),
+        ("CSI ?1015h", "urxvt mouse coordinates, asked for beside the SGR ones casper reads"),
+        ("CSI t", "window manipulation. `less` sends `CSI 22;0;0t`, pushing the window title \
+                   onto a stack it pops on the way out. There is no window and no title here"),
+    ];
+
+    #[test]
+    fn the_programs_on_this_machine_are_understood_in_full() {
+        // `btop` is the one that found the gap: it positions with `ESC [ r ; c f`, which the
+        // emulator drops, so every one of its 452 position commands went nowhere. It passes now
+        // because the byte is rewritten on the way in — and a future gap is named here rather than
+        // read off a scrambled screen.
+        let programs = [
+            ("top -b -n 2", "top"),
+            ("btop", "btop"),
+            ("seq 1 200 | less", "less"),
+            ("printf 'hello\\n'; ls --color=always /", "ls"),
+        ];
+        for (command, program) in programs {
+            if !here(program) {
+                continue;
+            }
+            let unexplained: Vec<(String, usize)> = dropped_by(command, 24, 90)
+                .into_iter()
+                .filter(|(what, _)| !HARMLESS.iter().any(|(known, _)| known == what))
+                .collect();
+            assert!(
+                unexplained.is_empty(),
+                "{program} uses sequences nobody has looked at: {unexplained:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_canary_is_awake() {
+        // A test that only ever passes proves nothing. This is the sequence the emulator genuinely
+        // does not know and the rewriter deliberately leaves alone — a backward tab — so seeing it
+        // reported is what says the wiring works.
+        let dropped = dropped_by(r"printf '\033[4Z'; sleep 1", 5, 20);
+        assert_eq!(dropped, [("CSI Z".to_owned(), 1)], "the canary said nothing");
+    }
+}
