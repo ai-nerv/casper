@@ -478,6 +478,94 @@ do -- permission
   })
 end
 
+-- ── the drawing kit ────────────────────────────────────────────────────────────────
+--
+-- Shared by every surface that draws a picture rather than text. Lifted out of the first
+-- game that needed it the moment a second one did: two copies of a bit table is two places
+-- for a dot to end up in the wrong corner.
+
+
+-- Braille packs 2x4 dots into one cell, so eight rows of text hold thirty-two rows of pixels.
+-- The bit order is the standard's and not a sane one: dots 1-3 and 7 go down the left column,
+-- 4-6 and 8 down the right.
+local DOT = {
+  [0] = { 0x01, 0x02, 0x04, 0x40 },
+  [1] = { 0x08, 0x10, 0x20, 0x80 },
+  }
+
+-- **Colours are asked for outright here, not named as roles.**
+--
+-- Everywhere else in this file a tool says what its output *means* -- `added`, `keyword` -- and
+-- the harness paints it from the palette the rest of the screen uses. That is right for output.
+-- It is wrong for a picture: a dinosaur is brown and grass is green whatever theme is loaded,
+-- and asking for `ok` to get green would be a role lying about itself. So these are RGB, and
+-- they stay put when pywal or anything else repaints the terminal underneath.
+local BROWN  = { 205, 133,  63 }   -- the dinosaur
+local GREEN  = {  76, 175,  80 }   -- cacti
+local GRASS  = { 107, 142,  35 }   -- the ground
+local SKY    = {  74, 163, 223 }   -- what flies
+local BONE   = { 232, 224, 208 }   -- the score
+local BLOOD  = { 214,  82,  70 }   -- and what it says when you stop
+
+-- A canvas `cells` wide and `h` pixels tall, holding a colour per cell.
+--
+-- Per cell rather than per frame, because a frame has a brown dinosaur and a green cactus in it
+-- and one colour for the lot would be a picture of one thing. Last writer wins, which is what
+-- makes a sprite drawn over the ground look like it is standing on it.
+--
+-- The width arrives in cells and everything drawn into it is in pixels, which is two units for
+-- one axis. Bounds-checking a pixel against the cell count clipped everything past the halfway
+-- mark, and the ground stopped in the middle of the screen.
+local function canvas(cells, h)
+  local bits, ink, w = {}, {}, cells * 2
+  return {
+    w = w, h = h,
+    set = function(x, y, rgb)
+    x, y = math.floor(x), math.floor(y)
+    if x < 0 or y < 0 or x >= w or y >= h then return end
+    local cell = math.floor(y / 4) * cells + math.floor(x / 2)
+    bits[cell] = (bits[cell] or 0) | DOT[x % 2][y % 4 + 1]
+    ink[cell] = rgb
+  end,
+    -- One row per row of cells, broken into a span wherever the colour changes. Runs are joined
+    -- rather than emitted a cell at a time: eighty spans a row, sixty times a second, is a lot
+    -- of allocation to say the same thing.
+    rows = function()
+    local out = {}
+    for cy = 0, math.floor((h - 1) / 4) do
+    local line, run, hue = {}, {}, nil
+    local function flush()
+      if #run > 0 then
+        line[#line + 1] = { role = "text", rgb = hue, text = table.concat(run) }
+        run = {}
+      end
+      end
+      for cx = 0, cells - 1 do
+      local at = cy * cells + cx
+      local rgb = ink[at]
+      if rgb ~= hue then flush(); hue = rgb end
+      run[#run + 1] = utf8.char(0x2800 + (bits[at] or 0))
+      end
+      flush()
+      out[#out + 1] = line
+    end
+    return out
+  end,
+  }
+  end
+
+local function stamp(c, art, ox, oy, rgb)
+  for row = 1, #art do
+  local line = art[row]
+    for col = 1, #line do
+    if line:sub(col, col) == "#" then c.set(ox + col - 1, oy + row - 1, rgb) end
+    end
+end
+end
+
+local function overlaps(ax, aw, bx, bw) return ax < bx + bw and bx < ax + aw end
+
+
 do -- dino
   -- **The showcase.** Everything a surface is for, in one tool the harness knows nothing about:
   -- it asks for rows, draws into them on a clock, reads the keyboard, and ends when the person
@@ -492,75 +580,6 @@ do -- dino
   -- that looked like the game and did not feel like it -- the jump was the giveaway, because
   -- everything else is tuned around how long a dinosaur is in the air.
 
-  -- Braille packs 2x4 dots into one cell, so eight rows of text hold thirty-two rows of pixels.
-  -- The bit order is the standard's and not a sane one: dots 1-3 and 7 go down the left column,
-  -- 4-6 and 8 down the right.
-  local DOT = {
-    [0] = { 0x01, 0x02, 0x04, 0x40 },
-    [1] = { 0x08, 0x10, 0x20, 0x80 },
-  }
-
-  -- **Colours are asked for outright here, not named as roles.**
-  --
-  -- Everywhere else in this file a tool says what its output *means* -- `added`, `keyword` -- and
-  -- the harness paints it from the palette the rest of the screen uses. That is right for output.
-  -- It is wrong for a picture: a dinosaur is brown and grass is green whatever theme is loaded,
-  -- and asking for `ok` to get green would be a role lying about itself. So these are RGB, and
-  -- they stay put when pywal or anything else repaints the terminal underneath.
-  local BROWN  = { 205, 133,  63 }   -- the dinosaur
-  local GREEN  = {  76, 175,  80 }   -- cacti
-  local GRASS  = { 107, 142,  35 }   -- the ground
-  local SKY    = {  74, 163, 223 }   -- what flies
-  local BONE   = { 232, 224, 208 }   -- the score
-  local BLOOD  = { 214,  82,  70 }   -- and what it says when you stop
-
-  -- A canvas `cells` wide and `h` pixels tall, holding a colour per cell.
-  --
-  -- Per cell rather than per frame, because a frame has a brown dinosaur and a green cactus in it
-  -- and one colour for the lot would be a picture of one thing. Last writer wins, which is what
-  -- makes a sprite drawn over the ground look like it is standing on it.
-  --
-  -- The width arrives in cells and everything drawn into it is in pixels, which is two units for
-  -- one axis. Bounds-checking a pixel against the cell count clipped everything past the halfway
-  -- mark, and the ground stopped in the middle of the screen.
-  local function canvas(cells, h)
-    local bits, ink, w = {}, {}, cells * 2
-    return {
-      w = w, h = h,
-      set = function(x, y, rgb)
-        x, y = math.floor(x), math.floor(y)
-        if x < 0 or y < 0 or x >= w or y >= h then return end
-        local cell = math.floor(y / 4) * cells + math.floor(x / 2)
-        bits[cell] = (bits[cell] or 0) | DOT[x % 2][y % 4 + 1]
-        ink[cell] = rgb
-      end,
-      -- One row per row of cells, broken into a span wherever the colour changes. Runs are joined
-      -- rather than emitted a cell at a time: eighty spans a row, sixty times a second, is a lot
-      -- of allocation to say the same thing.
-      rows = function()
-        local out = {}
-        for cy = 0, math.floor((h - 1) / 4) do
-          local line, run, hue = {}, {}, nil
-          local function flush()
-            if #run > 0 then
-              line[#line + 1] = { role = "text", rgb = hue, text = table.concat(run) }
-              run = {}
-            end
-          end
-          for cx = 0, cells - 1 do
-            local at = cy * cells + cx
-            local rgb = ink[at]
-            if rgb ~= hue then flush(); hue = rgb end
-            run[#run + 1] = utf8.char(0x2800 + (bits[at] or 0))
-          end
-          flush()
-          out[#out + 1] = line
-        end
-        return out
-      end,
-    }
-  end
-
   -- Scaled from the sprite sheet: the real dinosaur is 44x47 and a small cactus 17x35, which is
   -- about four to one against a braille pixel here.
   local DINO = {
@@ -571,17 +590,6 @@ do -- dino
   local SMALL = { " # ", "###", "###", " # ", " # ", " # " }
   local LARGE = { "  #  ", "# # #", "#####", "#####", "  #  ", "  #  ", "  #  ", "  #  " }
   local BIRD  = { "  #   ", "  ##  ", "######", " ###  ", "  #   " }
-
-  local function stamp(c, art, ox, oy, rgb)
-    for row = 1, #art do
-      local line = art[row]
-      for col = 1, #line do
-        if line:sub(col, col) == "#" then c.set(ox + col - 1, oy + row - 1, rgb) end
-      end
-    end
-  end
-
-  local function overlaps(ax, aw, bx, bw) return ax < bx + bw and bx < ax + aw end
 
   casper.tool("dino", {
     description = [[
@@ -834,6 +842,172 @@ do -- dino
               and { role = "text", rgb = { 20, 20, 20 }, bg = BONE,
                     text = string.format(" HELD %02d ", heldfor) }
               or { role = "text", rgb = GRASS, text = "  ·  " },
+          }
+        return { lines = rows }
+      end
+    end,
+  })
+end
+
+do -- birdy
+  -- **The second tenant, which is the point.** Nothing in Rust changed to add this: the drawing
+  -- kit above was lifted out of the dinosaur the moment something else wanted it, and the rest is
+  -- one `casper.tool` call. Sixteen rows instead of eight, because a bird needs somewhere to fall.
+  --
+  -- **It taps where the dinosaur holds.** A jump is one press whose *length* decides the arc; a
+  -- flap is a fixed impulse and holding must not repeat it. Both need the same thing from the
+  -- terminal and use it oppositely: dino reads how long a key was down, birdy reads that it came
+  -- back up at all. Without the release, holding space here would be a bird that never falls.
+  local WING = { 245, 200, 70 }   -- the bird
+  local PIPE = { 60, 170, 90 }    -- what it flies between
+  local LIP  = { 92, 208, 120 }   -- the mouth of each pipe, a shade up so the gap reads
+  local DIRT = { 107, 142, 35 }   -- the ground
+  local BONE = { 232, 224, 208 }  -- the score
+  local GONE = { 214, 82, 70 }    -- and the end of it
+
+  -- Five across, four down. The dot is an eye: `.` is off in the mask, so it reads as a gap in a
+  -- solid head rather than as a pixel somebody forgot.
+  local BIRDY = { " ### ", "#####", "##.##", " ### " }
+
+  casper.tool("birdy", {
+    description = [[
+  Play flappy bird in the terminal, drawn in braille.
+
+  Space or up flaps once — each press is one flap, so holding does nothing. `q` or escape quits.
+  Call it when somebody asks to play, or to see a second surface running the same machinery as
+  `dino` with none of its code.]],
+    parameters = { type = "object", properties = {} },
+
+    run = function(args)
+      if args.answered then
+        return { said = "birdy ended: " .. tostring(args.answered) }
+      end
+      return casper.surface{
+        rows = 16,
+        about = "birdy — space flaps, q quits",
+        tick = 16,
+      }
+    end,
+
+    surface = function(args, size)
+      -- Solved for the field the way dino's were: a flap should rise about a fifth of the height
+      -- and take a third of a second to top out, from `apex = v^2/2g` and `t = v/g`.
+      local GRAV, FLAP, DIVE = 0.055, 1.15, 1.7
+      local SPEED, MAX_SPEED, ACCEL = 0.62, 1.15, 0.00025
+      local WIDE, AT = 4, 9        -- pipe width, and where the bird sits across
+      local SCORE = 1              -- a point a pipe, which is what the original counts
+
+      local cells, H = size.cols or 80, (size.rows or 16) * 4
+      local floor = H - 3
+      local holds = size.holds == true
+      local y, vy, speed, score, over, best = H * 0.4, 0, SPEED, 0, false, 0
+      local down, pipes = false, {}
+
+      local function reset()
+        y, vy, speed, score, over, pipes = H * 0.4, 0, SPEED, 0, false, {}
+      end
+
+      -- The gap narrows as you go, which is the whole difficulty curve. Floored well above the
+      -- bird's own height: a gap it cannot fit through is not hard, it is broken.
+      local function spawn(x)
+        local gap = math.max(15, 24 - math.floor(score / 4))
+        local top = math.random(4, math.max(5, floor - gap - 4))
+        pipes[#pipes + 1] = { x = x, top = top, gap = gap, passed = false }
+      end
+
+      return function(event)
+        if event.kind == "resize" then
+          cells, H = event.cols, event.rows * 4
+          floor = H - 3
+          holds = event.holds == true or holds
+        elseif event.kind == "key" then
+          local key, state = event.key, event.state or "down"
+          if key == "q" or key == "esc" then
+            return { answered = "scored " .. tostring(score) }
+          end
+          if state == "up" then
+            down = false
+          elseif key == "space" or key == "up" or key == "enter" then
+            -- **One flap a press.** A repeat says the key is still down, not that it was pressed
+            -- again, so it must not lift. Where releases are never reported `down` would stick on
+            -- and the bird would flap once and never again -- so there, every press counts.
+            local fresh = not down or not holds
+            down = true
+            if over then
+              if fresh then reset() end
+            elseif fresh then
+              vy = -FLAP
+            end
+          elseif key == "down" or key == "j" then
+            if state ~= "up" and not over then vy = DIVE end
+          end
+        elseif event.kind == "tick" and not over then
+          vy = vy + GRAV
+          y = y + vy
+          speed = math.min(MAX_SPEED, speed + ACCEL)
+
+          local kept = {}
+          for _, p in ipairs(pipes) do
+            p.x = p.x - speed
+            if p.x + WIDE > 0 then kept[#kept + 1] = p end
+          end
+          pipes = kept
+          local last = pipes[#pipes]
+          if not last or last.x < cells * 2 - (46 + 14 / speed) then spawn(cells * 2) end
+
+          -- The bird is five wide and four tall at `AT`. A pipe is solid above its gap and below
+          -- it, so overlapping horizontally and *not* being inside the gap is a crash.
+          for _, p in ipairs(pipes) do
+            if p.x < AT + 5 and p.x + WIDE > AT then
+              if y < p.top or y + 4 > p.top + p.gap then over = true end
+            end
+            -- Scored on the way past rather than on contact, so a pipe counts once and only once.
+            if not p.passed and p.x + WIDE < AT then
+              p.passed = true
+              score = score + SCORE
+              best = math.max(best, score)
+            end
+          end
+          -- The ceiling is as fatal as the floor. Without that a bird could sit at the top and
+          -- ride out every pipe, which is a game with one strategy.
+          --
+          -- Clamped as well as fatal: a bird that died at `y = -2` was drawn off the top of its own
+          -- rows, so the one frame that says you lost was the one frame with no bird in it.
+          if y < 0 then
+            y, vy, over = 0, 0, true
+          elseif y + 4 > floor then
+            y, vy, over = floor - 4, 0, true
+          end
+        end
+
+        local c = canvas(cells, H)
+        for x = 0, cells * 2 - 1, 3 do c.set(x, floor + 1, DIRT) end
+        for _, p in ipairs(pipes) do
+          for x = math.floor(p.x), math.floor(p.x) + WIDE - 1 do
+            for py = 0, p.top - 1 do c.set(x, py, PIPE) end
+            for py = p.top + p.gap, floor do c.set(x, py, PIPE) end
+          end
+          -- A lip at each mouth, one shade brighter, so the opening reads at a glance instead of
+          -- being a hole you find by flying into its edge.
+          for x = math.floor(p.x) - 1, math.floor(p.x) + WIDE do
+            c.set(x, p.top - 1, LIP)
+            c.set(x, p.top + p.gap, LIP)
+          end
+        end
+        stamp(c, BIRDY, AT, math.floor(y), over and GONE or WING)
+
+        local rows = c.rows()
+        rows[1] = over
+          and {
+            { role = "text", rgb = GONE, text = "  down " },
+            { role = "text", rgb = DIRT, text = "· any key restarts · q quits    " },
+            { role = "text", rgb = BONE, text = string.format("%03d", score) },
+          }
+          or {
+            { role = "text", text = "  " },
+            { role = "text", rgb = BONE, text = string.format("%03d", score) },
+            { role = "text", rgb = DIRT, text = best > 0 and ("   best " .. string.format("%03d", best)) or "" },
+            { role = "text", rgb = WING, text = "   space flaps · ↓ dives" },
           }
         return { lines = rows }
       end
