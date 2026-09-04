@@ -68,6 +68,23 @@ pub struct Span {
     pub role: Role,
     /// The text itself.
     pub text: String,
+    /// A colour chosen outright, overriding the role.
+    ///
+    /// **The one exception to "a tool never chooses a colour".** Roles exist so a `patch` and a
+    /// highlighted `cat` agree with the rest of the screen — they are output, read alongside
+    /// everything else, and a tool picking its own green would be a second palette to keep in
+    /// step. A surface drawing a *picture* is not that: a dinosaur is brown whatever anybody's
+    /// theme says, and asking for `added` there would be a role lying about itself to get green.
+    ///
+    /// Surfaces may use this; tool output should not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rgb: Option<[u8; 3]>,
+    /// A background chosen outright, for the same narrow reason as [`Span::rgb`].
+    ///
+    /// What makes a run of text read as *inverted* rather than merely coloured, which is how a
+    /// picture says "this is held down right now" without a second row to say it in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bg: Option<[u8; 3]>,
 }
 
 impl Span {
@@ -77,6 +94,8 @@ impl Span {
         Self {
             role,
             text: text.into(),
+            rgb: None,
+            bg: None,
         }
     }
 }

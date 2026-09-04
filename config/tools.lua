@@ -500,29 +500,61 @@ do -- dino
     [1] = { 0x08, 0x10, 0x20, 0x80 },
   }
 
-  -- A canvas `cells` wide and `h` pixels tall.
+  -- **Colours are asked for outright here, not named as roles.**
+  --
+  -- Everywhere else in this file a tool says what its output *means* -- `added`, `keyword` -- and
+  -- the harness paints it from the palette the rest of the screen uses. That is right for output.
+  -- It is wrong for a picture: a dinosaur is brown and grass is green whatever theme is loaded,
+  -- and asking for `ok` to get green would be a role lying about itself. So these are RGB, and
+  -- they stay put when pywal or anything else repaints the terminal underneath.
+  local BROWN  = { 205, 133,  63 }   -- the dinosaur
+  local GREEN  = {  76, 175,  80 }   -- cacti
+  local GRASS  = { 107, 142,  35 }   -- the ground
+  local SKY    = {  74, 163, 223 }   -- what flies
+  local BONE   = { 232, 224, 208 }   -- the score
+  local BLOOD  = { 214,  82,  70 }   -- and what it says when you stop
+
+  -- A canvas `cells` wide and `h` pixels tall, holding a colour per cell.
+  --
+  -- Per cell rather than per frame, because a frame has a brown dinosaur and a green cactus in it
+  -- and one colour for the lot would be a picture of one thing. Last writer wins, which is what
+  -- makes a sprite drawn over the ground look like it is standing on it.
   --
   -- The width arrives in cells and everything drawn into it is in pixels, which is two units for
   -- one axis. Bounds-checking a pixel against the cell count clipped everything past the halfway
   -- mark, and the ground stopped in the middle of the screen.
   local function canvas(cells, h)
-    local bits, w = {}, cells * 2
+    local bits, ink, w = {}, {}, cells * 2
     return {
       w = w, h = h,
-      set = function(x, y)
+      set = function(x, y, rgb)
         x, y = math.floor(x), math.floor(y)
         if x < 0 or y < 0 or x >= w or y >= h then return end
         local cell = math.floor(y / 4) * cells + math.floor(x / 2)
         bits[cell] = (bits[cell] or 0) | DOT[x % 2][y % 4 + 1]
+        ink[cell] = rgb
       end,
-      rows = function(role)
+      -- One row per row of cells, broken into a span wherever the colour changes. Runs are joined
+      -- rather than emitted a cell at a time: eighty spans a row, sixty times a second, is a lot
+      -- of allocation to say the same thing.
+      rows = function()
         local out = {}
         for cy = 0, math.floor((h - 1) / 4) do
-          local line = {}
-          for cx = 0, cells - 1 do
-            line[#line + 1] = utf8.char(0x2800 + (bits[cy * cells + cx] or 0))
+          local line, run, hue = {}, {}, nil
+          local function flush()
+            if #run > 0 then
+              line[#line + 1] = { role = "text", rgb = hue, text = table.concat(run) }
+              run = {}
+            end
           end
-          out[#out + 1] = { { role = role, text = table.concat(line) } }
+          for cx = 0, cells - 1 do
+            local at = cy * cells + cx
+            local rgb = ink[at]
+            if rgb ~= hue then flush(); hue = rgb end
+            run[#run + 1] = utf8.char(0x2800 + (bits[at] or 0))
+          end
+          flush()
+          out[#out + 1] = line
         end
         return out
       end,
@@ -540,11 +572,11 @@ do -- dino
   local LARGE = { "  #  ", "# # #", "#####", "#####", "  #  ", "  #  ", "  #  ", "  #  " }
   local BIRD  = { "  #   ", "  ##  ", "######", " ###  ", "  #   " }
 
-  local function stamp(c, art, ox, oy)
+  local function stamp(c, art, ox, oy, rgb)
     for row = 1, #art do
       local line = art[row]
       for col = 1, #line do
-        if line:sub(col, col) == "#" then c.set(ox + col - 1, oy + row - 1) end
+        if line:sub(col, col) == "#" then c.set(ox + col - 1, oy + row - 1, rgb) end
       end
     end
   end
@@ -610,7 +642,16 @@ do -- dino
       -- `down` is whether the jump key is still held, `lift` how many thrust frames are left.
       local dino, fall, lift, down = 0, 0, 0, false
       local ducking, speed, dist, over, best = false, SPEED, 0, false, 0
-      local saw = "—"
+      -- **The diagnostic, drawn on purpose.** Whether the terminal reports a key coming back up
+      -- is the one thing that decides if holding can mean anything, and neither a player nor
+      -- anybody reading this file can tell by watching the dinosaur. So: `saw` is the last key
+      -- event verbatim, and `heldfor` counts the frames the jump key has been down. Inverted
+      -- while it is down, so it is unmistakable.
+      --
+      -- If the counter climbs while you hold and stops when you let go, the protocol is live and
+      -- anything still wrong is in this file. If it never climbs past one, the terminal is not
+      -- reporting holds and no amount of work here changes that.
+      local saw, heldfor = "—", 0
       local things = {}
 
       local function reset()
@@ -712,6 +753,7 @@ do -- dino
           -- thrust window, the dinosaur is barely pulled back at all; the moment it is let go --
           -- or the window runs out -- full weight returns. That is what makes half a second of
           -- holding a visibly different jump from a tap, rather than the same arc reached sooner.
+          heldfor = down and heldfor + 1 or 0
           local pull = GRAVITY
           if down and lift > 0 and fall > 0 then
             lift = lift - 1
@@ -754,31 +796,44 @@ do -- dino
         end
 
         local c = canvas(cells, H)
-        for x = 0, cells * 2 - 1, 3 do c.set(x, floor) end
+        for x = 0, cells * 2 - 1, 3 do c.set(x, floor, GRASS) end
         local art = ducking and DUCK or DINO
-        stamp(c, art, 4, floor - #art - math.floor(dino))
+        -- Red only while it is over, so the moment of losing is the one thing that changes colour.
+        stamp(c, art, 4, floor - #art - math.floor(dino), over and BLOOD or BROWN)
         for _, it in ipairs(things) do
-          stamp(c, it.art, it.x, floor - it.tall - it.lift)
+          -- What flies is sky-coloured, what grows is green.
+          stamp(c, it.art, it.x, floor - it.tall - it.lift, it.lift > 0 and SKY or GREEN)
         end
-        local rows = c.rows(over and "error" or "ok")
+        local rows = c.rows()
         rows[1] = over
           and {
-            { role = "warn", text = "  game over " },
-            { role = "dim", text = "· any key restarts · q quits    " },
-            { role = "title", text = string.format("%05d", math.floor(dist * SCORE)) },
+            { role = "text", rgb = BLOOD, text = "  game over " },
+            { role = "text", rgb = GRASS, text = "· any key restarts · q quits    " },
+            { role = "text", rgb = BONE, text = string.format("%05d", math.floor(dist * SCORE)) },
           }
           or {
-            { role = "dim", text = "  " },
-            { role = "title", text = string.format("%05d", math.floor(dist * SCORE)) },
-            { role = "dim", text = best > 0 and ("   hi " .. string.format("%05d", best)) or "" },
+            { role = "text", text = "  " },
+            { role = "text", rgb = BONE, text = string.format("%05d", math.floor(dist * SCORE)) },
+            {
+              role = "text",
+              rgb = GRASS,
+              text = best > 0 and ("   hi " .. string.format("%05d", best)) or "",
+            },
             -- Said once, in the space the score leaves: what this terminal can actually do. A hint
             -- promising "hold to jump higher" where no release is ever reported would be a control
             -- that silently is not there.
             {
-              role = "dim",
+              role = "text",
+              rgb = SKY,
               text = holds and "   tap to hop · hold to jump" or "   space jumps · ↓ ducks",
             },
-            { role = "muted", text = "   key: " .. saw },
+            { role = "text", rgb = BROWN, text = "   " .. saw .. " " },
+            -- Inverted while the key is down: dark on bright, so it reads as a lit lamp rather
+            -- than as another word. The number is frames, at sixty a second.
+            down
+              and { role = "text", rgb = { 20, 20, 20 }, bg = BONE,
+                    text = string.format(" HELD %02d ", heldfor) }
+              or { role = "text", rgb = GRASS, text = "  ·  " },
           }
         return { lines = rows }
       end
