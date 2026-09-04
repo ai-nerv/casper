@@ -584,14 +584,15 @@ do -- dino
       -- So the tick is 60Hz and these are solved for the feel rather than copied: a full jump
       -- rises about 12 pixels and lasts a little over half a second, which is what the original
       -- does. From `airtime = 2v/g` and `apex = v^2/2g` with airtime 33 frames and apex 12.
-      local GRAVITY, JUMP = 0.088, 1.45
-      -- What letting go does. Cutting the rise rather than adding weight, so the height follows
-      -- how long the key was held: tap and you hop, hold and you clear a large cactus.
+      local GRAVITY, JUMP = 0.16, 1.55
+      -- **How much longer a held key keeps you up.** `THRUST` frames of `EASE`-reduced gravity
+      -- while the key is down, which is what turns hold-length into air-time over a range wide
+      -- enough to matter: a tap is about a third of a second up, a full hold a little over one.
       --
-      -- `MIN_RISE` is the floor under that cut. Without it a key held for one frame left the
-      -- ground by less than a pixel, so the tap that is supposed to be a small hop was a press
-      -- that visibly did nothing -- which reads as a dropped keystroke rather than as a choice.
-      local LETGO, MIN_RISE = 0.3, 0.9
+      -- Cutting the rise on release was the first attempt and it was not enough -- the rise lasts
+      -- sixteen frames, so anything held past a quarter second was the same jump as anything held
+      -- for a second, which is exactly the "holding does nothing" this replaces.
+      local THRUST, EASE = 16, 0.3
       local DROP = 0.6
       local SPEED, MAX_SPEED, ACCEL = 0.85, 2.0, 0.0004
       local GAP = 30
@@ -606,23 +607,43 @@ do -- dino
       -- jump. Without it every key is a bare press and every jump is a full one, and the hint below
       -- says so rather than promising a control the terminal cannot deliver.
       local holds = size.holds == true
-      local dino, fall, ducking, speed, dist, over, best = 0, 0, false, SPEED, 0, false, 0
+      -- `down` is whether the jump key is still held, `lift` how many thrust frames are left.
+      local dino, fall, lift, down = 0, 0, 0, false
+      local ducking, speed, dist, over, best = false, SPEED, 0, false, 0
+      local saw = "—"
       local things = {}
 
       local function reset()
-        dino, fall, ducking, speed, dist, over, things = 0, 0, false, SPEED, 0, false, {}
+        dino, fall, lift = 0, 0, 0
+        ducking, speed, dist, over, things = false, SPEED, 0, false, {}
       end
 
-      local function spawn(w)
+      local function one(w)
         -- A pterodactyl only past the speed the real game gates it behind, so the first minute is
         -- cacti and the bird is something you play long enough to meet.
-        local pick = (speed > 2.0 and math.random() < 0.25) and "bird"
+        local pick = (speed > 1.4 and math.random() < 0.22) and "bird"
           or (math.random() < 0.35 and "large" or "small")
         local art = pick == "bird" and BIRD or (pick == "large" and LARGE or SMALL)
         -- The bird flies at one of three heights, and the lowest is duckable rather than
         -- jumpable, which is the only reason ducking is worth having.
         local lift = pick == "bird" and ({ 0, 6, 11 })[math.random(3)] or 0
         things[#things + 1] = { x = w, art = art, wide = #art[1], tall = #art, lift = lift }
+        return art, pick
+      end
+
+      -- **Not every gap is the same gap.** A run of evenly spaced cacti is one jump learnt once
+      -- and repeated; what makes the jump worth having a *length* is a pair close enough that
+      -- clearing both means staying up, against singles you can hop. So a third of the time a
+      -- second one lands a few pixels behind the first -- close enough to need the long jump,
+      -- never so close that no jump clears it.
+      --
+      -- Birds are never doubled: one at head height with something under it is not a jump anybody
+      -- can make, and an obstacle that cannot be passed is not difficulty.
+      local function spawn(w)
+        local _, pick = one(w)
+        if pick ~= "bird" and math.random() < 0.33 then
+          one(w + 9 + math.random(0, 5))
+        end
       end
 
       return function(event)
@@ -635,6 +656,12 @@ do -- dino
           holds = event.holds == true or holds
         elseif event.kind == "key" then
           local key, state = event.key, event.state or "down"
+          -- **Shown on screen, on purpose.** Whether a terminal reports a key coming back up is
+          -- the one thing that decides if holding can mean anything, and it is not something
+          -- either of us can tell by looking at the dinosaur. So the last event is printed: see
+          -- `up` after you let go and the protocol is live; see only `down` and it is not, and
+          -- no amount of work on this side will change that.
+          saw = key .. " " .. state
           if key == "q" or key == "esc" then
             return { answered = "scored " .. tostring(math.floor(dist * SCORE)) }
           end
@@ -645,14 +672,30 @@ do -- dino
           if over then
             if state == "down" then reset() end
           elseif key == "space" or key == "up" or key == "enter" then
-            if state == "down" and dino == 0 then
-              fall, ducking = JUMP, false
-            elseif state == "up" and fall > 0 then
-              -- **Height follows the hold.** Cutting the rise the moment the key comes up, so a
-              -- tap leaves the ground briefly and a hold carries to the apex. A `repeat` is
-              -- ignored: it says the key is still down, which is already what not having seen an
-              -- `up` means.
-              fall = math.max(fall * LETGO, MIN_RISE)
+            -- **The key is held until it is let go, and thrust runs the whole time.**
+            --
+            -- Cutting the rise on release was not enough: the rise is over sixteen frames, so
+            -- anything held past a quarter of a second was the same jump as anything held for a
+            -- second. Holding has to *keep doing something*, which is what `lift` below is --
+            -- reduced gravity for as long as the key is down, up to `THRUST` frames.
+            --
+            -- `repeat` counts as still-down, because it is: the terminal only sends one while the
+            -- key has not come up.
+            if state == "up" then
+              down = false
+            else
+              -- **A jump needs the key to have come up first.** Without this a `repeat` arriving
+              -- after the dinosaur has landed started a second jump while the key was never
+              -- released -- which is holding space and watching it jump, land, jump, land.
+              --
+              -- Only checkable where releases are reported. Where they are not, `down` would
+              -- never clear and the first jump would be the only one ever, so there every press
+              -- is taken as fresh: the old behaviour, on the terminals that cannot do better.
+              local fresh = not down or not holds
+              down = true
+              if fresh and dino == 0 and not over then
+                fall, lift, ducking = JUMP, THRUST, false
+              end
             end
           elseif key == "down" or key == "j" then
             if dino > 0 and state ~= "up" then
@@ -665,9 +708,18 @@ do -- dino
         elseif event.kind == "tick" and not over then
           -- Integrated a frame at a time, with no fudge factor: one tick is one frame, which is
           -- what makes the constants above mean what they say.
+          -- **Gravity depends on whether the key is still down.** Held and rising and inside the
+          -- thrust window, the dinosaur is barely pulled back at all; the moment it is let go --
+          -- or the window runs out -- full weight returns. That is what makes half a second of
+          -- holding a visibly different jump from a tap, rather than the same arc reached sooner.
+          local pull = GRAVITY
+          if down and lift > 0 and fall > 0 then
+            lift = lift - 1
+            pull = GRAVITY * EASE
+          end
           dino = math.max(0, dino + fall)
-          fall = dino > 0 and fall - GRAVITY or 0
-          if dino == 0 then fall = 0 end
+          fall = dino > 0 and fall - pull or 0
+          if dino == 0 then fall, lift = 0, 0 end
           speed = math.min(MAX_SPEED, speed + ACCEL)
           dist = dist + speed
 
@@ -681,7 +733,11 @@ do -- dino
           -- `speed * 33` pixels of ground, so the gap has to grow as the world slows down under
           -- you -- which is why it is divided by speed rather than fixed.
           local last = things[#things]
-          if not last or last.x < cells * 2 - (34 + GAP / speed) then spawn(cells * 2) end
+          -- Uneven on purpose, and never closer than a jump can cover. The floor keeps a pair
+          -- from arriving on top of the last one; the random half is what stops the rhythm.
+          if not last or last.x < cells * 2 - (34 + GAP / speed + math.random(0, 26)) then
+            spawn(cells * 2)
+          end
 
           -- The dinosaur stands at x=4. Ducking makes it wider and shorter, which is what lets a
           -- low bird pass over it.
@@ -722,6 +778,7 @@ do -- dino
               role = "dim",
               text = holds and "   tap to hop · hold to jump" or "   space jumps · ↓ ducks",
             },
+            { role = "muted", text = "   key: " .. saw },
           }
         return { lines = rows }
       end
