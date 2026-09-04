@@ -16,8 +16,12 @@ casper.theme = {
   -- Truecolour, which is what `bat` and `delta` send by default. Read off this machine's own
   -- output rather than guessed: a theme that names colours nothing emits matches nothing, and
   -- the symptom is a file that comes out perfectly legible and completely unhighlighted.
+  --
+  -- Mapped by what the highlighter *uses* a colour for, not by what it looks like. This theme's
+  -- red is its variables and parameters, and read as `error` it drew `self`, `ops` and every
+  -- argument name in the colour a failed call is drawn in.
   ["#abb2bf"] = "text",    ["#5c6370"] = "comment", ["#98c379"] = "string",
-  ["#c678dd"] = "keyword", ["#e06c75"] = "error",   ["#e5c07b"] = "type",
+  ["#c678dd"] = "keyword", ["#e06c75"] = "text",    ["#e5c07b"] = "type",
   ["#61afef"] = "func",    ["#d19a66"] = "number",  ["#56b6c2"] = "keyword",
 
   -- The sixteen, for programs that still speak them.
