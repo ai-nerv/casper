@@ -22,15 +22,19 @@ use crate::tools::{FromSurface, ToSurface};
 /// The same loop, for a tenant that is a program on a pty rather than a drawing in Lua.
 mod screening;
 
+/// Asking the harness something, from inside the frame a tenant is drawing.
+mod asking;
+
+pub(crate) use asking::{frames, wonder};
+
 /// Run the frame loop for `tool` until it finishes or stdin closes.
 ///
 /// The arguments the call was made with arrive on the first frame, so a surface opens knowing what
 /// it was asked about — a permission needs the command, a picker needs the list.
 pub fn hold(tool: &str, engine: &mut Engine) {
-    use std::io::BufRead;
-
-    let input = std::io::stdin();
-    let mut lines = input.lock().lines();
+    // From here there is a harness on the other end of the pipe, so a tenant may ask it things.
+    asking::holding();
+    let mut lines = frames();
     // The first frame says how much room there is and what the call was given. Opening before it
     // arrives would mean guessing at a size, and a tenant that laid itself out for the wrong one
     // draws once wrongly before it is told.
@@ -115,7 +119,9 @@ pub fn hold(tool: &str, engine: &mut Engine) {
                 let _ = engine.frame(&serde_json::json!({"kind": "close"}));
                 return;
             }
-            ToSurface::Open { .. } => continue,
+            // An answer nobody is waiting on: the tenant asked, gave up, and the harness said so
+            // anyway. Nothing to draw about.
+            ToSurface::Open { .. } | ToSurface::Answer { .. } => continue,
         };
         if !offer(engine, &event) {
             return;

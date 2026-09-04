@@ -372,6 +372,23 @@ pub enum ToSurface {
     Tick,
     /// The reservation is over and nothing more will be read.
     Close,
+    /// What the harness has to say about something this surface asked.
+    ///
+    /// Out of band: a reply to a question, not a turn of the loop. Nothing about the keyboard or
+    /// the clock follows from one landing, and a tenant that was not waiting on an answer ignores
+    /// it.
+    Answer {
+        /// Which question this belongs to.
+        wondered: u64,
+        /// `told` or `refused`.
+        answer: String,
+        /// What the harness said, when it said anything.
+        #[serde(default)]
+        said: serde_json::Value,
+        /// Why it said nothing, when it refused.
+        #[serde(default)]
+        because: String,
+    },
 }
 
 /// What a surface sends back.
@@ -397,5 +414,19 @@ pub enum FromSurface {
     Done {
         /// The id of whatever was chosen, as the tool named it. Empty when it just ended.
         answered: String,
+    },
+    /// Something this surface would like to know about the session it is drawn in.
+    ///
+    /// The one frame that goes *out* asking rather than telling. What may be asked is the
+    /// harness's closed list — `session`, `model`, `memories` — and a verb it has never heard of
+    /// comes back refused by name rather than not at all.
+    Ask {
+        /// This question, so its answer can be told from another's.
+        wondered: u64,
+        /// What is being asked, by name.
+        wonder: String,
+        /// What the verb takes, where it takes anything.
+        #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+        args: serde_json::Value,
     },
 }
