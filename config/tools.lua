@@ -540,3 +540,79 @@ do -- dino
     end,
   })
 end
+
+do -- permission
+  -- **The prompt the harness used to draw itself.** magi decides *that* a permission is needed and
+  -- what it is about -- it holds the ledger and the standing grants -- and this draws the question
+  -- and collects the keystroke. What goes back is the id of the row that was chosen, never a
+  -- decision: a sibling that could answer "allowed" would make the ledger a suggestion.
+  --
+  -- Hidden, because the model must not be able to call it. A permission question is something the
+  -- harness raises, not something a turn asks for.
+  casper.tool("permission", {
+    hidden = true,
+    description = "The permission prompt. Opened by the harness, never by a model.",
+    parameters = { type = "object", properties = {} },
+
+    surface = function(args, size)
+      local offers = args.offers or {}
+      local at = 1
+
+      -- Wrapped by hand rather than clipped: what is being decided about is the one thing on the
+      -- screen that must be read in full, and a command cut in the middle is a command somebody
+      -- allows without having seen the end of.
+      local function wrapped(text, width)
+        local out = {}
+        for line in tostring(text or ""):gmatch("[^\n]+") do
+          while #line > width do
+            local cut = line:sub(1, width):match(".*()%s") or width
+            out[#out + 1] = line:sub(1, cut - 1)
+            line = line:sub(cut + 1)
+          end
+          out[#out + 1] = line
+        end
+        return out
+      end
+
+      local function draw()
+        local width = math.max(20, (size.cols or 80) - 4)
+        local rows = {
+          { { role = "warn", text = "  " .. (args.tool or "a tool") },
+            { role = "muted", text = " wants to " },
+            { role = "title", text = args.verb or "act" } },
+        }
+        for _, line in ipairs(wrapped(args.subject, width - 4)) do
+          rows[#rows + 1] = { { role = "path", text = "    " .. line } }
+        end
+        rows[#rows + 1] = { { role = "text", text = "" } }
+        for n, offer in ipairs(offers) do
+          local here = n == at
+          rows[#rows + 1] = {
+            { role = here and "ok" or "dim", text = here and "  > " or "    " },
+            { role = here and "title" or "text", text = offer.label or offer.id },
+            { role = "dim", text = offer.about and offer.about ~= "" and ("  " .. offer.about) or "" },
+          }
+        end
+        rows[#rows + 1] = { { role = "dim", text = "  ↑↓ to choose · enter to answer · esc denies" } }
+        return { lines = rows }
+      end
+
+      return function(event)
+        if event.kind == "key" then
+          local key = event.key
+          if key == "up" or key == "k" then
+            at = at > 1 and at - 1 or #offers
+          elseif key == "down" or key == "j" then
+            at = at < #offers and at + 1 or 1
+          elseif key == "enter" or key == "space" then
+            -- The id of the row, and nothing else. What it *means* is the harness's to work out.
+            return { answered = (offers[at] or {}).id or "no" }
+          elseif key == "esc" or key == "q" then
+            return { answered = "no" }
+          end
+        end
+        return draw()
+      end
+    end,
+  })
+end

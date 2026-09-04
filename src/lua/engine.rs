@@ -163,9 +163,16 @@ impl Engine {
                         let opens = spec.get_value(ctx, "surface");
                         held.set(ctx, name.as_str(), opens).ok();
                     }
+                    // **A hidden tool is registered and never described.** The permission prompt is
+                    // one: the harness opens it directly, and a model that could see it in its
+                    // tool list could call it — which is a model putting a permission question on
+                    // the screen about a permission nobody asked for.
+                    let hidden = matches!(spec.get_value(ctx, "hidden"), Value::Boolean(true));
                     let mut declared = declared.borrow_mut();
                     declared.tools.retain(|held| held.name != card.name);
-                    declared.tools.push(card);
+                    if !hidden {
+                        declared.tools.push(card);
+                    }
                     stack.replace(ctx, ());
                     Ok(CallbackReturn::Return)
                 });
