@@ -257,6 +257,51 @@ pub enum Held {
     Up,
 }
 
+/// What the pointer did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Pointed {
+    /// A button went down.
+    #[default]
+    Press,
+    /// The pointer moved with a button held.
+    Drag,
+    /// A button came back up.
+    Release,
+    /// The pointer moved with nothing held.
+    Moved,
+    /// The wheel went up.
+    ScrollUp,
+    /// The wheel went down.
+    ScrollDown,
+}
+
+/// Which button.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Button {
+    /// The one everything uses.
+    #[default]
+    Left,
+    /// The middle button, which on most mice is the wheel.
+    Middle,
+    /// The right button.
+    Right,
+}
+
+/// A cell, in the coordinates of whatever names it.
+///
+/// Always the surface's own: row 0, column 0 is its top-left. The same convention in both
+/// directions, so a tenant told where a click landed can say where the cursor goes in the units
+/// it was just handed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct At {
+    /// Rows down from the surface's first row.
+    pub row: u16,
+    /// Columns across from the surface's first column.
+    pub col: u16,
+}
+
 /// What the harness sends a surface while it holds its rows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "to")]
@@ -292,6 +337,23 @@ pub enum ToSurface {
         #[serde(default)]
         state: Held,
     },
+    /// The pointer, somewhere over the rows this surface holds.
+    ///
+    /// **In the surface's own coordinates.** Row 0, column 0 is its top-left cell, and nothing
+    /// landing outside the reservation arrives at all. The harness never says where those rows
+    /// are on screen: they move whenever the prompt grows a line, and a tenant that had been told
+    /// would be one the harness could no longer place freely.
+    Mouse {
+        /// What it did.
+        kind: Pointed,
+        /// Which button, for the things a button does. Absent for motion and the wheel.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        button: Option<Button>,
+        /// Rows down from the surface's own first row.
+        row: u16,
+        /// Columns across from the surface's own first column.
+        col: u16,
+    },
     /// The room changed under it, because the window did.
     Resize {
         /// Rows now.
@@ -320,6 +382,13 @@ pub enum FromSurface {
     Draw {
         /// Each row, as the spans it is made of.
         lines: Vec<Line>,
+        /// Where the terminal's own cursor belongs, in this surface's coordinates.
+        ///
+        /// `None` — almost always — leaves it where it was, in the harness's own prompt. A tenant
+        /// drawing a field somebody types into asks for it here: the block a surface paints for
+        /// itself is a picture of a cursor, and an IME and a screen reader follow the real one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<At>,
     },
     /// The surface is finished, and this is the id of what the person chose.
     ///

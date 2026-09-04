@@ -101,9 +101,112 @@ surface → magi   {"done": {"answered": "once"}}
 Rows are the existing painted vocabulary — roles, not colours — so a surface and a `cat` agree on
 screen without either knowing about the other's palette.
 
+### A key arrives twice
+
+Where the Kitty keyboard protocol is live, one keystroke is *two* frames — `down` and then `up` —
+and nothing about the frame makes that obvious. A list that acts on both moves two rows for one
+press of the arrow, which is precisely the bug that shipped in the permission prompt.
+
+Nothing in the protocol says which kind of tenant you are, so the safe reading is the short one:
+
+```lua
+local key = casper.tapped(event)     -- a press or a repeat, lower-cased; nil for anything else
+```
+
+A repeat counts, because it says the key is still down — that is what makes holding an arrow
+scroll rather than needing a tap a row. A release comes back as `nil`, and so does a tick, a
+resize or the pointer, so one call answers "is this a keypress, and which".
+
+Two tenants should *not* use it, and both are in `config/tools.lua` as the worked examples:
+
+- one where holding a key means something — both games read `event.state` themselves, because the
+  release is what ends a jump;
+- one where the character matters as typed — `event.key` keeps its case, and `casper.tapped` does
+  not.
+
 **magi reserves, the tenant draws.** magi owns *how much* room there is, because only magi knows
 what else is on the screen; it clips to the reservation and never grows it mid-frame. Everything
 inside is the tenant's.
+
+### The rows are a screen, not an echo of the keyboard
+
+A surface that could only be typed at is a picker with extra steps. So the pointer crosses too:
+
+```
+magi → surface   {"to": "mouse", "kind": "press", "button": "left", "row": 2, "col": 11}
+```
+
+Two rules, and both are about what magi *does not* say:
+
+- **The coordinates are the surface's own.** Row 0 is its first row. magi knows where the
+  reservation landed on screen and never passes that on — those rows move whenever the prompt
+  grows a line, and a tenant that had been told its own `y` is one magi could no longer place.
+- **Nothing outside the reservation is forwarded.** A click on the transcript above is the
+  transcript's; magi keeps its wheel, its fold handles and its drag-selection while a game is open
+  below them. The tenant needs no bounds check, because out-of-bounds never arrives.
+
+`press` / `drag` / `release` / `moved` / `scroll_up` / `scroll_down`, with a button on the three
+that have one. That is enough for a list you hover and click, a diff you scroll, and a button you
+*hold* — which on a terminal whose keyboard cannot report a release is the only hold there is,
+since the mouse protocol has always said when a button came up.
+
+And back the other way, the terminal's own caret:
+
+```lua
+return { lines = rows, cursor = { row = 0, col = 6 } }
+```
+
+Optional, and almost always absent — a game wants nothing blinking in its picture. A tenant that
+draws a field somebody types into asks for it, because the block a surface paints for itself is a
+*picture* of a cursor: an IME candidate window and a screen reader both follow the real one, and
+while a surface holds the keyboard the prompt is not where anybody is typing.
+
+### A screen: rows with a real terminal in them
+
+Once the rows are a screen, the obvious tenant is a *program*. `shell` runs a command and reads
+what it printed, which is right for `make` and useless for anything that draws: a pager waits on a
+key that never comes, `htop` sees no terminal and refuses, an editor opens on nothing.
+
+So a declaration may name a program instead of drawing:
+
+```lua
+casper.tool("screen", {
+  needs  = "run",
+  run    = function(args) return casper.surface{ rows = 16, about = "…", tick = 33 } end,
+  screen = function(args, size) return { command = "sh", args = { "-c", args.command } } end,
+})
+```
+
+casper opens a pty of exactly the granted size, spawns the command on it, types in what the person
+types, and reads what comes back through a terminal emulator. **Nothing about the wire changes.**
+What goes out is the same rows of spans a game sends, so the harness cannot tell `htop` from the
+dinosaur and does not have to.
+
+|  | `surface` | `screen` |
+|---|---|---|
+| returns | a function, called per frame | a table, read once |
+| fills the rows | Lua, span by span | whatever is on the pty |
+| state lives in | the closure's upvalues | the program |
+| ends when | it answers | the program exits |
+
+**Why casper and not the harness.** Running programs is casper's whole job, and the reason it has
+a spawn link rather than a socket verb — *a socket that runs commands is remote code execution*. A
+harness that opened its own pty would be back to spawning commands, which is the thing the split
+exists to prevent.
+
+Three consequences worth stating:
+
+- **A `screen` always ticks, and casper is what makes sure of it.** A drawing redraws when a key
+  arrives and needs nothing else; a program paints whenever it likes, and with no tick nothing
+  goes looking for what it painted. So a tool that declares a `screen` and names no rate is given
+  thirty a second — filled in, never overridden, because a declaration one line short of working
+  reads as a hung tool rather than as a missing field.
+- **Keys travel by name and are built back into bytes** — `enter` becomes `\r`, `f5` becomes
+  `ESC [ 15 ~`, and the arrows follow whichever mode the program asked for. A name is the only
+  form both a Lua table and a pty can read, which is why the harness sends one.
+- **Escape twice closes a surface, once is forwarded.** It used to be once, which is how a person
+  escapes a tenant that has stopped answering — and `esc` is a key `vim` very much wants. Every
+  drawing tenant answers the first one anyway, so it never sees a second.
 
 ### The one thing that does not move
 

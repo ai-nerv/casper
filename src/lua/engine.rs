@@ -38,6 +38,14 @@ const TOOLS: &str = "__casper_tools";
 /// the two it was holding would be answering that on every frame.
 const SURFACES: &str = "__casper_surfaces";
 
+/// Where declared tools' `screen` openers live.
+///
+/// The other kind of tenant. A `surface` draws its own rows in Lua, frame by frame; a `screen`
+/// names a *program*, and casper puts it on a pty of exactly that size and hands back what it
+/// painted. Both fill the same reservation, and the harness cannot tell one from the other — see
+/// [`crate::pty`].
+const SCREENS: &str = "__casper_screens";
+
 /// The open surface's own function, for as long as it holds its rows.
 ///
 /// A closure, so a tenant keeps its state in upvalues and nothing out here has to know what state
@@ -133,6 +141,8 @@ impl Engine {
             ctx.set_global(TOOLS, held);
             let surfaces = Table::new(&ctx);
             ctx.set_global(SURFACES, surfaces);
+            let screens = Table::new(&ctx);
+            ctx.set_global(SCREENS, screens);
 
             {
                 let declared = Rc::clone(&declared);
@@ -161,6 +171,13 @@ impl Engine {
                     // tool, which is why it is looked up rather than required.
                     if let Value::Table(held) = ctx.get_global_value(SURFACES) {
                         let opens = spec.get_value(ctx, "surface");
+                        held.set(ctx, name.as_str(), opens).ok();
+                    }
+                    // The same, for a tool that runs a *program* in its rows rather than drawing
+                    // them. Looked up the same way and never both: a declaration with the two is
+                    // two tenants for one reservation, and `screen` is asked for first.
+                    if let Value::Table(held) = ctx.get_global_value(SCREENS) {
+                        let opens = spec.get_value(ctx, "screen");
                         held.set(ctx, name.as_str(), opens).ok();
                     }
                     // **A hidden tool is registered and never described.** The permission prompt is
@@ -208,6 +225,12 @@ impl Engine {
             // does not describe and the harness does not read.
             casper
                 .set(ctx, "surface", crate::lua::surface::table(ctx))
+                .ok();
+            // The one thing every surface reading a keyboard gets wrong the first time: where the
+            // Kitty protocol is live a keystroke arrives twice, and a list that acts on both moves
+            // two rows for one press. See [`crate::lua::keying`].
+            casper
+                .set(ctx, "tapped", crate::lua::keying::table(ctx))
                 .ok();
             // The one way a declaration reaches a process. See the module docs: a second way,
             // with no bound and no verb attached, would make this one decoration.
@@ -289,12 +312,78 @@ impl Engine {
         // A tool may answer in the wire's own shape, or with a bare string when it has nothing
         // to say beyond the text. The second is not a shorthand worth refusing: most tools have
         // exactly one thing to report.
-        Some(match out {
+        let mut ran = match out {
             serde_json::Value::String(said) => Ran::said(said),
             other => serde_json::from_value(other).unwrap_or_else(|why| {
                 Ran::failed(format!("{name} answered something unreadable: {why}"))
             }),
-        })
+        };
+        self.ticking(name, &mut ran);
+        Some(ran)
+    }
+
+    /// Make sure a tool that runs a *program* in its rows will be woken to read it.
+    ///
+    /// **A screen always ticks.** A drawing redraws when a key arrives and needs nothing else; a
+    /// program paints whenever it likes, and with no tick nothing goes looking for what it
+    /// painted. That is a declaration one line short of working, and the symptom is rows that
+    /// fill once and then freeze — which reads as a hung tool rather than as a missing field.
+    ///
+    /// Filled in rather than required, and never overridden: a declaration that named its own
+    /// rate meant it, and one that named none was not asking for a still picture.
+    fn ticking(&mut self, name: &str, ran: &mut Ran) {
+        /// Thirty frames a second. The rate the rows are *looked at*, not the rate anything is
+        /// redrawn — a program that painted nothing produces the frame it produced last time.
+        const A_SCREEN: u16 = 33;
+
+        let Some(crate::tools::Shown::Surface(surface)) = ran.shown.as_mut() else {
+            return;
+        };
+        if surface.tick.is_some() {
+            return;
+        }
+        let mut screened = false;
+        self.lua.enter(|ctx| {
+            if let Value::Table(held) = ctx.get_global_value(SCREENS) {
+                screened = matches!(held.get_value(ctx, name), Value::Function(_));
+            }
+        });
+        if screened {
+            surface.tick = Some(A_SCREEN);
+        }
+    }
+
+    /// Ask a tool what program belongs in its rows.
+    ///
+    /// Calls the tool's `screen(args, size)`, which returns *data* — a command and its arguments —
+    /// and nothing else. Deliberately not a closure the way `surface` is: a pty is driven by
+    /// Rust, frame after frame, and a tenant that had to be re-entered per frame to be asked what
+    /// to do would be a Lua call thirty times a second to say the same thing.
+    ///
+    /// `None` when the tool declared no `screen`, which is every tool but a handful.
+    pub fn screen(
+        &mut self,
+        name: &str,
+        args: &serde_json::Value,
+        size: &serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        self.lua.enter(|ctx| {
+            let value = crate::lua::convert::lua_from_json(ctx, args);
+            ctx.set_global(ARGS, value);
+            let size = crate::lua::convert::lua_from_json(ctx, size);
+            ctx.set_global(EVENT, size);
+            ctx.set_global(DREW, Value::Nil);
+        });
+        let source = format!(
+            "local open = {SCREENS} and {SCREENS}[{name:?}]\n\
+             if type(open) == 'function' then {DREW} = open({ARGS}, {EVENT}) end"
+        );
+        self.run(&source, "screen.lua").ok()?;
+        let mut out = None;
+        self.lua.enter(|ctx| {
+            out = crate::lua::convert::json_from_lua(ctx, ctx.get_global_value(DREW), 0);
+        });
+        out.filter(|value| !value.is_null())
     }
 
     /// Open a tool's surface and hold it.

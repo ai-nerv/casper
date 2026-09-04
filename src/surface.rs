@@ -19,6 +19,9 @@
 use crate::lua::engine::Engine;
 use crate::tools::{FromSurface, ToSurface};
 
+/// The same loop, for a tenant that is a program on a pty rather than a drawing in Lua.
+mod screening;
+
 /// Run the frame loop for `tool` until it finishes or stdin closes.
 ///
 /// The arguments the call was made with arrive on the first frame, so a surface opens knowing what
@@ -49,6 +52,18 @@ pub fn hold(tool: &str, engine: &mut Engine) {
     // report a key coming back up. A tenant told otherwise waits for a release that never comes,
     // which is how "hold to do more" ends up doing nothing at all on most terminals.
     let size = serde_json::json!({"rows": rows, "cols": cols, "holds": holds});
+    // **A program in the rows, if this tool declared one.** Asked before `surface`, because a
+    // declaration carrying both is two tenants for one reservation and this is the more specific
+    // of the two. From here the loop is a different one — see [`screening`] — and the harness
+    // cannot tell which it is talking to.
+    if let Some(spec) = engine
+        .screen(tool, &args, &size)
+        .as_ref()
+        .and_then(crate::pty::Spec::from_json)
+    {
+        screening::hold(&spec, rows, cols, lines);
+        return;
+    }
     if !engine.open(tool, &args, &size) {
         // No `surface` was declared. Said rather than silent: the harness reserved rows for this
         // and would otherwise hold them for a tenant that is never going to draw.
@@ -75,6 +90,20 @@ pub fn hold(tool: &str, engine: &mut Engine) {
                 "key": key,
                 // `down`, `repeat` or `up`. A tenant that only looks at `key` is unaffected.
                 "state": state,
+            }),
+            // Already in this surface's own coordinates: row 0 is its first row. Nothing outside
+            // the rows it was granted ever arrives, so a tenant needs no bounds check of its own.
+            ToSurface::Mouse {
+                kind,
+                button,
+                row,
+                col,
+            } => serde_json::json!({
+                "kind": "mouse",
+                "what": kind,
+                "button": button,
+                "row": row,
+                "col": col,
             }),
             ToSurface::Tick => serde_json::json!({"kind": "tick"}),
             ToSurface::Resize { rows, cols, holds } => {
@@ -116,9 +145,15 @@ fn offer(engine: &mut Engine, event: &serde_json::Value) -> bool {
         .get("lines")
         .cloned()
         .unwrap_or(serde_json::Value::Null);
+    // Optional, and a malformed one is no cursor rather than a dropped frame: a tenant that got
+    // the shape wrong should lose the caret, not the rows it drew around it.
+    let cursor = drew
+        .get("cursor")
+        .cloned()
+        .and_then(|at| serde_json::from_value(at).ok());
     match serde_json::from_value(lines) {
         Ok(lines) => {
-            say(&FromSurface::Draw { lines });
+            say(&FromSurface::Draw { lines, cursor });
             true
         }
         // A frame that drew nothing readable is not fatal on its own — a tenant may answer a tick
@@ -176,6 +211,21 @@ mod tests {
             ToSurface::Key {
                 key: "space".to_owned(),
                 state: crate::tools::Held::Up,
+            }
+        );
+    }
+
+    #[test]
+    fn a_click_arrives_in_this_surface_own_rows() {
+        // Already translated by the harness, which is the only thing that knows where the rows
+        // landed. Row zero is this surface's first row, so a tenant needs no bounds check.
+        assert_eq!(
+            read(r#"{"to":"mouse","kind":"press","button":"left","row":2,"col":11}"#),
+            ToSurface::Mouse {
+                kind: crate::tools::Pointed::Press,
+                button: Some(crate::tools::Button::Left),
+                row: 2,
+                col: 11,
             }
         );
     }
@@ -256,6 +306,34 @@ mod holding {
     fn answering_ends_it_and_says_what_was_chosen() {
         let drew = played(COUNTER, &[serde_json::json!({"kind": "key", "key": "q"})]);
         assert_eq!(drew[0]["answered"], "quit");
+    }
+
+    #[test]
+    fn a_tenant_may_ask_for_the_terminal_own_caret() {
+        // What makes the rows a screen rather than a picture: a field somebody types into puts the
+        // real cursor in itself, and an IME and a screen reader follow that rather than a block
+        // the tenant painted.
+        let mut engine = Engine::new();
+        engine
+            .run(
+                r#"casper.tool("t", { description = "d", parameters = {},
+                     run = function() return casper.surface{ rows = 2, about = "x" } end,
+                     surface = function() return function()
+                       return { lines = { { { role = "text", text = "name: " } } },
+                                cursor = { row = 0, col = 6 } }
+                     end end })"#,
+                "tools.lua",
+            )
+            .expect("it loads");
+        assert!(engine.open(
+            "t",
+            &serde_json::json!({}),
+            &serde_json::json!({"rows": 2, "cols": 20})
+        ));
+        let drew = engine
+            .frame(&serde_json::json!({"kind": "tick"}))
+            .expect("it drew");
+        assert_eq!(drew["cursor"]["col"], 6);
     }
 
     #[test]
