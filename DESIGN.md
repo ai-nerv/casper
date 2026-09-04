@@ -76,6 +76,56 @@ form. One mechanism, and the list of things that can ask the person stops being 
 a `cat` has a result and a view; a `shell` has a result and no view. One field could not hold all
 three without meaning something different each time.
 
+## A surface: rows a tool asks for and fills itself
+
+An `ask` is still magi drawing. The picker's shape, its keys, its layout — all of that is magi's
+idea of what a question looks like, and a tool that wanted to ask differently could not.
+
+So the general form is not a question at all. It is **space**.
+
+A tool says *"I need five rows"*. magi reserves five rows, forwards input to whoever holds them,
+and blits back whatever spans come out. It does not know what is in them. A permission prompt, a
+file picker, a diff the person can scroll, a form, a game — magi cannot tell those apart and does
+not have to. That is the whole point: the list of things that can appear there stops being a list
+somebody has to extend.
+
+```
+magi → surface   {"open": {"rows": 5, "cols": 92}}
+surface → magi   {"draw": [[{"role":"title","text":"run rm -rf build?"}], …]}
+magi → surface   {"key": "j"}
+surface → magi   {"draw": [ … ]}
+magi → surface   {"key": "enter"}
+surface → magi   {"done": {"answered": "once"}}
+```
+
+Rows are the existing painted vocabulary — roles, not colours — so a surface and a `cat` agree on
+screen without either knowing about the other's palette.
+
+**magi reserves, the tenant draws.** magi owns *how much* room there is, because only magi knows
+what else is on the screen; it clips to the reservation and never grows it mid-frame. Everything
+inside is the tenant's.
+
+### The one thing that does not move
+
+**The answer to a permission lands in magi's ledger, not in the surface's return value.**
+
+A surface that could return "allowed" is a sibling granting itself permission, which is the
+failure the ledger exists to prevent — see *casper describes, magi decides*. So the split is:
+
+- magi decides **that** a question exists, and what is being decided about — it holds `Ops::allow`
+  and the standing grants.
+- the surface decides **how it looks** and collects the keystroke.
+- the answer travels back as an *id*, and magi maps that id onto its own scopes.
+
+A surface is a renderer with an input channel. It is never an authority.
+
+### Why this needs a held connection
+
+A call today is one exec: request on stdin, reply on stdout, exit. A surface redraws per
+keystroke, so magi holds `casper surface --stdio` open for the life of the reservation and
+exchanges frames over it — the same frames, over a spawn that lives longer than one call. One exec
+per keypress would work for a picker and not for anything that animates.
+
 ## What crosses, and how
 
 The family contract, unchanged: 4-byte big-endian length, JSON body, replies
