@@ -226,6 +226,12 @@ impl Engine {
             casper
                 .set(ctx, "surface", crate::lua::surface::table(ctx))
                 .ok();
+            // The one thing every surface reading a keyboard gets wrong the first time: where the
+            // Kitty protocol is live a keystroke arrives twice, and a list that acts on both moves
+            // two rows for one press. See [`crate::lua::keying`].
+            casper
+                .set(ctx, "tapped", crate::lua::keying::table(ctx))
+                .ok();
             // The one way a declaration reaches a process. See the module docs: a second way,
             // with no bound and no verb attached, would make this one decoration.
             casper.set(ctx, "exec", crate::lua::exec::table(ctx)).ok();

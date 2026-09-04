@@ -101,6 +101,29 @@ surface → magi   {"done": {"answered": "once"}}
 Rows are the existing painted vocabulary — roles, not colours — so a surface and a `cat` agree on
 screen without either knowing about the other's palette.
 
+### A key arrives twice
+
+Where the Kitty keyboard protocol is live, one keystroke is *two* frames — `down` and then `up` —
+and nothing about the frame makes that obvious. A list that acts on both moves two rows for one
+press of the arrow, which is precisely the bug that shipped in the permission prompt.
+
+Nothing in the protocol says which kind of tenant you are, so the safe reading is the short one:
+
+```lua
+local key = casper.tapped(event)     -- a press or a repeat, lower-cased; nil for anything else
+```
+
+A repeat counts, because it says the key is still down — that is what makes holding an arrow
+scroll rather than needing a tap a row. A release comes back as `nil`, and so does a tick, a
+resize or the pointer, so one call answers "is this a keypress, and which".
+
+Two tenants should *not* use it, and both are in `config/tools.lua` as the worked examples:
+
+- one where holding a key means something — both games read `event.state` themselves, because the
+  release is what ends a jump;
+- one where the character matters as typed — `event.key` keeps its case, and `casper.tapped` does
+  not.
+
 **magi reserves, the tenant draws.** magi owns *how much* room there is, because only magi knows
 what else is on the screen; it clips to the reservation and never grows it mid-frame. Everything
 inside is the tenant's.
