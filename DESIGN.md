@@ -1,7 +1,7 @@
 # casper — the tooling interface
 
 casper is where the tools live. magi keeps `read`, `write` and `edit` as a floor it can never be
-without; everything else — `ls`, `bash`, `oslo`, `hexe`, `cat`, `patch`, and the things that ask
+without; everything else — `ls`, `shell`, `oslo`, `hexe`, `cat`, `patch`, and the things that ask
 the *person* something — is casper's.
 
 ## The one idea
@@ -19,7 +19,7 @@ question says nothing at all to the model — it is not a tool result yet — an
 
 Everything below follows from keeping those two apart. Today they are one `String` and the
 renderer *guesses*: `magi-tui/src/transcript/tool.rs` colours any line starting with `+` as an
-addition, for every tool, because it has nothing else to go on. That guess is wrong for a `bash`
+addition, for every tool, because it has nothing else to go on. That guess is wrong for a `shell`
 running `git log --oneline`, and it is unavailable to `bat`, whose output is already ANSI by the
 time anybody sees it.
 
@@ -73,7 +73,7 @@ is the same shape a *selection* tool needs — "which of these files?" — and a
 form. One mechanism, and the list of things that can ask the person stops being a list.
 
 **This is why `said` and `shown` had to be separated first.** A question has a view and no result;
-a `cat` has a result and a view; a `bash` has a result and no view. One field could not hold all
+a `cat` has a result and a view; a `shell` has a result and no view. One field could not hold all
 three without meaning something different each time.
 
 ## What crosses, and how
@@ -91,7 +91,7 @@ and running commands is casper's entire job. So the surface splits by trust:
 | **spawn** (argv + stdin) | `run` `configure` | the parent could have run the command itself. |
 
 magi spawns `casper run --json` and writes the call on stdin, exactly as it spawns `melchior ask`.
-A turn is a stream — a `bash` writes output for a minute — so `run` streams a line per event and
+A turn is a stream — a `shell` writes output for a minute — so `run` streams a line per event and
 exits, which is the shape the broker already reads.
 
 ## Declaring a tool
@@ -126,7 +126,7 @@ what a tool would do and never decides whether it may.
 3. **`run` over the spawn link**, streaming, with `said` only.
 4. **`shown`**: the paint vocabulary, the ANSI adapter, `cat` and `patch`.
 5. **The ask**: permission moves out of magi.
-6. The rest — `ls`, `bash`, `oslo`, `hexe` — which by then is declaration, not plumbing.
+6. The rest — `ls`, `shell`, `oslo`, `hexe` — which by then is declaration, not plumbing.
 
 Steps 1–3 are the interface. Step 4 is the thing that makes it look right. Step 5 is what makes
 "anything can ask the person" true, and it is the one that removes code from magi rather than

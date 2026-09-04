@@ -244,7 +244,7 @@ mod resuming {
 
     fn call(args: serde_json::Value, answered: Option<&str>) -> Call {
         Call {
-            tool: "bash".to_owned(),
+            tool: "shell".to_owned(),
             args,
             cwd: String::new(),
             answered: answered.map(ToOwned::to_owned),

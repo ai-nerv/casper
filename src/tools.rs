@@ -42,7 +42,7 @@ pub struct Call {
 
 /// What a tool produced.
 ///
-/// Two faces, and either may be absent: a `bash` has a result and no view, a permission question
+/// Two faces, and either may be absent: a `shell` has a result and no view, a permission question
 /// has a view and no result. One field could not hold both without meaning something different
 /// each time it was read.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn a_plain_result_carries_nothing_it_is_not() {
-        // What every tool does before anybody writes it a view. A `bash` result should not
+        // What every tool does before anybody writes it a view. A `shell` result should not
         // travel with three nulls describing what it does not have.
         let wire = serde_json::to_string(&Ran::said("a\nb")).expect("encodes");
         assert_eq!(wire, r#"{"said":"a\nb"}"#);
@@ -201,7 +201,7 @@ mod tests {
         // casper describes what a tool would do; the harness decides whether it may. There is
         // nothing here a sibling could set to "allowed".
         let card = Card {
-            name: "bash".to_owned(),
+            name: "shell".to_owned(),
             description: "Run a command.".to_owned(),
             parameters: serde_json::json!({"type": "object"}),
             needs: Some("run".to_owned()),

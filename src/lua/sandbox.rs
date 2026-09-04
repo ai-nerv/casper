@@ -66,7 +66,7 @@ mod tests {
     #[test]
     fn a_config_cannot_spawn_a_process() {
         // The line that makes the process transport meaningful: if a description could spawn,
-        // nobody would use the boundary, and `bash` being a peer would be decoration.
+        // nobody would use the boundary, and `shell` being a peer would be decoration.
         assert_eq!(probe("os.execute"), "nil");
         assert_eq!(probe("io"), "nil");
     }

@@ -213,7 +213,7 @@ do -- grep
   })
 end
 
-do -- bash
+do -- shell
   -- **The tool that asks, and the one that remembers.**
   --
   -- Running a command is the thing a person most wants a say over, so this is where the asking
@@ -239,7 +239,7 @@ do -- bash
     return path
   end
 
-  casper.tool("bash", {
+  casper.tool("shell", {
     description = [[
   Run a command in a shell. Asks before it does.
 
@@ -297,9 +297,9 @@ do -- bash
 end
 
 do -- pwd
-  -- What `bash` is remembering, so a model can ask rather than run a command to find out.
+  -- What `shell` is remembering, so a model can ask rather than run a command to find out.
   casper.tool("pwd", {
-    description = "The directory `bash` will run its next command in.",
+    description = "The directory `shell` will run its next command in.",
     parameters = { type = "object" },
 
     run = function()
@@ -380,7 +380,7 @@ do -- oslo
     description = [[
   Ask the oslo shell about its own state: environment, working directory, and what it can do.
 
-  Reads only. To run a command, use `bash`.]],
+  Reads only. To run a command, use `shell`.]],
     parameters = {
       type = "object",
       properties = {

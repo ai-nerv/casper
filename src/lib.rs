@@ -5,7 +5,7 @@
 //! argument; this is the code.
 //!
 //! **A tool has two faces.** The model reads text; the person reads a painted view. They are not
-//! the same content — a permission question has a view and no result, a `bash` has a result and
+//! the same content — a permission question has a view and no result, a `shell` has a result and
 //! no view — so they are two fields and either may be absent.
 
 pub mod framing;
