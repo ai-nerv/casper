@@ -19,6 +19,9 @@
 use crate::lua::engine::Engine;
 use crate::tools::{FromSurface, ToSurface};
 
+/// The same loop, for a tenant that is a program on a pty rather than a drawing in Lua.
+mod screening;
+
 /// Run the frame loop for `tool` until it finishes or stdin closes.
 ///
 /// The arguments the call was made with arrive on the first frame, so a surface opens knowing what
@@ -49,6 +52,18 @@ pub fn hold(tool: &str, engine: &mut Engine) {
     // report a key coming back up. A tenant told otherwise waits for a release that never comes,
     // which is how "hold to do more" ends up doing nothing at all on most terminals.
     let size = serde_json::json!({"rows": rows, "cols": cols, "holds": holds});
+    // **A program in the rows, if this tool declared one.** Asked before `surface`, because a
+    // declaration carrying both is two tenants for one reservation and this is the more specific
+    // of the two. From here the loop is a different one — see [`screening`] — and the harness
+    // cannot tell which it is talking to.
+    if let Some(spec) = engine
+        .screen(tool, &args, &size)
+        .as_ref()
+        .and_then(crate::pty::Spec::from_json)
+    {
+        screening::hold(&spec, rows, cols, lines);
+        return;
+    }
     if !engine.open(tool, &args, &size) {
         // No `surface` was declared. Said rather than silent: the harness reserved rows for this
         // and would otherwise hold them for a tenant that is never going to draw.

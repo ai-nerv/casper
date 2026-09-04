@@ -303,6 +303,68 @@ do -- pwd
   })
 end
 
+do -- screen
+  -- **The other kind of tenant: rows with a real terminal in them.**
+  --
+  -- `shell` runs a command and reads what it printed, which is right for `make` and useless for
+  -- anything that draws. A pager waits on a key that never comes; `htop` sees no terminal and
+  -- refuses; an editor opens on nothing. So this declares a `screen` rather than a `run`: casper
+  -- puts the command on a pty exactly the size of the rows the harness granted, types into it
+  -- what the person types, and hands back what it painted. Nothing here draws, and neither does
+  -- the harness -- the program does.
+  --
+  -- Two rules a `screen` declaration has to keep:
+  --   * ask for a `tick`. A drawing redraws when a key arrives; a program paints whenever it
+  --     feels like it, and without a tick nothing goes looking for what it painted.
+  --   * `needs = "run"`. It is a command, and it is the same ledger `shell` goes through.
+  local MOST_ROWS = 30
+
+  casper.tool("screen", {
+    description = [[
+  Run an interactive terminal program in rows on the screen: a pager, an editor, `htop`, `git
+  add -p`. The person can type at it and click in it, and it ends when the program does or when
+  they press escape twice.
+
+  Use this where `shell` cannot: anything that draws, waits for a keypress, or needs a terminal.
+  Use `shell` for anything that just prints and exits — a program run here holds the screen until
+  somebody closes it.
+
+  The result is what the program left on screen when it ended.]],
+    parameters = {
+      type = "object",
+      properties = {
+        command = { type = "string", description = "The command to run, as a shell would." },
+        rows = {
+          type = "integer", minimum = 3, maximum = MOST_ROWS,
+          description = "How tall it should be. Defaults to 16.",
+        },
+      },
+      required = { "command" },
+    },
+    needs = "run",
+
+    run = function(args)
+      local rows = math.min(MOST_ROWS, math.max(3, math.floor(tonumber(args.rows) or 16)))
+      return casper.surface{
+        rows = rows,
+        -- What a harness with no screen says instead. `magi -p` cannot draw rows and cannot ask
+        -- anybody, so it declines with this rather than waiting on a program nobody can see.
+        about = "running " .. tostring(args.command),
+        -- Thirty frames a second, which is the rate the rows are looked at rather than the rate
+        -- anything is redrawn: a program that painted nothing produces an identical frame.
+        tick = 33,
+      }
+    end,
+
+    -- Called once, before the program starts, and never again. It returns *data* -- there is no
+    -- per-frame Lua here, because a pty is driven by casper and asking a declaration thirty times
+    -- a second what to run would be thirty answers that never change.
+    screen = function(args)
+      return { command = "sh", args = { "-c", tostring(args.command) } }
+    end,
+  })
+end
+
 do -- hexe
   -- The client arrives as source in `casper.clients`: a declaration cannot open files. It is
   -- hexe's own stub, copied rather than reimplemented — two implementations of one protocol is
@@ -477,7 +539,7 @@ do -- permission
 
       return function(event)
         if event.kind == "key" then
-          local key = event.key
+          local key = event.key:lower()
           if key == "up" or key == "k" then
             at = at > 1 and at - 1 or #offers
           elseif key == "down" or key == "j" then
@@ -755,7 +817,7 @@ do -- dino
           -- themselves the moment it is known, rather than for the life of the game.
           holds = event.holds == true or holds
         elseif event.kind == "key" then
-          local key, state = event.key, event.state or "down"
+          local key, state = event.key:lower(), event.state or "down"
           -- **Shown on screen, on purpose.** Whether a terminal reports a key coming back up is
           -- the one thing that decides if holding can mean anything, and it is not something
           -- either of us can tell by looking at the dinosaur. So the last event is printed: see
@@ -973,7 +1035,7 @@ do -- birdy
           floor = H - 3
           holds = event.holds == true or holds
         elseif event.kind == "key" then
-          local key, state = event.key, event.state or "down"
+          local key, state = event.key:lower(), event.state or "down"
           if key == "q" or key == "esc" then
             return { answered = "scored " .. tostring(score) }
           end

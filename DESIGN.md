@@ -138,6 +138,50 @@ draws a field somebody types into asks for it, because the block a surface paint
 *picture* of a cursor: an IME candidate window and a screen reader both follow the real one, and
 while a surface holds the keyboard the prompt is not where anybody is typing.
 
+### A screen: rows with a real terminal in them
+
+Once the rows are a screen, the obvious tenant is a *program*. `shell` runs a command and reads
+what it printed, which is right for `make` and useless for anything that draws: a pager waits on a
+key that never comes, `htop` sees no terminal and refuses, an editor opens on nothing.
+
+So a declaration may name a program instead of drawing:
+
+```lua
+casper.tool("screen", {
+  needs  = "run",
+  run    = function(args) return casper.surface{ rows = 16, about = "…", tick = 33 } end,
+  screen = function(args, size) return { command = "sh", args = { "-c", args.command } } end,
+})
+```
+
+casper opens a pty of exactly the granted size, spawns the command on it, types in what the person
+types, and reads what comes back through a terminal emulator. **Nothing about the wire changes.**
+What goes out is the same rows of spans a game sends, so the harness cannot tell `htop` from the
+dinosaur and does not have to.
+
+|  | `surface` | `screen` |
+|---|---|---|
+| returns | a function, called per frame | a table, read once |
+| fills the rows | Lua, span by span | whatever is on the pty |
+| state lives in | the closure's upvalues | the program |
+| ends when | it answers | the program exits |
+
+**Why casper and not the harness.** Running programs is casper's whole job, and the reason it has
+a spawn link rather than a socket verb — *a socket that runs commands is remote code execution*. A
+harness that opened its own pty would be back to spawning commands, which is the thing the split
+exists to prevent.
+
+Three consequences worth stating:
+
+- **A `screen` tool must ask for a `tick`.** A drawing redraws when a key arrives; a program paints
+  whenever it likes, and with no tick nothing goes looking for what it painted.
+- **Keys travel by name and are built back into bytes** — `enter` becomes `\r`, `f5` becomes
+  `ESC [ 15 ~`, and the arrows follow whichever mode the program asked for. A name is the only
+  form both a Lua table and a pty can read, which is why the harness sends one.
+- **Escape twice closes a surface, once is forwarded.** It used to be once, which is how a person
+  escapes a tenant that has stopped answering — and `esc` is a key `vim` very much wants. Every
+  drawing tenant answers the first one anyway, so it never sees a second.
+
 ### The one thing that does not move
 
 **The answer to a permission lands in magi's ledger, not in the surface's return value.**

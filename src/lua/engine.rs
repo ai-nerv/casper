@@ -38,6 +38,14 @@ const TOOLS: &str = "__casper_tools";
 /// the two it was holding would be answering that on every frame.
 const SURFACES: &str = "__casper_surfaces";
 
+/// Where declared tools' `screen` openers live.
+///
+/// The other kind of tenant. A `surface` draws its own rows in Lua, frame by frame; a `screen`
+/// names a *program*, and casper puts it on a pty of exactly that size and hands back what it
+/// painted. Both fill the same reservation, and the harness cannot tell one from the other — see
+/// [`crate::pty`].
+const SCREENS: &str = "__casper_screens";
+
 /// The open surface's own function, for as long as it holds its rows.
 ///
 /// A closure, so a tenant keeps its state in upvalues and nothing out here has to know what state
@@ -133,6 +141,8 @@ impl Engine {
             ctx.set_global(TOOLS, held);
             let surfaces = Table::new(&ctx);
             ctx.set_global(SURFACES, surfaces);
+            let screens = Table::new(&ctx);
+            ctx.set_global(SCREENS, screens);
 
             {
                 let declared = Rc::clone(&declared);
@@ -161,6 +171,13 @@ impl Engine {
                     // tool, which is why it is looked up rather than required.
                     if let Value::Table(held) = ctx.get_global_value(SURFACES) {
                         let opens = spec.get_value(ctx, "surface");
+                        held.set(ctx, name.as_str(), opens).ok();
+                    }
+                    // The same, for a tool that runs a *program* in its rows rather than drawing
+                    // them. Looked up the same way and never both: a declaration with the two is
+                    // two tenants for one reservation, and `screen` is asked for first.
+                    if let Value::Table(held) = ctx.get_global_value(SCREENS) {
+                        let opens = spec.get_value(ctx, "screen");
                         held.set(ctx, name.as_str(), opens).ok();
                     }
                     // **A hidden tool is registered and never described.** The permission prompt is
@@ -295,6 +312,39 @@ impl Engine {
                 Ran::failed(format!("{name} answered something unreadable: {why}"))
             }),
         })
+    }
+
+    /// Ask a tool what program belongs in its rows.
+    ///
+    /// Calls the tool's `screen(args, size)`, which returns *data* — a command and its arguments —
+    /// and nothing else. Deliberately not a closure the way `surface` is: a pty is driven by
+    /// Rust, frame after frame, and a tenant that had to be re-entered per frame to be asked what
+    /// to do would be a Lua call thirty times a second to say the same thing.
+    ///
+    /// `None` when the tool declared no `screen`, which is every tool but a handful.
+    pub fn screen(
+        &mut self,
+        name: &str,
+        args: &serde_json::Value,
+        size: &serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        self.lua.enter(|ctx| {
+            let value = crate::lua::convert::lua_from_json(ctx, args);
+            ctx.set_global(ARGS, value);
+            let size = crate::lua::convert::lua_from_json(ctx, size);
+            ctx.set_global(EVENT, size);
+            ctx.set_global(DREW, Value::Nil);
+        });
+        let source = format!(
+            "local open = {SCREENS} and {SCREENS}[{name:?}]\n\
+             if type(open) == 'function' then {DREW} = open({ARGS}, {EVENT}) end"
+        );
+        self.run(&source, "screen.lua").ok()?;
+        let mut out = None;
+        self.lua.enter(|ctx| {
+            out = crate::lua::convert::json_from_lua(ctx, ctx.get_global_value(DREW), 0);
+        });
+        out.filter(|value| !value.is_null())
     }
 
     /// Open a tool's surface and hold it.
