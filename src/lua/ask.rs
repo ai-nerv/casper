@@ -216,3 +216,61 @@ mod tests {
         assert_eq!(ask.detail[0][0].role, crate::paint::Role::Removed);
     }
 }
+
+/// What a resumed call is handed.
+///
+/// The bug this guards: the answer travels beside the arguments on the wire and the declaration
+/// reads it *among* them, so a caller that passed the arguments alone left every tool asking
+/// forever — which presents as a harness giving up on a tool rather than as a person giving up
+/// on a question.
+#[cfg(test)]
+mod resuming {
+    use crate::tools::Call;
+
+    /// What `casper run` hands a declaration, for this call.
+    fn given(call: &Call) -> serde_json::Value {
+        let mut args = call.args.clone();
+        let Some(answered) = &call.answered else {
+            return args;
+        };
+        match &mut args {
+            serde_json::Value::Object(fields) => {
+                fields.insert("answered".to_owned(), serde_json::json!(answered));
+            }
+            other => *other = serde_json::json!({ "answered": answered }),
+        }
+        args
+    }
+
+    fn call(args: serde_json::Value, answered: Option<&str>) -> Call {
+        Call {
+            tool: "bash".to_owned(),
+            args,
+            cwd: String::new(),
+            answered: answered.map(ToOwned::to_owned),
+        }
+    }
+
+    #[test]
+    fn the_answer_arrives_among_the_arguments() {
+        let given = given(&call(serde_json::json!({"command": "ls"}), Some("once")));
+        assert_eq!(given["answered"], "once");
+        assert_eq!(given["command"], "ls", "the arguments survive it");
+    }
+
+    #[test]
+    fn a_first_call_carries_no_answer_to_confuse_a_declaration_with() {
+        // `if not args.answered` is how a tool knows it is being asked for the first time. An
+        // empty string here would look like an answer nobody gave.
+        let given = given(&call(serde_json::json!({"command": "ls"}), None));
+        assert!(given.get("answered").is_none(), "{given}");
+    }
+
+    #[test]
+    fn a_tool_that_takes_no_arguments_can_still_be_resumed() {
+        // There is nothing to merge into, and a call that could not carry its answer would ask
+        // forever exactly as the bug did.
+        let given = given(&call(serde_json::Value::Null, Some("yes")));
+        assert_eq!(given["answered"], "yes");
+    }
+}

@@ -79,10 +79,36 @@ fn ran() -> Reply {
     };
     // A tool nobody declared is a refusal rather than a failed result: the model asked for
     // something that does not exist, and telling it the call *failed* invites a retry.
-    let Some(ran) = engine.call(&call.tool, &call.args) else {
+    let Some(ran) = engine.call(&call.tool, &given(&call)) else {
         return Reply::refused(format!("no such tool: {}", call.tool));
     };
     answer(&ran)
+}
+
+/// What the declaration is handed: the model's arguments, and what the person answered.
+///
+/// **The answer travels with the arguments.** A declaration reads `args.answered` to know it is
+/// resuming, and passing the arguments alone meant it never saw one — so a tool that asked
+/// asked again on every call, forever, and the caller gave up on it rather than the person
+/// giving up on the question.
+///
+/// Merged rather than nested so a declaration writes `args.answered` and not
+/// `args.call.answered`: the answer is one more thing known about this call, which is what an
+/// argument is.
+fn given(call: &Call) -> serde_json::Value {
+    let mut args = call.args.clone();
+    let Some(answered) = &call.answered else {
+        return args;
+    };
+    match &mut args {
+        serde_json::Value::Object(fields) => {
+            fields.insert("answered".to_owned(), serde_json::json!(answered));
+        }
+        // A tool taking no arguments still has to be able to be resumed, and there is nothing
+        // to merge into — so the answer becomes the whole of what it is given.
+        other => *other = serde_json::json!({ "answered": answered }),
+    }
+    args
 }
 
 /// One result, as a reply.
