@@ -257,6 +257,38 @@ pub enum Held {
     Up,
 }
 
+/// What the pointer did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Pointed {
+    /// A button went down.
+    #[default]
+    Press,
+    /// The pointer moved with a button held.
+    Drag,
+    /// A button came back up.
+    Release,
+    /// The pointer moved with nothing held.
+    Moved,
+    /// The wheel went up.
+    ScrollUp,
+    /// The wheel went down.
+    ScrollDown,
+}
+
+/// Which button.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Button {
+    /// The one everything uses.
+    #[default]
+    Left,
+    /// The middle button, which on most mice is the wheel.
+    Middle,
+    /// The right button.
+    Right,
+}
+
 /// What the harness sends a surface while it holds its rows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "to")]
@@ -291,6 +323,23 @@ pub enum ToSurface {
         /// default, and is what every key looks like on a terminal that cannot say more.
         #[serde(default)]
         state: Held,
+    },
+    /// The pointer, somewhere over the rows this surface holds.
+    ///
+    /// **In the surface's own coordinates.** Row 0, column 0 is its top-left cell, and nothing
+    /// landing outside the reservation arrives at all. The harness never says where those rows
+    /// are on screen: they move whenever the prompt grows a line, and a tenant that had been told
+    /// would be one the harness could no longer place freely.
+    Mouse {
+        /// What it did.
+        kind: Pointed,
+        /// Which button, for the things a button does. Absent for motion and the wheel.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        button: Option<Button>,
+        /// Rows down from the surface's own first row.
+        row: u16,
+        /// Columns across from the surface's own first column.
+        col: u16,
     },
     /// The room changed under it, because the window did.
     Resize {

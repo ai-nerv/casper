@@ -435,7 +435,10 @@ do -- permission
         return out
       end
 
-      local function draw()
+      -- The question, and nothing that can be chosen. Split out because the pointer has to know
+      -- how many rows stand between the top and the first offer, and counting them in two places
+      -- is how a click lands one row off the thing it was aimed at.
+      local function head()
         local width = math.max(20, (size.cols or 80) - 4)
         local rows = {
           { { role = "warn", text = "  " .. (args.tool or "a tool") },
@@ -446,6 +449,20 @@ do -- permission
           rows[#rows + 1] = { { role = "path", text = "    " .. line } }
         end
         rows[#rows + 1] = { { role = "text", text = "" } }
+        return rows
+      end
+
+      -- Which offer a row of the surface is, or nil for a row that is not one.
+      --
+      -- Rows arrive counted from zero, the way a screen counts them; offers are a Lua array and
+      -- start at one.
+      local function offered(row)
+        local n = row - #head() + 1
+        return offers[n] and n or nil
+      end
+
+      local function draw()
+        local rows = head()
         for n, offer in ipairs(offers) do
           local here = n == at
           rows[#rows + 1] = {
@@ -454,7 +471,7 @@ do -- permission
             { role = "dim", text = offer.about and offer.about ~= "" and ("  " .. offer.about) or "" },
           }
         end
-        rows[#rows + 1] = { { role = "dim", text = "  ↑↓ to choose · enter to answer · esc denies" } }
+        rows[#rows + 1] = { { role = "dim", text = "  ↑↓ or the pointer · enter to answer · esc denies" } }
         return { lines = rows }
       end
 
@@ -470,6 +487,19 @@ do -- permission
             return { answered = (offers[at] or {}).id or "no" }
           elseif key == "esc" or key == "q" then
             return { answered = "no" }
+          end
+        elseif event.kind == "mouse" then
+          -- Hovering moves the selection and clicking takes it, which is what every list on a
+          -- screen does. The harness forwards only what landed on these rows, so there is nothing
+          -- to bounds-check beyond which of them was hit.
+          local n = offered(event.row)
+          if n then
+            at = n
+            -- The release, not the press: a person may put the pointer down on the wrong row and
+            -- slide off it, and a list that answered on the way down gives them no way back.
+            if event.what == "release" then
+              return { answered = (offers[at] or {}).id or "no" }
+            end
           end
         end
         return draw()
@@ -565,6 +595,26 @@ end
 
 local function overlaps(ax, aw, bx, bw) return ax < bx + bw and bx < ax + aw end
 
+-- The pointer, as the one key a game has.
+--
+-- **A press is a press whatever pressed it.** Both games already know how to read a key going
+-- down and coming back up; giving them a second way to say the same thing would be two paths to
+-- keep in agreement. So a click on the rows arrives as `space`, and holding the button is holding
+-- the key -- which on a terminal whose keyboard cannot report a release is the only way to hold
+-- anything at all, since the mouse protocol has always said when a button came up.
+--
+-- Motion becomes a kind nothing matches, so the frame redraws and the world does not move. Read
+-- as a tick it would run the game at the speed somebody waves the mouse.
+local function clicked(event)
+  if event.kind ~= "mouse" then return event end
+  if event.what == "press" then
+    return { kind = "key", key = "space", state = "down" }
+  elseif event.what == "release" then
+    return { kind = "key", key = "space", state = "up" }
+  end
+  return { kind = "hover" }
+end
+
 
 do -- dino
   -- **The showcase.** Everything a surface is for, in one tool the harness knows nothing about:
@@ -596,8 +646,8 @@ do -- dino
   Play the Chromium no-internet dinosaur game in the terminal, drawn in braille.
 
   A showcase for surfaces: this tool asks the harness for rows and fills them itself. Space or up
-  jumps, down ducks, `q` or escape quits. Call it when somebody asks to play, or to see whether
-  surfaces work.]],
+  jumps and so does a click on the rows — held either way, it jumps higher. Down ducks, `q` or
+  escape quits. Call it when somebody asks to play, or to see whether surfaces work.]],
     parameters = { type = "object", properties = {} },
 
     run = function(args)
@@ -696,6 +746,7 @@ do -- dino
       end
 
       return function(event)
+        event = clicked(event)
         if event.kind == "resize" then
           cells, H = event.cols, event.rows * 4
           floor = H - 4
@@ -873,7 +924,7 @@ do -- birdy
     description = [[
   Play flappy bird in the terminal, drawn in braille.
 
-  Space or up flaps once — each press is one flap, so holding does nothing. `q` or escape quits.
+  Space, up or a click flaps once — each press is one flap, so holding does nothing. `q` quits.
   Call it when somebody asks to play, or to see a second surface running the same machinery as
   `dino` with none of its code.]],
     parameters = { type = "object", properties = {} },
@@ -916,6 +967,7 @@ do -- birdy
       end
 
       return function(event)
+        event = clicked(event)
         if event.kind == "resize" then
           cells, H = event.cols, event.rows * 4
           floor = H - 3

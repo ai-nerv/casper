@@ -76,6 +76,20 @@ pub fn hold(tool: &str, engine: &mut Engine) {
                 // `down`, `repeat` or `up`. A tenant that only looks at `key` is unaffected.
                 "state": state,
             }),
+            // Already in this surface's own coordinates: row 0 is its first row. Nothing outside
+            // the rows it was granted ever arrives, so a tenant needs no bounds check of its own.
+            ToSurface::Mouse {
+                kind,
+                button,
+                row,
+                col,
+            } => serde_json::json!({
+                "kind": "mouse",
+                "what": kind,
+                "button": button,
+                "row": row,
+                "col": col,
+            }),
             ToSurface::Tick => serde_json::json!({"kind": "tick"}),
             ToSurface::Resize { rows, cols, holds } => {
                 serde_json::json!({"kind": "resize", "rows": rows, "cols": cols, "holds": holds})
@@ -176,6 +190,21 @@ mod tests {
             ToSurface::Key {
                 key: "space".to_owned(),
                 state: crate::tools::Held::Up,
+            }
+        );
+    }
+
+    #[test]
+    fn a_click_arrives_in_this_surface_own_rows() {
+        // Already translated by the harness, which is the only thing that knows where the rows
+        // landed. Row zero is this surface's first row, so a tenant needs no bounds check.
+        assert_eq!(
+            read(r#"{"to":"mouse","kind":"press","button":"left","row":2,"col":11}"#),
+            ToSurface::Mouse {
+                kind: crate::tools::Pointed::Press,
+                button: Some(crate::tools::Button::Left),
+                row: 2,
+                col: 11,
             }
         );
     }

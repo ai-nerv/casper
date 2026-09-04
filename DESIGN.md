@@ -105,6 +105,28 @@ screen without either knowing about the other's palette.
 what else is on the screen; it clips to the reservation and never grows it mid-frame. Everything
 inside is the tenant's.
 
+### The rows are a screen, not an echo of the keyboard
+
+A surface that could only be typed at is a picker with extra steps. So the pointer crosses too:
+
+```
+magi → surface   {"to": "mouse", "kind": "press", "button": "left", "row": 2, "col": 11}
+```
+
+Two rules, and both are about what magi *does not* say:
+
+- **The coordinates are the surface's own.** Row 0 is its first row. magi knows where the
+  reservation landed on screen and never passes that on — those rows move whenever the prompt
+  grows a line, and a tenant that had been told its own `y` is one magi could no longer place.
+- **Nothing outside the reservation is forwarded.** A click on the transcript above is the
+  transcript's; magi keeps its wheel, its fold handles and its drag-selection while a game is open
+  below them. The tenant needs no bounds check, because out-of-bounds never arrives.
+
+`press` / `drag` / `release` / `moved` / `scroll_up` / `scroll_down`, with a button on the three
+that have one. That is enough for a list you hover and click, a diff you scroll, and a button you
+*hold* — which on a terminal whose keyboard cannot report a release is the only hold there is,
+since the mouse protocol has always said when a button came up.
+
 ### The one thing that does not move
 
 **The answer to a permission lands in magi's ledger, not in the surface's return value.**
