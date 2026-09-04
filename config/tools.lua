@@ -245,7 +245,7 @@ do -- shell
 
   casper.tool("shell", {
     description = [[
-  Run a command in a shell. Asks before it does.
+  Run a command in a shell.
 
   The working directory is kept between calls, so `cd build` and then `make` works.]],
     parameters = {
@@ -257,26 +257,12 @@ do -- shell
     },
     needs = "run",
 
+    -- **It does not ask.** It used to, with `casper.ask`, and `needs = "run"` above already sends
+    -- the same command through the harness's ledger -- so one command raised two questions, and
+    -- answering the first only bought you the second. casper says what a tool would do; the
+    -- harness decides whether it may, and it is the one holding the standing grants a person has
+    -- already given.
     run = function(args)
-      if not args.answered then
-        -- The command goes in the detail rather than the question: a question has to fit on one
-        -- line and a command does not, and what somebody is deciding about is the text.
-        return casper.ask(
-          "run a shell command?",
-          {
-            { id = "once", label = "Allow once" },
-            { id = "no",   label = "Deny", about = "the model is told, and carries on" },
-          },
-          casper.paint.plain(args.command).lines
-        )
-      end
-
-      if args.answered ~= "once" then
-        -- A refusal is a result the model reads, not an error: it should try something else
-        -- rather than the same thing again.
-        return { said = "the person did not permit that command", failed = true }
-      end
-
       -- The remembered directory, then the command, then wherever it ended up. Written every
       -- time rather than only after a `cd`, because a command may change directory in ways
       -- nothing here can see -- a script, a `pushd`, a `cd` inside an `if`.
