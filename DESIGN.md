@@ -201,6 +201,11 @@ Three consequences worth stating:
   goes looking for what it painted. So a tool that declares a `screen` and names no rate is given
   thirty a second — filled in, never overridden, because a declaration one line short of working
   reads as a hung tool rather than as a missing field.
+- **One instruction, spelled two ways.** `ESC [ r ; c H` and `ESC [ r ; c f` both position the
+  cursor; the emulator implements the first and drops the second. `btop` uses the second — 452
+  times in two seconds — so it came out wrapping mid-word while `top` was perfect. The byte is
+  rewritten on the way in, by a state machine rather than a search, because the pty splits
+  sequences across reads and an `f` in a program's output is a letter.
 - **Keys travel by name and are built back into bytes** — `enter` becomes `\r`, `f5` becomes
   `ESC [ 15 ~`, and the arrows follow whichever mode the program asked for. A name is the only
   form both a Lua table and a pty can read, which is why the harness sends one.
