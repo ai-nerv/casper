@@ -574,6 +574,89 @@ do -- permission
   })
 end
 
+do -- session
+  -- **The worked example for `casper.knows`.** Every other surface here is told everything it
+  -- knows at open: its rows, its width, the arguments of the call. This one is told none of what
+  -- it draws -- it asks, from inside the frame, and puts the answers on screen.
+  --
+  -- Which also makes it the thing to run when a session is not behaving: it says which session
+  -- this is, which model is answering, and what the memory layer has to say about a word -- three
+  -- questions that otherwise need three different places to look.
+  --
+  -- Asked once, at open, rather than every frame. The answers do not change while somebody is
+  -- reading them, and `memories` is a search: a question per tick would be a search per tick.
+  casper.tool("session", {
+    description = [[
+  What magi knows about this session, on screen: which session it is, which model is
+  answering, and what it remembers about `query` if a memory layer is running.]],
+    parameters = {
+      type = "object",
+      properties = {
+        query = { type = "string", description = "What to recall about. Omitted is whatever is nearest." },
+      },
+    },
+
+    run = function()
+      return casper.surface{ rows = 12, about = "what this session knows about itself" }
+    end,
+
+    surface = function(args, size)
+      local query = args.query or ""
+      local rows = {}
+
+      local function say(role, text)
+        rows[#rows + 1] = { { role = role, text = "  " .. text } }
+      end
+
+      -- Two values back, Lua's own idiom: the answer, or nil and why not. A refusal is an
+      -- ordinary answer -- there is no balthasar on this machine, no model is configured -- and
+      -- drawing it is more use than drawing an empty list that reads as "nothing was found".
+      local function about(verb, ask)
+        local said, why = casper.knows(verb, ask)
+        if not said then
+          say("dim", verb .. " — " .. tostring(why))
+          return nil
+        end
+        return said
+      end
+
+      local who = about("session")
+      if who then
+        say("title", "session")
+        say("text", "  " .. tostring(who.id))
+        say("path", "  " .. tostring(who.cwd))
+      end
+
+      local model = about("model")
+      if model then
+        say("title", "model")
+        say("text", "  " .. tostring(model.name))
+        say("dim", "  " .. tostring(model.context_window) .. " tokens of room")
+      end
+
+      local found = about("memories", { query = query, limit = math.max(1, (size.rows or 12) - 9) })
+      if found then
+        say("title", query == "" and "memories" or ("memories about " .. query))
+        if #found == 0 then
+          say("dim", "  nothing yet")
+        end
+        for _, held in ipairs(found) do
+          say("text", "  " .. tostring(held.text or held.summary or held.id or "?"))
+        end
+      end
+
+      rows[#rows + 1] = { { role = "dim", text = "  any key closes this" } }
+
+      return function(event)
+        if casper.tapped(event) then
+          return { answered = "read" }
+        end
+        return { lines = rows }
+      end
+    end,
+  })
+end
+
 -- ── the drawing kit ────────────────────────────────────────────────────────────────
 --
 -- Shared by every surface that draws a picture rather than text. Lifted out of the first
