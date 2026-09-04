@@ -828,7 +828,12 @@ do -- dino
           -- `up` after you let go and the protocol is live; see only `down` and it is not, and
           -- no amount of work on this side will change that.
           saw = key .. " " .. state
-          if key == "q" or key == "esc" then
+          -- **Quitting is a tap; jumping is a hold.** Both readings of one keyboard, side by
+          -- side. `casper.tapped` drops the release, so `q` ends the game once rather than on the
+          -- way down and again on the way up; the raw `state` below is what makes a long jump
+          -- different from a hop, and no helper can give that back.
+          local tap = casper.tapped(event)
+          if tap == "q" or tap == "esc" then
             return { answered = "scored " .. tostring(math.floor(dist * SCORE)) }
           end
           -- **A held key is not a repeated tap.** `down` starts a jump; `up` while still rising
@@ -1040,7 +1045,10 @@ do -- birdy
           holds = event.holds == true or holds
         elseif event.kind == "key" then
           local key, state = event.key:lower(), event.state or "down"
-          if key == "q" or key == "esc" then
+          -- Quitting is a tap; flapping is a press with a release behind it. See `dino` for why
+          -- the two are read differently.
+          local tap = casper.tapped(event)
+          if tap == "q" or tap == "esc" then
             return { answered = "scored " .. tostring(score) }
           end
           if state == "up" then

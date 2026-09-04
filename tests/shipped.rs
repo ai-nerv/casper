@@ -106,3 +106,67 @@ fn escape_denies_rather_than_choosing_whatever_is_under_the_cursor() {
     key(&mut engine, "down", "down");
     assert_eq!(key(&mut engine, "esc", "down")["answered"], "no");
 }
+
+/// The games read the same keyboard two ways, and both readings have to keep working.
+mod games {
+    use super::{key, opened};
+
+    /// Every row of a frame, joined, so a readout can be searched for.
+    fn text(drew: &serde_json::Value) -> String {
+        drew["lines"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|row| {
+                Some(
+                    row.as_array()?
+                        .iter()
+                        .filter_map(|span| span["text"].as_str())
+                        .collect::<String>(),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_release_of_the_quit_key_does_not_end_a_game() {
+        // It used to. `q` was matched without looking at the state, so letting the key up ended
+        // the game a second time — harmless only because there was nothing left to end.
+        for game in ["dino", "birdy"] {
+            let mut engine = opened(game, &serde_json::json!({}), 8, 60);
+            let after = key(&mut engine, "q", "up");
+            assert!(after.get("answered").is_none(), "{game} quit on a release");
+            let after = key(&mut engine, "esc", "up");
+            assert!(after.get("answered").is_none(), "{game} quit on a release");
+        }
+    }
+
+    #[test]
+    fn a_press_of_the_quit_key_still_ends_it_and_reports_the_score() {
+        for game in ["dino", "birdy"] {
+            let mut engine = opened(game, &serde_json::json!({}), 8, 60);
+            let done = key(&mut engine, "Q", "down");
+            assert_eq!(
+                done["answered"].as_str().unwrap_or_default().split(' ').next(),
+                Some("scored"),
+                "{game}: {done}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_game_still_sees_a_key_coming_back_up() {
+        // The half `casper.tapped` deliberately hides, and the reason the games do not use it for
+        // the jump: a release is what ends one, and a game that stopped seeing them would have
+        // every jump the same height.
+        let mut engine = opened("dino", &serde_json::json!({}), 8, 60);
+        key(&mut engine, "space", "down");
+        let after = key(&mut engine, "space", "up");
+        assert!(
+            text(&after).contains("space up"),
+            "the readout lost the release: {}",
+            text(&after)
+        );
+    }
+}
