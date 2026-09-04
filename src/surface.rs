@@ -34,12 +34,22 @@ pub fn hold(tool: &str, engine: &mut Engine) {
     let Some(Ok(first)) = lines.next() else {
         return;
     };
-    let ToSurface::Open { rows, cols, args } = read(&first) else {
+    let ToSurface::Open {
+        rows,
+        cols,
+        holds,
+        args,
+    } = read(&first)
+    else {
         // Anything else first is a caller that does not speak this, and answering it would be
         // answering a frame nobody meant to send.
         return;
     };
-    if !engine.open(tool, &args, rows, cols) {
+    // What it was granted, in one table: the rows, the width, and whether this terminal will ever
+    // report a key coming back up. A tenant told otherwise waits for a release that never comes,
+    // which is how "hold to do more" ends up doing nothing at all on most terminals.
+    let size = serde_json::json!({"rows": rows, "cols": cols, "holds": holds});
+    if !engine.open(tool, &args, &size) {
         // No `surface` was declared. Said rather than silent: the harness reserved rows for this
         // and would otherwise hold them for a tenant that is never going to draw.
         say(&FromSurface::Done {
@@ -49,10 +59,9 @@ pub fn hold(tool: &str, engine: &mut Engine) {
     }
     // Drawn once before any input, so the rows are filled the moment they appear rather than on
     // the first keypress.
-    if !offer(
-        engine,
-        &serde_json::json!({"kind": "open", "rows": rows, "cols": cols}),
-    ) {
+    let mut opened = size.clone();
+    opened["kind"] = serde_json::Value::String("open".to_owned());
+    if !offer(engine, &opened) {
         return;
     }
 
@@ -182,7 +191,11 @@ mod holding {
         let mut engine = Engine::new();
         engine.run(source, "tools.lua").expect("it loads");
         assert!(
-            engine.open("t", &serde_json::json!({}), 4, 20),
+            engine.open(
+                "t",
+                &serde_json::json!({}),
+                &serde_json::json!({"rows": 4, "cols": 20})
+            ),
             "the surface opened"
         );
         events
@@ -258,7 +271,11 @@ mod holding {
                 "tools.lua",
             )
             .expect("it loads");
-        assert!(engine.open("t", &serde_json::json!({}), 2, 20));
+        assert!(engine.open(
+            "t",
+            &serde_json::json!({}),
+            &serde_json::json!({"rows": 2, "cols": 20})
+        ));
         assert!(engine.frame(&serde_json::json!({"kind": "tick"})).is_none());
     }
 
@@ -273,6 +290,10 @@ mod holding {
                 "tools.lua",
             )
             .expect("it loads");
-        assert!(!engine.open("t", &serde_json::json!({}), 4, 20));
+        assert!(!engine.open(
+            "t",
+            &serde_json::json!({}),
+            &serde_json::json!({"rows": 4, "cols": 20})
+        ));
     }
 }

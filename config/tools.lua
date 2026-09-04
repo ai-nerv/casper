@@ -585,6 +585,11 @@ do -- dino
 
       local cells, H = size.cols or 80, (size.rows or 8) * 4
       local floor = H - 4
+      -- **Whether this terminal can say a key came back up.** With the Kitty keyboard protocol it
+      -- can, and letting go early cuts a jump short -- so a tap is a hop and a hold is a full
+      -- jump. Without it every key is a bare press and every jump is a full one, and the hint below
+      -- says so rather than promising a control the terminal cannot deliver.
+      local holds = size.holds == true
       local dino, fall, ducking, speed, dist, over, best = 0, 0, false, SPEED, 0, false, 0
       local things = {}
 
@@ -681,6 +686,13 @@ do -- dino
             { role = "dim", text = "  " },
             { role = "title", text = string.format("%05d", math.floor(dist * SCORE)) },
             { role = "dim", text = best > 0 and ("   hi " .. string.format("%05d", best)) or "" },
+            -- Said once, in the space the score leaves: what this terminal can actually do. A hint
+            -- promising "hold to jump higher" where no release is ever reported would be a control
+            -- that silently is not there.
+            {
+              role = "dim",
+              text = holds and "   tap to hop · hold to jump" or "   space jumps · ↓ ducks",
+            },
           }
         return { lines = rows }
       end

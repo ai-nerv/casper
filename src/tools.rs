@@ -270,6 +270,12 @@ pub enum ToSurface {
         rows: u16,
         /// Columns granted.
         cols: u16,
+        /// Whether this terminal reports key repeats and releases.
+        ///
+        /// `false` without the Kitty keyboard protocol, where every key arrives as a bare press.
+        /// A tenant that would wait for a release is told there will never be one.
+        #[serde(default)]
+        holds: bool,
         /// The call's arguments.
         #[serde(default)]
         args: serde_json::Value,

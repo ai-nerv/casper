@@ -304,13 +304,14 @@ impl Engine {
     /// function stays in a global for as long as this process holds the rows.
     ///
     /// `false` when the tool declared no `surface`, which is every ordinary tool.
-    pub fn open(&mut self, name: &str, args: &serde_json::Value, rows: u16, cols: u16) -> bool {
+    /// `size` is what the harness granted — rows, columns, and whether the keyboard reports holds
+    /// — handed over whole rather than as a growing argument list, because it is one thing the
+    /// tenant lays itself out against.
+    pub fn open(&mut self, name: &str, args: &serde_json::Value, size: &serde_json::Value) -> bool {
         self.lua.enter(|ctx| {
             let value = crate::lua::convert::lua_from_json(ctx, args);
             ctx.set_global(ARGS, value);
-            let size = Table::new(&ctx);
-            size.set(ctx, "rows", i64::from(rows)).ok();
-            size.set(ctx, "cols", i64::from(cols)).ok();
+            let size = crate::lua::convert::lua_from_json(ctx, size);
             ctx.set_global(EVENT, size);
             ctx.set_global(LIVE, Value::Nil);
         });
