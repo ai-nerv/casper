@@ -537,7 +537,13 @@ do -- permission
       end
 
       return function(event)
-        if event.kind == "key" then
+        -- **A key coming back up is not a second press.** Where the Kitty protocol is live every
+        -- keystroke arrives twice -- once going down, once coming up -- and a list that acted on
+        -- both moved two rows for one press of the arrow. A game wants the release, because that
+        -- is what ends a jump; a list has no use for it at all.
+        --
+        -- `repeat` is kept: it says the key is still held, which is how holding an arrow scrolls.
+        if event.kind == "key" and event.state ~= "up" then
           local key = event.key:lower()
           if key == "up" or key == "k" then
             at = at > 1 and at - 1 or #offers
