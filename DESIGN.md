@@ -127,6 +127,17 @@ that have one. That is enough for a list you hover and click, a diff you scroll,
 *hold* — which on a terminal whose keyboard cannot report a release is the only hold there is,
 since the mouse protocol has always said when a button came up.
 
+And back the other way, the terminal's own caret:
+
+```lua
+return { lines = rows, cursor = { row = 0, col = 6 } }
+```
+
+Optional, and almost always absent — a game wants nothing blinking in its picture. A tenant that
+draws a field somebody types into asks for it, because the block a surface paints for itself is a
+*picture* of a cursor: an IME candidate window and a screen reader both follow the real one, and
+while a surface holds the keyboard the prompt is not where anybody is typing.
+
 ### The one thing that does not move
 
 **The answer to a permission lands in magi's ledger, not in the surface's return value.**

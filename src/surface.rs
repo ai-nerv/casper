@@ -130,9 +130,15 @@ fn offer(engine: &mut Engine, event: &serde_json::Value) -> bool {
         .get("lines")
         .cloned()
         .unwrap_or(serde_json::Value::Null);
+    // Optional, and a malformed one is no cursor rather than a dropped frame: a tenant that got
+    // the shape wrong should lose the caret, not the rows it drew around it.
+    let cursor = drew
+        .get("cursor")
+        .cloned()
+        .and_then(|at| serde_json::from_value(at).ok());
     match serde_json::from_value(lines) {
         Ok(lines) => {
-            say(&FromSurface::Draw { lines });
+            say(&FromSurface::Draw { lines, cursor });
             true
         }
         // A frame that drew nothing readable is not fatal on its own — a tenant may answer a tick
@@ -285,6 +291,34 @@ mod holding {
     fn answering_ends_it_and_says_what_was_chosen() {
         let drew = played(COUNTER, &[serde_json::json!({"kind": "key", "key": "q"})]);
         assert_eq!(drew[0]["answered"], "quit");
+    }
+
+    #[test]
+    fn a_tenant_may_ask_for_the_terminal_own_caret() {
+        // What makes the rows a screen rather than a picture: a field somebody types into puts the
+        // real cursor in itself, and an IME and a screen reader follow that rather than a block
+        // the tenant painted.
+        let mut engine = Engine::new();
+        engine
+            .run(
+                r#"casper.tool("t", { description = "d", parameters = {},
+                     run = function() return casper.surface{ rows = 2, about = "x" } end,
+                     surface = function() return function()
+                       return { lines = { { { role = "text", text = "name: " } } },
+                                cursor = { row = 0, col = 6 } }
+                     end end })"#,
+                "tools.lua",
+            )
+            .expect("it loads");
+        assert!(engine.open(
+            "t",
+            &serde_json::json!({}),
+            &serde_json::json!({"rows": 2, "cols": 20})
+        ));
+        let drew = engine
+            .frame(&serde_json::json!({"kind": "tick"}))
+            .expect("it drew");
+        assert_eq!(drew["cursor"]["col"], 6);
     }
 
     #[test]

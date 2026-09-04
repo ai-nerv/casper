@@ -289,6 +289,19 @@ pub enum Button {
     Right,
 }
 
+/// A cell, in the coordinates of whatever names it.
+///
+/// Always the surface's own: row 0, column 0 is its top-left. The same convention in both
+/// directions, so a tenant told where a click landed can say where the cursor goes in the units
+/// it was just handed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct At {
+    /// Rows down from the surface's first row.
+    pub row: u16,
+    /// Columns across from the surface's first column.
+    pub col: u16,
+}
+
 /// What the harness sends a surface while it holds its rows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "to")]
@@ -369,6 +382,13 @@ pub enum FromSurface {
     Draw {
         /// Each row, as the spans it is made of.
         lines: Vec<Line>,
+        /// Where the terminal's own cursor belongs, in this surface's coordinates.
+        ///
+        /// `None` — almost always — leaves it where it was, in the harness's own prompt. A tenant
+        /// drawing a field somebody types into asks for it here: the block a surface paints for
+        /// itself is a picture of a cursor, and an IME and a screen reader follow the real one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<At>,
     },
     /// The surface is finished, and this is the id of what the person chose.
     ///
