@@ -629,6 +629,10 @@ do -- dino
         if event.kind == "resize" then
           cells, H = event.cols, event.rows * 4
           floor = H - 4
+          -- The harness learns whether the keyboard reports holds the first time one arrives,
+          -- which may be after this opened. Taken here so the controls stop understating
+          -- themselves the moment it is known, rather than for the life of the game.
+          holds = event.holds == true or holds
         elseif event.kind == "key" then
           local key, state = event.key, event.state or "down"
           if key == "q" or key == "esc" then

@@ -298,6 +298,13 @@ pub enum ToSurface {
         rows: u16,
         /// Columns now.
         cols: u16,
+        /// Whether the keyboard reports holds, as currently known.
+        ///
+        /// Carried here as well as at open because the harness *learns* it: nothing proves the
+        /// protocol is live until a repeat or a release actually arrives, which may be long after
+        /// this surface opened.
+        #[serde(default)]
+        holds: bool,
     },
     /// Time passed, for a surface that asked for a tick.
     Tick,

@@ -77,8 +77,8 @@ pub fn hold(tool: &str, engine: &mut Engine) {
                 "state": state,
             }),
             ToSurface::Tick => serde_json::json!({"kind": "tick"}),
-            ToSurface::Resize { rows, cols } => {
-                serde_json::json!({"kind": "resize", "rows": rows, "cols": cols})
+            ToSurface::Resize { rows, cols, holds } => {
+                serde_json::json!({"kind": "resize", "rows": rows, "cols": cols, "holds": holds})
             }
             // The reservation is over. The tenant is told rather than killed, so one holding
             // something can put it down.
