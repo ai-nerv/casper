@@ -114,3 +114,56 @@ do -- ls
     end,
   })
 end
+
+do -- bash
+  -- **The tool that asks.** Running a command is the thing a person most wants a say over, so
+  -- this is where the mechanism earns itself: the first call returns a *question* and no result,
+  -- the harness draws it, and the same declaration runs again with the answer. Nothing about
+  -- permission lives in the harness except the picker it already had.
+  --
+  -- What it does not do is decide. `needs = "run"` says which verb this acts under and the
+  -- harness answers from its own ledger; a tool that could grant itself one would make the
+  -- ledger a suggestion.
+  casper.tool("bash", {
+    description = "Run a shell command. Asks before it does.",
+    parameters = {
+      type = "object",
+      properties = {
+        command = { type = "string", description = "The command to run." },
+      },
+      required = { "command" },
+    },
+    needs = "run",
+
+    run = function(args)
+      if not args.answered then
+        -- The command itself goes in the detail rather than the question: a question has to fit
+        -- on one line and a command does not, and what somebody is deciding about is the text.
+        return casper.ask(
+          "run a shell command?",
+          {
+            { id = "once",  label = "Allow once" },
+            { id = "no",    label = "Deny", about = "the model is told, and carries on" },
+          },
+          casper.paint.plain(args.command).lines
+        )
+      end
+
+      if args.answered ~= "once" then
+        -- A refusal is a result the model reads, not an error: it should try something else
+        -- rather than the same thing again.
+        return { said = "the person did not permit that command", failed = true }
+      end
+
+      local done = casper.exec("sh", { "-c", args.command })
+      local out = done.out
+      if done.err ~= "" then
+        out = out == "" and done.err or (out .. "\n" .. done.err)
+      end
+      if done.code ~= 0 then
+        return { said = out .. "\n(exit " .. tostring(done.code) .. ")", failed = true }
+      end
+      return { said = out }
+    end,
+  })
+end

@@ -136,6 +136,9 @@ impl Engine {
                 casper.set(ctx, "tool", tool).ok();
             }
 
+            // Putting a question to the person, which is what makes a permission, a picker and
+            // a confirmation one mechanism rather than three.
+            casper.set(ctx, "ask", crate::lua::ask::table(ctx)).ok();
             // The one way a declaration reaches a process. See the module docs: a second way,
             // with no bound and no verb attached, would make this one decoration.
             casper.set(ctx, "exec", crate::lua::exec::table(ctx)).ok();

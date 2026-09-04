@@ -8,6 +8,7 @@
 //! sharper here than anywhere: casper's job is running programs, so it offers exactly one way to
 //! run one. See [`exec`].
 
+pub mod ask;
 pub mod convert;
 pub mod engine;
 pub mod exec;
