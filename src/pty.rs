@@ -27,6 +27,7 @@ use std::sync::Arc;
 
 pub mod keying;
 pub mod painting;
+pub mod rewriting;
 
 /// What to run, as a declaration described it.
 #[derive(Debug, Clone, Default)]
@@ -100,6 +101,8 @@ pub struct Screen {
     /// anything waiting on input is forever.
     output: std::sync::mpsc::Receiver<Vec<u8>>,
     vt: vt100::Parser,
+    /// The one dialect difference the emulator does not speak. See [`rewriting`].
+    fixing: rewriting::Rewriting,
     named: String,
 }
 
@@ -146,6 +149,7 @@ impl Screen {
             child,
             output,
             vt: vt100::Parser::new(rows.max(1), cols.max(1), 0),
+            fixing: rewriting::Rewriting::new(),
             named: spec.command.clone(),
         })
     }
@@ -156,7 +160,12 @@ impl Screen {
     pub fn read(&mut self) -> bool {
         loop {
             match self.output.try_recv() {
-                Ok(bytes) => self.vt.process(&bytes),
+                Ok(mut bytes) => {
+                    // Before the emulator sees them, because the whole point is that it cannot
+                    // read one of these on its own.
+                    self.fixing.apply(&mut bytes);
+                    self.vt.process(&bytes);
+                }
                 Err(std::sync::mpsc::TryRecvError::Empty) => return true,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => return false,
             }
@@ -286,6 +295,27 @@ mod tests {
         let drawn = screen.drawn().0;
         let first: String = drawn[0].iter().map(|span| span.text.as_str()).collect();
         assert_eq!(first.trim(), "9 41", "{first:?}");
+    }
+
+    #[test]
+    fn a_program_positioning_the_other_way_still_lands_where_it_meant_to() {
+        // Through a real pty and the real emulator, because the point of the rewrite is what the
+        // emulator does with the byte afterwards — and it is the emulator that drops it.
+        for (spelling, name) in [("H", "CUP"), ("f", "HVP")] {
+            let screen = ran(&format!(r"printf '\033[3;5{spelling}X'; sleep 2"), 5, 20);
+            let rows: Vec<String> = screen
+                .drawn()
+                .0
+                .iter()
+                .map(|row| row.iter().map(|span| span.text.as_str()).collect())
+                .collect();
+            let at: Vec<(usize, usize)> = rows
+                .iter()
+                .enumerate()
+                .filter_map(|(n, row)| row.find('X').map(|col| (n, col)))
+                .collect();
+            assert_eq!(at, [(2, 4)], "{name}: {rows:?}");
+        }
     }
 
     #[test]
