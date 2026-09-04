@@ -25,6 +25,9 @@ fn main() -> std::process::ExitCode {
         "verbs" => say(&Reply::of(described())),
         "tools" => say(&tools()),
         "run" => say(&ran()),
+        // Not a call and not a reply: frames both ways for as long as the tool holds its rows.
+        // See `casper::surface` for why this cannot be one exec per event.
+        "surface" => held(args.get(1).map(String::as_str).unwrap_or_default()),
         "help" | "--help" | "-h" => usage(),
         other => say(&Reply::refused(format!("no such call: {other}"))),
     }
@@ -144,4 +147,15 @@ fn usage() {
          Every verb prints the family's reply shape. `run` is deliberately not\n\
          reachable over the socket: see DESIGN.md."
     );
+}
+
+/// Hold a tool's rows, exchanging frames until it is finished.
+///
+/// Nothing is printed in the reply shape here: this is a stream of frames, not a call, and a
+/// client that read it as one would take the first frame for the whole answer.
+fn held(tool: &str) {
+    let Ok(mut engine) = loaded() else {
+        return;
+    };
+    casper::surface::hold(tool, &mut engine);
 }

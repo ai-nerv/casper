@@ -11,5 +11,6 @@
 pub mod framing;
 pub mod lua;
 pub mod paint;
+pub mod surface;
 pub mod tools;
 pub mod wire;

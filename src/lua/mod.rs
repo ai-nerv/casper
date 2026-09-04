@@ -17,3 +17,4 @@ pub mod json;
 pub mod paint;
 pub mod sandbox;
 pub mod stream;
+pub mod surface;

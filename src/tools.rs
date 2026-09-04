@@ -118,6 +118,27 @@ pub enum Shown {
     },
     /// A question for the person, and the answers they may give.
     Ask(Ask),
+    /// Rows the tool is asking for, and will fill itself.
+    ///
+    /// The general form of [`Ask`]. A question has a shape the harness chose; a surface has
+    /// whatever shape its tenant draws, and the harness cannot tell a permission prompt from a
+    /// file picker from a game. It reserves the rows and blits back what comes out.
+    Surface(Surface),
+}
+
+/// Rows a tool has asked for, and what to open to fill them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Surface {
+    /// How many rows it wants. A request, not a grant.
+    pub rows: u16,
+    /// What this is for, in one line, for a harness that cannot draw it.
+    pub about: String,
+    /// Milliseconds between ticks, for a surface that moves on its own.
+    ///
+    /// `None` for one that only answers input — a picker redraws when a key arrives and at no
+    /// other time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tick: Option<u16>,
 }
 
 /// A question a tool is putting to the person.
@@ -218,4 +239,58 @@ mod tests {
         let back: Ran = serde_json::from_str(&wire).expect("decodes");
         assert_eq!(back, ran);
     }
+}
+
+/// What the harness sends a surface while it holds its rows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "to")]
+pub enum ToSurface {
+    /// The room it actually got, and what the call was given.
+    ///
+    /// The arguments come with it so a surface opens knowing what it is about — a permission needs
+    /// the command, a picker needs the list — rather than being told on some later frame.
+    Open {
+        /// Rows granted, which may be fewer than were asked for.
+        rows: u16,
+        /// Columns granted.
+        cols: u16,
+        /// The call's arguments.
+        #[serde(default)]
+        args: serde_json::Value,
+    },
+    /// A key the person pressed while this surface held the rows.
+    Key {
+        /// `j`, `enter`, `esc`, `ctrl+c`.
+        key: String,
+    },
+    /// The room changed under it, because the window did.
+    Resize {
+        /// Rows now.
+        rows: u16,
+        /// Columns now.
+        cols: u16,
+    },
+    /// Time passed, for a surface that asked for a tick.
+    Tick,
+    /// The reservation is over and nothing more will be read.
+    Close,
+}
+
+/// What a surface sends back.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "from")]
+pub enum FromSurface {
+    /// What to put in the rows, in the same roles everything else is painted in.
+    Draw {
+        /// Each row, as the spans it is made of.
+        lines: Vec<Line>,
+    },
+    /// The surface is finished, and this is the id of what the person chose.
+    ///
+    /// An id, never a decision: a surface that returned "allowed" would be a sibling granting
+    /// itself a permission. The harness maps this onto its own scopes.
+    Done {
+        /// The id of whatever was chosen, as the tool named it. Empty when it just ended.
+        answered: String,
+    },
 }

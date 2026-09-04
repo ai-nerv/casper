@@ -31,6 +31,24 @@ use std::rc::Rc;
 /// Where declared tools' functions live, out of reach of a config that did not declare them.
 const TOOLS: &str = "__casper_tools";
 
+/// Where declared tools' `surface` openers live.
+///
+/// A second table rather than a field on the first: `run` answers a call and `surface` holds
+/// rows, they are called by different processes at different times, and one table asked which of
+/// the two it was holding would be answering that on every frame.
+const SURFACES: &str = "__casper_surfaces";
+
+/// The open surface's own function, for as long as it holds its rows.
+///
+/// A closure, so a tenant keeps its state in upvalues and nothing out here has to know what state
+/// a dinosaur game has. It lives across frames because the process does.
+const LIVE: &str = "__casper_live";
+
+/// Where a frame is handed in, and what the surface drew handed back.
+const EVENT: &str = "__casper_event";
+/// Where a surface's answer to a frame comes back.
+const DREW: &str = "__casper_drew";
+
 /// The client libraries a declaration may `load`, as source.
 ///
 /// Copied from the sibling that owns each, not ported: the family's guidance is explicit that a
@@ -113,6 +131,8 @@ impl Engine {
             // checked.
             let held = Table::new(&ctx);
             ctx.set_global(TOOLS, held);
+            let surfaces = Table::new(&ctx);
+            ctx.set_global(SURFACES, surfaces);
 
             {
                 let declared = Rc::clone(&declared);
@@ -136,6 +156,12 @@ impl Engine {
                     if let Value::Table(held) = ctx.get_global_value(TOOLS) {
                         let run = spec.get_value(ctx, "run");
                         held.set(ctx, name.as_str(), run).ok();
+                    }
+                    // The opener, for a tool that fills rows of its own. Absent on every ordinary
+                    // tool, which is why it is looked up rather than required.
+                    if let Value::Table(held) = ctx.get_global_value(SURFACES) {
+                        let opens = spec.get_value(ctx, "surface");
+                        held.set(ctx, name.as_str(), opens).ok();
                     }
                     let mut declared = declared.borrow_mut();
                     declared.tools.retain(|held| held.name != card.name);
@@ -171,6 +197,11 @@ impl Engine {
             // Putting a question to the person, which is what makes a permission, a picker and
             // a confirmation one mechanism rather than three.
             casper.set(ctx, "ask", crate::lua::ask::table(ctx)).ok();
+            // The general form of a question: rows a tool fills itself, whose contents casper
+            // does not describe and the harness does not read.
+            casper
+                .set(ctx, "surface", crate::lua::surface::table(ctx))
+                .ok();
             // The one way a declaration reaches a process. See the module docs: a second way,
             // with no bound and no verb attached, would make this one decoration.
             casper.set(ctx, "exec", crate::lua::exec::table(ctx)).ok();
@@ -257,6 +288,61 @@ impl Engine {
                 Ran::failed(format!("{name} answered something unreadable: {why}"))
             }),
         })
+    }
+
+    /// Open a tool's surface and hold it.
+    ///
+    /// Calls the tool's `surface(args, size)`, which returns *a function*: the tenant keeps its
+    /// state in that closure's upvalues, so nothing here has to know what state a game has. The
+    /// function stays in a global for as long as this process holds the rows.
+    ///
+    /// `false` when the tool declared no `surface`, which is every ordinary tool.
+    pub fn open(&mut self, name: &str, args: &serde_json::Value, rows: u16, cols: u16) -> bool {
+        self.lua.enter(|ctx| {
+            let value = crate::lua::convert::lua_from_json(ctx, args);
+            ctx.set_global(ARGS, value);
+            let size = Table::new(&ctx);
+            size.set(ctx, "rows", i64::from(rows)).ok();
+            size.set(ctx, "cols", i64::from(cols)).ok();
+            ctx.set_global(EVENT, size);
+            ctx.set_global(LIVE, Value::Nil);
+        });
+        let source = format!(
+            "local open = {SURFACES} and {SURFACES}[{name:?}]\n\
+             if type(open) == 'function' then {LIVE} = open({ARGS}, {EVENT}) end"
+        );
+        if self.run(&source, "surface.lua").is_err() {
+            return false;
+        }
+        let mut live = false;
+        self.lua.enter(|ctx| {
+            live = matches!(
+                ctx.get_global_value(LIVE),
+                Value::Function(_) | Value::Table(_)
+            );
+        });
+        live
+    }
+
+    /// Hand the open surface one frame, and take what it drew.
+    ///
+    /// `None` when nothing is open or the tenant raised — both of which end the reservation, so
+    /// the caller closes rather than looping on a surface that cannot answer.
+    pub fn frame(&mut self, event: &serde_json::Value) -> Option<serde_json::Value> {
+        self.lua.enter(|ctx| {
+            let value = crate::lua::convert::lua_from_json(ctx, event);
+            ctx.set_global(EVENT, value);
+            ctx.set_global(DREW, Value::Nil);
+        });
+        let source = format!("if {LIVE} then {DREW} = {LIVE}({EVENT}) end");
+        if self.run(&source, "surface.lua").is_err() {
+            return None;
+        }
+        let mut out = None;
+        self.lua.enter(|ctx| {
+            out = crate::lua::convert::json_from_lua(ctx, ctx.get_global_value(DREW), 0);
+        });
+        out.filter(|value| !value.is_null())
     }
 
     /// Settings assigned onto `casper`, read back after the chunk ran.
