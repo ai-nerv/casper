@@ -402,145 +402,6 @@ do -- oslo
   })
 end
 
-do -- dino
-  -- **The showcase.** Everything a surface is for, in one tool that magi knows nothing about:
-  -- it asks for rows, draws into them on a clock, reads the keyboard, and ends when the person
-  -- says so. magi reserves the space and blits what comes back -- it cannot tell this from a
-  -- permission prompt, which is the whole point of the mechanism.
-  --
-  -- Pure Lua. No Rust knows this game exists; deleting this block removes it.
-
-  -- Braille packs 2x4 dots into one cell, so eight rows of text hold thirty-two rows of pixels.
-  -- The bit order is the standard's and not a sane one: dots 1-3 and 7 go down the left column,
-  -- 4-6 and 8 down the right.
-  local DOT = {
-    [0] = { 0x01, 0x02, 0x04, 0x40 },  -- left column, top to bottom
-    [1] = { 0x08, 0x10, 0x20, 0x80 },  -- right column
-  }
-
-  -- A canvas `cells` wide and `h` pixels tall.
-  --
-  -- The width arrives in cells and everything drawn into it is in pixels, which is two units for
-  -- one axis. Bounds-checking a pixel against the cell count clipped everything past the halfway
-  -- mark, and the ground stopped in the middle of the screen.
-  local function canvas(cells, h)
-    local bits = {}
-    local w = cells * 2
-    return {
-      w = w, h = h,
-      set = function(x, y)
-        x, y = math.floor(x), math.floor(y)
-        if x < 0 or y < 0 or x >= w or y >= h then return end
-        local cell = math.floor(y / 4) * cells + math.floor(x / 2)
-        bits[cell] = (bits[cell] or 0) | DOT[x % 2][y % 4 + 1]
-      end,
-      -- One row of spans per row of cells, in the harness's own roles.
-      rows = function(role)
-        local out = {}
-        for cy = 0, math.floor((h - 1) / 4) do
-          local line = {}
-          for cx = 0, cells - 1 do
-            local n = bits[cy * cells + cx] or 0
-            line[#line + 1] = utf8.char(0x2800 + n)
-          end
-          out[#out + 1] = { { role = role, text = table.concat(line) } }
-        end
-        return out
-      end,
-    }
-  end
-
-  -- The dinosaur and the cactus, as pixel blocks. Small enough to read at four pixels a row.
-  local DINO = { "  ####", "  #.##", "  ####", "  ###.", " ###  ", "####.#", ".####.", " #  # " }
-  local CACTUS = { " # ", "###", "###", " # ", " # ", " # " }
-
-  local function stamp(c, art, ox, oy)
-    for row = 1, #art do
-      local line = art[row]
-      for col = 1, #line do
-        if line:sub(col, col) == "#" then c.set(ox + col - 1, oy + row - 1) end
-      end
-    end
-  end
-
-  casper.tool("dino", {
-    description = [[
-  Play the Chromium no-internet dinosaur game in the terminal, drawn in braille.
-
-  A showcase for surfaces: this tool asks the harness for rows and fills them itself. Space or
-  up jumps, `q` or escape quits. Call it when somebody asks to play, or to see whether surfaces
-  work.]],
-    parameters = { type = "object", properties = {} },
-
-    run = function(args)
-      if args.answered then
-        return { said = "the dinosaur game ended: " .. tostring(args.answered) }
-      end
-      -- Eight rows, and a tick: it moves whether or not anybody is pressing anything, which is
-      -- what separates a game from a picker.
-      return casper.surface{ rows = 8, about = "the dinosaur game — space jumps, q quits", tick = 60 }
-    end,
-
-    surface = function(args, size)
-      local W = (size.cols or 80) * 2      -- two pixels a cell across
-      local H = (size.rows or 8) * 4       -- four down
-      local GROUND = H - 5
-      local y, fall, score, over = 0, 0, 0, false
-      local cacti = { W - 10 }
-
-      local function reset()
-        y, fall, score, over, cacti = 0, 0, 0, false, { W - 10 }
-      end
-
-      return function(event)
-        if event.kind == "key" then
-          local key = event.key
-          if key == "q" or key == "esc" then
-            return { answered = "scored " .. tostring(score) }
-          end
-          if over then
-            reset()
-          elseif (key == "space" or key == "up") and y == 0 then
-            fall = 2.6
-          end
-        elseif event.kind == "tick" and not over then
-          -- Gravity, then the world moving past. A jump lasts about a second at 60ms a tick.
-          y = math.max(0, y + fall)
-          fall = y > 0 and fall - 0.22 or 0
-          score = score + 1
-          local kept = {}
-          for _, x in ipairs(cacti) do
-            local moved = x - 2
-            if moved > -4 then kept[#kept + 1] = moved end
-          end
-          -- One at a time, spaced far enough apart to be jumpable at this speed.
-          if #kept == 0 or kept[#kept] < W - 40 - (score % 30) then
-            kept[#kept + 1] = W
-          end
-          cacti = kept
-          -- The dinosaur stands at x=6 and is six pixels wide; a cactus overlapping that while
-          -- it is low enough to be hit ends the run.
-          for _, x in ipairs(cacti) do
-            if x < 12 and x > 2 and y < 5 then over = true end
-          end
-        end
-
-        local c = canvas(size.cols or 80, H)
-        for x = 0, W - 1, 2 do c.set(x, GROUND + 4) end
-        stamp(c, DINO, 6, GROUND - #DINO - math.floor(y))
-        for _, x in ipairs(cacti) do stamp(c, CACTUS, x, GROUND - #CACTUS) end
-        local rows = c.rows(over and "error" or "ok")
-        -- The score on the first row, over the sky, where nothing else is drawn.
-        rows[1] = {
-          { role = "muted", text = (over and "  game over — any key restarts, q quits    " or "  ") },
-          { role = "title", text = tostring(score) },
-        }
-        return { lines = rows }
-      end
-    end,
-  })
-end
-
 do -- permission
   -- **The prompt the harness used to draw itself.** magi decides *that* a permission is needed and
   -- what it is about -- it holds the ledger and the standing grants -- and this draws the question
@@ -612,6 +473,216 @@ do -- permission
           end
         end
         return draw()
+      end
+    end,
+  })
+end
+
+do -- dino
+  -- **The showcase.** Everything a surface is for, in one tool the harness knows nothing about:
+  -- it asks for rows, draws into them on a clock, reads the keyboard, and ends when the person
+  -- says so. The harness reserves the space and blits what comes back -- it cannot tell this from
+  -- the permission prompt above, which is the whole point of the mechanism.
+  --
+  -- Pure Lua. No Rust knows this game exists; deleting this block removes it.
+  --
+  -- The numbers are the real game's, from the Chromium source (`Runner.config` and `Trex.config`
+  -- in offline.js): gravity 0.6, jump velocity 10, speed 6 rising by 0.001 a frame to 13, score
+  -- at 0.025 of distance, and a pterodactyl only past speed 8.5. Guessing them produced something
+  -- that looked like the game and did not feel like it -- the jump was the giveaway, because
+  -- everything else is tuned around how long a dinosaur is in the air.
+
+  -- Braille packs 2x4 dots into one cell, so eight rows of text hold thirty-two rows of pixels.
+  -- The bit order is the standard's and not a sane one: dots 1-3 and 7 go down the left column,
+  -- 4-6 and 8 down the right.
+  local DOT = {
+    [0] = { 0x01, 0x02, 0x04, 0x40 },
+    [1] = { 0x08, 0x10, 0x20, 0x80 },
+  }
+
+  -- A canvas `cells` wide and `h` pixels tall.
+  --
+  -- The width arrives in cells and everything drawn into it is in pixels, which is two units for
+  -- one axis. Bounds-checking a pixel against the cell count clipped everything past the halfway
+  -- mark, and the ground stopped in the middle of the screen.
+  local function canvas(cells, h)
+    local bits, w = {}, cells * 2
+    return {
+      w = w, h = h,
+      set = function(x, y)
+        x, y = math.floor(x), math.floor(y)
+        if x < 0 or y < 0 or x >= w or y >= h then return end
+        local cell = math.floor(y / 4) * cells + math.floor(x / 2)
+        bits[cell] = (bits[cell] or 0) | DOT[x % 2][y % 4 + 1]
+      end,
+      rows = function(role)
+        local out = {}
+        for cy = 0, math.floor((h - 1) / 4) do
+          local line = {}
+          for cx = 0, cells - 1 do
+            line[#line + 1] = utf8.char(0x2800 + (bits[cy * cells + cx] or 0))
+          end
+          out[#out + 1] = { { role = role, text = table.concat(line) } }
+        end
+        return out
+      end,
+    }
+  end
+
+  -- Scaled from the sprite sheet: the real dinosaur is 44x47 and a small cactus 17x35, which is
+  -- about four to one against a braille pixel here.
+  local DINO = {
+    "   #####", "   #.###", "   #####", "   ###..",
+    "#  ###  ", "#####   ", "######  ", " ### ###", "  #   # ",
+  }
+  local DUCK = { "        ", "     ###", "  ######", "########", "#####.##", " ## ### ", " #   #  " }
+  local SMALL = { " # ", "###", "###", " # ", " # ", " # " }
+  local LARGE = { "  #  ", "# # #", "#####", "#####", "  #  ", "  #  ", "  #  ", "  #  " }
+  local BIRD  = { "  #   ", "  ##  ", "######", " ###  ", "  #   " }
+
+  local function stamp(c, art, ox, oy)
+    for row = 1, #art do
+      local line = art[row]
+      for col = 1, #line do
+        if line:sub(col, col) == "#" then c.set(ox + col - 1, oy + row - 1) end
+      end
+    end
+  end
+
+  local function overlaps(ax, aw, bx, bw) return ax < bx + bw and bx < ax + aw end
+
+  casper.tool("dino", {
+    description = [[
+  Play the Chromium no-internet dinosaur game in the terminal, drawn in braille.
+
+  A showcase for surfaces: this tool asks the harness for rows and fills them itself. Space or up
+  jumps, down ducks, `q` or escape quits. Call it when somebody asks to play, or to see whether
+  surfaces work.]],
+    parameters = { type = "object", properties = {} },
+
+    run = function(args)
+      if args.answered then
+        return { said = "the dinosaur game ended: " .. tostring(args.answered) }
+      end
+      -- Eight rows, and a tick: it moves whether or not anybody is pressing anything, which is
+      -- what separates a game from a picker.
+      return casper.surface{
+        rows = 8,
+        about = "the dinosaur game — space jumps, down ducks, q quits",
+        tick = 50,
+      }
+    end,
+
+    surface = function(args, size)
+      -- The real game's constants, at the scale a braille cell gives.
+      local GRAVITY, JUMP, DROP = 0.6, 10.0, 5.0
+      local SPEED, MAX_SPEED, ACCEL = 1.4, 3.0, 0.0004
+      local GAP = 0.6
+      -- The real game scores at 0.025 of distance at sixty frames a second. This ticks at twenty,
+      -- so the coefficient is scaled to climb at the same rate a player remembers rather than to
+      -- match a number nobody sees.
+      local SCORE = 0.35
+
+      local cells, H = size.cols or 80, (size.rows or 8) * 4
+      local floor = H - 4
+      local dino, fall, ducking, speed, dist, over, best = 0, 0, false, SPEED, 0, false, 0
+      local things = {}
+
+      local function reset()
+        dino, fall, ducking, speed, dist, over, things = 0, 0, false, SPEED, 0, false, {}
+      end
+
+      local function spawn(w)
+        -- A pterodactyl only past the speed the real game gates it behind, so the first minute is
+        -- cacti and the bird is something you play long enough to meet.
+        local pick = (speed > 2.0 and math.random() < 0.25) and "bird"
+          or (math.random() < 0.35 and "large" or "small")
+        local art = pick == "bird" and BIRD or (pick == "large" and LARGE or SMALL)
+        -- The bird flies at one of three heights, and the lowest is duckable rather than
+        -- jumpable, which is the only reason ducking is worth having.
+        local lift = pick == "bird" and ({ 0, 6, 11 })[math.random(3)] or 0
+        things[#things + 1] = { x = w, art = art, wide = #art[1], tall = #art, lift = lift }
+      end
+
+      return function(event)
+        if event.kind == "resize" then
+          cells, H = event.cols, event.rows * 4
+          floor = H - 4
+        elseif event.kind == "key" then
+          local key, state = event.key, event.state or "down"
+          if key == "q" or key == "esc" then
+            return { answered = "scored " .. tostring(math.floor(dist * SCORE)) }
+          end
+          -- **A held key is not a repeated tap.** `down` starts a jump; `up` while still rising
+          -- cuts it short, which is what makes a short hop and a full jump different presses of
+          -- the same key. Only a terminal speaking the Kitty protocol says `up` at all -- without
+          -- it every jump is a full one, which is the old behaviour and still plays.
+          if over then
+            if state == "down" then reset() end
+          elseif key == "space" or key == "up" or key == "enter" then
+            if state == "down" and dino == 0 then
+              fall, ducking = JUMP, false
+            elseif state == "up" and fall > 0 then
+              fall = fall * 0.4
+            end
+          elseif key == "down" or key == "j" then
+            if dino > 0 and state ~= "up" then
+              -- Down while airborne drops you faster, exactly as the real one does.
+              fall = -DROP
+            else
+              ducking = state ~= "up"
+            end
+          end
+        elseif event.kind == "tick" and not over then
+          dino = math.max(0, dino + fall * 0.35)
+          fall = dino > 0 and fall - GRAVITY or 0
+          if dino == 0 then fall = 0 end
+          speed = math.min(MAX_SPEED, speed + ACCEL)
+          dist = dist + speed
+
+          local kept = {}
+          for _, it in ipairs(things) do
+            it.x = it.x - speed * 2
+            if it.x + it.wide > 0 then kept[#kept + 1] = it end
+          end
+          things = kept
+          local last = things[#things]
+          if not last or last.x < cells * 2 - (40 + GAP * 60 / speed) then spawn(cells * 2) end
+
+          -- The dinosaur stands at x=4. Ducking makes it wider and shorter, which is what lets a
+          -- low bird pass over it.
+          local w, tall = ducking and #DUCK[1] or #DINO[1], ducking and #DUCK or #DINO
+          for _, it in ipairs(things) do
+            if overlaps(4, w, it.x, it.wide) then
+              local top = floor - it.tall - it.lift
+              if floor - math.floor(dino) - tall < top + it.tall and floor - math.floor(dino) > top then
+                over = true
+                best = math.max(best, math.floor(dist * SCORE))
+              end
+            end
+          end
+        end
+
+        local c = canvas(cells, H)
+        for x = 0, cells * 2 - 1, 3 do c.set(x, floor) end
+        local art = ducking and DUCK or DINO
+        stamp(c, art, 4, floor - #art - math.floor(dino))
+        for _, it in ipairs(things) do
+          stamp(c, it.art, it.x, floor - it.tall - it.lift)
+        end
+        local rows = c.rows(over and "error" or "ok")
+        rows[1] = over
+          and {
+            { role = "warn", text = "  game over " },
+            { role = "dim", text = "· any key restarts · q quits    " },
+            { role = "title", text = string.format("%05d", math.floor(dist * SCORE)) },
+          }
+          or {
+            { role = "dim", text = "  " },
+            { role = "title", text = string.format("%05d", math.floor(dist * SCORE)) },
+            { role = "dim", text = best > 0 and ("   hi " .. string.format("%05d", best)) or "" },
+          }
+        return { lines = rows }
       end
     end,
   })

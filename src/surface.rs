@@ -61,7 +61,12 @@ pub fn hold(tool: &str, engine: &mut Engine) {
             return;
         };
         let event = match read(&line) {
-            ToSurface::Key { key } => serde_json::json!({"kind": "key", "key": key}),
+            ToSurface::Key { key, state } => serde_json::json!({
+                "kind": "key",
+                "key": key,
+                // `down`, `repeat` or `up`. A tenant that only looks at `key` is unaffected.
+                "state": state,
+            }),
             ToSurface::Tick => serde_json::json!({"kind": "tick"}),
             ToSurface::Resize { rows, cols } => {
                 serde_json::json!({"kind": "resize", "rows": rows, "cols": cols})
@@ -148,10 +153,20 @@ mod tests {
     fn the_frames_this_build_knows_read_back_as_themselves() {
         assert_eq!(read(r#"{"to":"tick"}"#), ToSurface::Tick);
         assert_eq!(read(r#"{"to":"close"}"#), ToSurface::Close);
+        // No `state` on the wire is a terminal that cannot tell a hold from a tap, which is most
+        // of them and every one before the Kitty protocol.
         assert_eq!(
             read(r#"{"to":"key","key":"space"}"#),
             ToSurface::Key {
-                key: "space".to_owned()
+                key: "space".to_owned(),
+                state: crate::tools::Held::Down,
+            }
+        );
+        assert_eq!(
+            read(r#"{"to":"key","key":"space","state":"up"}"#),
+            ToSurface::Key {
+                key: "space".to_owned(),
+                state: crate::tools::Held::Up,
             }
         );
     }

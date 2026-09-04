@@ -241,6 +241,22 @@ mod tests {
     }
 }
 
+/// What a key did.
+///
+/// `Down` is the default, so a tenant reading only that behaves the same on a terminal that
+/// cannot tell a hold from a tap.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Held {
+    /// It went down.
+    #[default]
+    Down,
+    /// It is still down, and the terminal is repeating it.
+    Repeat,
+    /// It came back up.
+    Up,
+}
+
 /// What the harness sends a surface while it holds its rows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "to")]
@@ -262,6 +278,13 @@ pub enum ToSurface {
     Key {
         /// `j`, `enter`, `esc`, `ctrl+c`.
         key: String,
+        /// Whether it went down, repeated, or came back up.
+        ///
+        /// Only a terminal speaking the Kitty keyboard protocol can say: without it there is one
+        /// indistinguishable press per repeat and no word when a key comes back up. `down` is the
+        /// default, and is what every key looks like on a terminal that cannot say more.
+        #[serde(default)]
+        state: Held,
     },
     /// The room changed under it, because the window did.
     Resize {
