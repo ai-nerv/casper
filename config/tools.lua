@@ -569,19 +569,35 @@ do -- dino
       return casper.surface{
         rows = 8,
         about = "the dinosaur game — space jumps, down ducks, q quits",
-        tick = 50,
+        tick = 16,
       }
     end,
 
     surface = function(args, size)
-      -- The real game's constants, at the scale a braille cell gives.
-      local GRAVITY, JUMP, DROP = 0.6, 10.0, 5.0
-      local SPEED, MAX_SPEED, ACCEL = 1.4, 3.0, 0.0004
-      local GAP = 0.6
-      -- The real game scores at 0.025 of distance at sixty frames a second. This ticks at twenty,
-      -- so the coefficient is scaled to climb at the same rate a player remembers rather than to
-      -- match a number nobody sees.
-      local SCORE = 0.35
+      -- **The real game's shape, at this world's scale and this world's frame rate.**
+      --
+      -- Taking Chromium's numbers unchanged was wrong twice over. They are pixels on a 600x150
+      -- canvas where the dinosaur is 47 tall; here it is 9 tall in a field of 32. And they are
+      -- *per frame at sixty a second* -- applied at twenty, every jump took three times as long
+      -- in wall-clock, which is exactly the floating the game does not do.
+      --
+      -- So the tick is 60Hz and these are solved for the feel rather than copied: a full jump
+      -- rises about 12 pixels and lasts a little over half a second, which is what the original
+      -- does. From `airtime = 2v/g` and `apex = v^2/2g` with airtime 33 frames and apex 12.
+      local GRAVITY, JUMP = 0.088, 1.45
+      -- What letting go does. Cutting the rise rather than adding weight, so the height follows
+      -- how long the key was held: tap and you hop, hold and you clear a large cactus.
+      --
+      -- `MIN_RISE` is the floor under that cut. Without it a key held for one frame left the
+      -- ground by less than a pixel, so the tap that is supposed to be a small hop was a press
+      -- that visibly did nothing -- which reads as a dropped keystroke rather than as a choice.
+      local LETGO, MIN_RISE = 0.3, 0.9
+      local DROP = 0.6
+      local SPEED, MAX_SPEED, ACCEL = 0.85, 2.0, 0.0004
+      local GAP = 30
+      -- Scored so it climbs at about ten a second, which is the rate the original does. The
+      -- coefficient is not Chromium's 0.025 because neither the distance nor the frame rate is.
+      local SCORE = 0.2
 
       local cells, H = size.cols or 80, (size.rows or 8) * 4
       local floor = H - 4
@@ -628,7 +644,11 @@ do -- dino
             if state == "down" and dino == 0 then
               fall, ducking = JUMP, false
             elseif state == "up" and fall > 0 then
-              fall = fall * 0.4
+              -- **Height follows the hold.** Cutting the rise the moment the key comes up, so a
+              -- tap leaves the ground briefly and a hold carries to the apex. A `repeat` is
+              -- ignored: it says the key is still down, which is already what not having seen an
+              -- `up` means.
+              fall = math.max(fall * LETGO, MIN_RISE)
             end
           elseif key == "down" or key == "j" then
             if dino > 0 and state ~= "up" then
@@ -639,7 +659,9 @@ do -- dino
             end
           end
         elseif event.kind == "tick" and not over then
-          dino = math.max(0, dino + fall * 0.35)
+          -- Integrated a frame at a time, with no fudge factor: one tick is one frame, which is
+          -- what makes the constants above mean what they say.
+          dino = math.max(0, dino + fall)
           fall = dino > 0 and fall - GRAVITY or 0
           if dino == 0 then fall = 0 end
           speed = math.min(MAX_SPEED, speed + ACCEL)
@@ -647,12 +669,15 @@ do -- dino
 
           local kept = {}
           for _, it in ipairs(things) do
-            it.x = it.x - speed * 2
+            it.x = it.x - speed
             if it.x + it.wide > 0 then kept[#kept + 1] = it end
           end
           things = kept
+          -- Far enough apart to be cleared at the speed they are arriving at. A jump covers
+          -- `speed * 33` pixels of ground, so the gap has to grow as the world slows down under
+          -- you -- which is why it is divided by speed rather than fixed.
           local last = things[#things]
-          if not last or last.x < cells * 2 - (40 + GAP * 60 / speed) then spawn(cells * 2) end
+          if not last or last.x < cells * 2 - (34 + GAP / speed) then spawn(cells * 2) end
 
           -- The dinosaur stands at x=4. Ducking makes it wider and shorter, which is what lets a
           -- low bird pass over it.
