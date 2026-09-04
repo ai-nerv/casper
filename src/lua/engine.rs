@@ -306,12 +306,45 @@ impl Engine {
         // A tool may answer in the wire's own shape, or with a bare string when it has nothing
         // to say beyond the text. The second is not a shorthand worth refusing: most tools have
         // exactly one thing to report.
-        Some(match out {
+        let mut ran = match out {
             serde_json::Value::String(said) => Ran::said(said),
             other => serde_json::from_value(other).unwrap_or_else(|why| {
                 Ran::failed(format!("{name} answered something unreadable: {why}"))
             }),
-        })
+        };
+        self.ticking(name, &mut ran);
+        Some(ran)
+    }
+
+    /// Make sure a tool that runs a *program* in its rows will be woken to read it.
+    ///
+    /// **A screen always ticks.** A drawing redraws when a key arrives and needs nothing else; a
+    /// program paints whenever it likes, and with no tick nothing goes looking for what it
+    /// painted. That is a declaration one line short of working, and the symptom is rows that
+    /// fill once and then freeze — which reads as a hung tool rather than as a missing field.
+    ///
+    /// Filled in rather than required, and never overridden: a declaration that named its own
+    /// rate meant it, and one that named none was not asking for a still picture.
+    fn ticking(&mut self, name: &str, ran: &mut Ran) {
+        /// Thirty frames a second. The rate the rows are *looked at*, not the rate anything is
+        /// redrawn — a program that painted nothing produces the frame it produced last time.
+        const A_SCREEN: u16 = 33;
+
+        let Some(crate::tools::Shown::Surface(surface)) = ran.shown.as_mut() else {
+            return;
+        };
+        if surface.tick.is_some() {
+            return;
+        }
+        let mut screened = false;
+        self.lua.enter(|ctx| {
+            if let Value::Table(held) = ctx.get_global_value(SCREENS) {
+                screened = matches!(held.get_value(ctx, name), Value::Function(_));
+            }
+        });
+        if screened {
+            surface.tick = Some(A_SCREEN);
+        }
     }
 
     /// Ask a tool what program belongs in its rows.

@@ -173,8 +173,11 @@ exists to prevent.
 
 Three consequences worth stating:
 
-- **A `screen` tool must ask for a `tick`.** A drawing redraws when a key arrives; a program paints
-  whenever it likes, and with no tick nothing goes looking for what it painted.
+- **A `screen` always ticks, and casper is what makes sure of it.** A drawing redraws when a key
+  arrives and needs nothing else; a program paints whenever it likes, and with no tick nothing
+  goes looking for what it painted. So a tool that declares a `screen` and names no rate is given
+  thirty a second — filled in, never overridden, because a declaration one line short of working
+  reads as a hung tool rather than as a missing field.
 - **Keys travel by name and are built back into bytes** — `enter` becomes `\r`, `f5` becomes
   `ESC [ 15 ~`, and the arrows follow whichever mode the program asked for. A name is the only
   form both a Lua table and a pty can read, which is why the harness sends one.

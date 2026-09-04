@@ -120,6 +120,43 @@ mod tests {
     }
 
     #[test]
+    fn a_tool_that_runs_a_program_in_its_rows_is_given_a_tick() {
+        // A drawing redraws when a key arrives and needs nothing else. A program paints whenever
+        // it likes, so without a tick nothing goes and looks — the rows fill once and then
+        // freeze, which reads as a hung tool rather than as a declaration one line short.
+        let out = asked(
+            r#"casper.tool("t", { description = "d", parameters = {},
+                 run = function() return casper.surface{ rows = 8, about = "htop" } end,
+                 screen = function() return { command = "htop" } end })"#,
+        );
+        assert_eq!(out["shown"]["tick"], 33, "{out}");
+    }
+
+    #[test]
+    fn a_screen_that_named_its_own_rate_keeps_it() {
+        // Filled in, never overridden. A declaration that named one meant it: a clock worth
+        // watching twice a second should not be read thirty times.
+        let out = asked(
+            r#"casper.tool("t", { description = "d", parameters = {},
+                 run = function() return casper.surface{ rows = 8, about = "a clock", tick = 500 } end,
+                 screen = function() return { command = "date" } end })"#,
+        );
+        assert_eq!(out["shown"]["tick"], 500, "{out}");
+    }
+
+    #[test]
+    fn a_drawing_is_still_not_ticked_unless_it_asked() {
+        // The rule reaches only tools that run a program. Ticking a picker would wake the whole
+        // session thirty times a second to draw exactly the same rows.
+        let out = asked(
+            r#"casper.tool("t", { description = "d", parameters = {},
+                 run = function() return casper.surface{ rows = 3, about = "pick one" } end,
+                 surface = function() return function() return {} end end })"#,
+        );
+        assert!(out["shown"].get("tick").is_none(), "{out}");
+    }
+
+    #[test]
     fn asking_for_no_rows_is_refused_rather_than_drawn_empty() {
         // It would be handed nothing to draw in, and a person would read that as a hang.
         let out = asked(

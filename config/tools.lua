@@ -313,10 +313,10 @@ do -- screen
   -- what the person types, and hands back what it painted. Nothing here draws, and neither does
   -- the harness -- the program does.
   --
-  -- Two rules a `screen` declaration has to keep:
-  --   * ask for a `tick`. A drawing redraws when a key arrives; a program paints whenever it
-  --     feels like it, and without a tick nothing goes looking for what it painted.
-  --   * `needs = "run"`. It is a command, and it is the same ledger `shell` goes through.
+  -- One rule a `screen` declaration has to keep: `needs = "run"`. It is a command, and it goes
+  -- through the same ledger `shell` does. The tick it also needs -- a program paints whenever it
+  -- likes, and something has to go and look -- is filled in by casper, because a declaration one
+  -- line short of working reads as a hung tool rather than as a missing field.
   local MOST_ROWS = 30
 
   casper.tool("screen", {
@@ -350,9 +350,8 @@ do -- screen
         -- What a harness with no screen says instead. `magi -p` cannot draw rows and cannot ask
         -- anybody, so it declines with this rather than waiting on a program nobody can see.
         about = "running " .. tostring(args.command),
-        -- Thirty frames a second, which is the rate the rows are looked at rather than the rate
-        -- anything is redrawn: a program that painted nothing produces an identical frame.
-        tick = 33,
+        -- No `tick`: a tool declaring a `screen` is given one. Name a slower one here if a
+        -- program is worth watching less often than thirty times a second.
       }
     end,
 
