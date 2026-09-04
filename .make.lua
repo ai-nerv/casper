@@ -139,6 +139,25 @@ make.recipe{
 }
 make.alias("r", "run")
 
+make.recipe{
+  name = "install",
+  desc = ("install the binary to %s/bin"):format(PREFIX),
+  -- The declarations ride in the binary rather than beside it: casper with no tools is not a
+  -- casper, and a relative `config/` would load whichever checkout the working directory
+  -- happened to be in -- which is how a sibling ends up running another project's tools.
+  run = function()
+    -- Built here rather than depended on: the scaffold's `build` is the library alone and in
+    -- debug, and installing a debug binary as if it were the real one is the kind of thing
+    -- nobody notices until it is slow.
+    sh.cargo("build", "--release", "--bin", NAME)
+    local bin = PREFIX .. "/bin"
+    assert(oslo.run{ "mkdir", "-p", bin }.ok, "could not create " .. bin)
+    assert(oslo.run{ "install", "-m", "755", "target/release/" .. NAME, bin .. "/" .. NAME }.ok,
+           "could not install to " .. bin)
+    print(("installed %s"):format(bin .. "/" .. NAME))
+  end,
+}
+
 make.recipe{ name = "test", desc = "the suite",
              run = function() sh.cargo("test", "--all-targets") end }
 make.alias("t", "test")
