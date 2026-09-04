@@ -206,6 +206,13 @@ Three consequences worth stating:
   times in two seconds — so it came out wrapping mid-word while `top` was perfect. The byte is
   rewritten on the way in, by a state machine rather than a search, because the pty splits
   sequences across reads and an `f` in a program's output is a letter.
+- **A gap announces itself.** The emulator implements a subset of what a terminal does and drops
+  the rest *silently*, which is the worst failure it could have: the program keeps running and the
+  screen just comes out wrong. So every sequence it could not read is counted by name, and a
+  screen that ends having lost something says so in `$CASPER_DEBUG_LOG` — `the emulator dropped:
+  CSI f ×452`, instead of leaving somebody to work it out from the shape of the damage. A
+  conformance test runs the same check against the programs on the machine, with an allowlist of
+  the drops that have been looked at and found harmless; anything else is a failing test.
 - **Keys travel by name and are built back into bytes** — `enter` becomes `\r`, `f5` becomes
   `ESC [ 15 ~`, and the arrows follow whichever mode the program asked for. A name is the only
   form both a Lua table and a pty can read, which is why the harness sends one.
