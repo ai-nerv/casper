@@ -31,6 +31,16 @@ use std::rc::Rc;
 /// Where declared tools' functions live, out of reach of a config that did not declare them.
 const TOOLS: &str = "__casper_tools";
 
+/// The client libraries a declaration may `load`, as source.
+///
+/// Copied from the sibling that owns each, not ported: the family's guidance is explicit that a
+/// stub is plain Lua so siblings copy it rather than reimplement it, and two implementations of
+/// one protocol is where they drift.
+const CLIENTS: &[(&str, &str)] = &[
+    ("hexe", include_str!("../../config/clients/hexe.lua")),
+    ("oslo", include_str!("../../config/clients/oslo.lua")),
+];
+
 /// Where a call's arguments and its answer are handed across.
 const ARGS: &str = "__casper_args";
 /// Where a call's answer comes back.
@@ -136,6 +146,28 @@ impl Engine {
                 casper.set(ctx, "tool", tool).ok();
             }
 
+            // The socket primitive, so the family's client stubs run unchanged in this VM and
+            // casper can dial its siblings. Named twice: `casper.stream` for a client that knows
+            // this host, `__stream` for one that does not.
+            let stream = crate::lua::stream::table(ctx);
+            casper.set(ctx, "stream", stream).ok();
+            ctx.set_global("__stream", stream);
+            // The lister a sibling's client prefers over shelling out — it cannot, from in here.
+            casper.set(ctx, "fs", crate::lua::fs::table(ctx)).ok();
+            // The client libraries themselves, as source: a declaration cannot open a file, so
+            // the stub it needs arrives as text and is `load`ed. Shipped in the binary for the
+            // same reason the declarations are — a relative path would find another checkout's.
+            let clients = Table::new(&ctx);
+            for (name, source) in CLIENTS {
+                clients
+                    .set(
+                        ctx,
+                        *name,
+                        luna::String::from_slice(&ctx, source.as_bytes()),
+                    )
+                    .ok();
+            }
+            casper.set(ctx, "clients", clients).ok();
             // Putting a question to the person, which is what makes a permission, a picker and
             // a confirmation one mechanism rather than three.
             casper.set(ctx, "ask", crate::lua::ask::table(ctx)).ok();

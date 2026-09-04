@@ -12,6 +12,8 @@ pub mod ask;
 pub mod convert;
 pub mod engine;
 pub mod exec;
+pub mod fs;
 pub mod json;
 pub mod paint;
 pub mod sandbox;
+pub mod stream;
