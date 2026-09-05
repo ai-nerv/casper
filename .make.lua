@@ -211,8 +211,28 @@ make.recipe{ name = "compile", desc = "clean, then build", deps = { "clean", "bu
 make.alias("c", "compile")
 
 make.recipe{
+  name = "gates",
+  desc = "the architectural gates",
+  run = function()
+    local failed = {}
+    for _, name in ipairs({ "gate-file-size", "gate-modules" }) do
+      -- Executed, not handed to `sh`: the shebang is the portability contract, and CI runs
+      -- these on a machine whose /bin/sh is dash.
+      local result = oslo.run{ "scripts/" .. name .. ".sh", capture = true }
+      print((result.ok and "\u{2713}  %s" or "\u{2717}  %s"):format(name))
+      if not result.ok then
+        failed[#failed + 1] = name
+        print(((result.out or "") .. (result.err or "")))
+      end
+    end
+    assert(#failed == 0, ("%d gate(s) failed"):format(#failed))
+  end,
+}
+make.alias("g", "gates")
+
+make.recipe{
   name = "verify",
   desc = "the whole local gate",
-  deps = { "fmt-check", "check", "test", "check-all", "test-all", "clippy", "rustdoc" },
+  deps = { "fmt-check", "check", "test", "check-all", "test-all", "clippy", "rustdoc", "gates" },
 }
 make.alias("v", "verify")
