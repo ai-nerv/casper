@@ -128,6 +128,30 @@ Two tenants should *not* use it, and both are in `config/tools.lua` as the worke
 what else is on the screen; it clips to the reservation and never grows it mid-frame. Everything
 inside is the tenant's.
 
+### A surface may ask, not only be told
+
+Everything else a tenant has, it was handed at open: its rows, its width, the arguments of the
+call it belongs to. So a picker could not list what the session remembers and a game could not
+name the model it was being played beside — anything a tenant knew, somebody had to think of
+passing in. `casper.knows` is the other direction:
+
+```lua
+local who = casper.knows("session")                       -- { id = …, cwd = … }
+local found, why = casper.knows("memories", { query = "deploy", limit = 5 })
+```
+
+**The harness owns the list** — `session`, `model`, `memories` — and it is short on purpose: every
+entry is a read-only fact about the session the person is already looking at, and none of them
+touches a path, a shell or the network. The list *is* the gate, which is why a verb is a name the
+harness resolves rather than anything casper decides.
+
+Two values back, in Lua's own idiom: the answer, or `nil` and why not. A refusal is an ordinary
+answer — there is no balthasar on this machine, no model is configured — and it always arrives,
+because a tenant left waiting on silence holds the rows until the whole surface times out.
+
+Only a surface may ask. A `run` is one exec whose stdout *is* its reply, so a question written
+there would reach magi as the tool's own result.
+
 ### The rows are a screen, not an echo of the keyboard
 
 A surface that could only be typed at is a picker with extra steps. So the pointer crosses too:

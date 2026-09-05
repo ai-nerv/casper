@@ -13,7 +13,11 @@ fn opened(name: &str, args: &serde_json::Value, rows: u16, cols: u16) -> Engine 
         .run(include_str!("../config/tools.lua"), "tools.lua")
         .expect("the shipped declarations load");
     assert!(
-        engine.open(name, args, &serde_json::json!({"rows": rows, "cols": cols, "holds": true})),
+        engine.open(
+            name,
+            args,
+            &serde_json::json!({"rows": rows, "cols": cols, "holds": true})
+        ),
         "{name} declared no surface"
     );
     engine
@@ -148,7 +152,11 @@ mod games {
             let mut engine = opened(game, &serde_json::json!({}), 8, 60);
             let done = key(&mut engine, "Q", "down");
             assert_eq!(
-                done["answered"].as_str().unwrap_or_default().split(' ').next(),
+                done["answered"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .split(' ')
+                    .next(),
                 Some("scored"),
                 "{game}: {done}"
             );
@@ -215,11 +223,23 @@ mod conformance {
     /// problem. Anything *not* on this list is a gap nobody has looked at yet, which is exactly
     /// what `CSI f` was.
     const HARMLESS: &[(&str, &str)] = &[
-        ("CSI ?2026h", "synchronized output: a hint to hold the repaint until the frame is whole"),
-        ("CSI ?2026l", "and the end of one. Nothing here repaints mid-frame anyway"),
-        ("CSI ?1015h", "urxvt mouse coordinates, asked for beside the SGR ones casper reads"),
-        ("CSI t", "window manipulation. `less` sends `CSI 22;0;0t`, pushing the window title \
-                   onto a stack it pops on the way out. There is no window and no title here"),
+        (
+            "CSI ?2026h",
+            "synchronized output: a hint to hold the repaint until the frame is whole",
+        ),
+        (
+            "CSI ?2026l",
+            "and the end of one. Nothing here repaints mid-frame anyway",
+        ),
+        (
+            "CSI ?1015h",
+            "urxvt mouse coordinates, asked for beside the SGR ones casper reads",
+        ),
+        (
+            "CSI t",
+            "window manipulation. `less` sends `CSI 22;0;0t`, pushing the window title \
+                   onto a stack it pops on the way out. There is no window and no title here",
+        ),
     ];
 
     #[test]
@@ -255,6 +275,10 @@ mod conformance {
         // does not know and the rewriter deliberately leaves alone — a backward tab — so seeing it
         // reported is what says the wiring works.
         let dropped = dropped_by(r"printf '\033[4Z'; sleep 1", 5, 20);
-        assert_eq!(dropped, [("CSI Z".to_owned(), 1)], "the canary said nothing");
+        assert_eq!(
+            dropped,
+            [("CSI Z".to_owned(), 1)],
+            "the canary said nothing"
+        );
     }
 }

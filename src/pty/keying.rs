@@ -119,7 +119,12 @@ fn control(rest: &str) -> Option<Vec<u8>> {
 /// Coordinates arrive zero-based, the way the surface counts its own rows, and go out one-based,
 /// the way the protocol does.
 #[must_use]
-pub fn mouse(kind: crate::tools::Pointed, button: Option<crate::tools::Button>, row: u16, col: u16) -> Vec<u8> {
+pub fn mouse(
+    kind: crate::tools::Pointed,
+    button: Option<crate::tools::Button>,
+    row: u16,
+    col: u16,
+) -> Vec<u8> {
     use crate::tools::{Button, Pointed};
     let which = match button {
         None | Some(Button::Left) => 0,

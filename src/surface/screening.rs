@@ -60,7 +60,8 @@ where
                 screen.close();
                 return;
             }
-            ToSurface::Open { .. } => continue,
+            // A pty tenant asks the harness nothing, so an answer here belongs to nobody.
+            ToSurface::Open { .. } | ToSurface::Answer { .. } => continue,
         }
         // Read after acting on the frame, so a keystroke and what it produced land in the same
         // redraw rather than a tick apart.

@@ -90,9 +90,7 @@ impl Spec {
             .map(|table| {
                 table
                     .iter()
-                    .filter_map(|(key, val)| {
-                        val.as_str().map(|val| (key.clone(), val.to_owned()))
-                    })
+                    .filter_map(|(key, val)| val.as_str().map(|val| (key.clone(), val.to_owned())))
                     .collect()
             })
             .unwrap_or_default();
@@ -229,7 +227,9 @@ impl Screen {
     /// `SIGWINCH` the pty sends is what makes the program redraw itself at the new size.
     pub fn resized(&mut self, rows: u16, cols: u16) {
         self.vt.screen_mut().set_size(rows.max(1), cols.max(1));
-        let _ = self.pty.resize(pty_process::Size::new(rows.max(1), cols.max(1)));
+        let _ = self
+            .pty
+            .resize(pty_process::Size::new(rows.max(1), cols.max(1)));
     }
 
     /// What it has painted, and where it left the cursor.

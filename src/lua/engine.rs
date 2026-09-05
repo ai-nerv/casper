@@ -232,6 +232,11 @@ impl Engine {
             casper
                 .set(ctx, "tapped", crate::lua::keying::table(ctx))
                 .ok();
+            // The direction that did not exist: a surface asking the harness about the session it
+            // is drawn in, rather than only being told things at open.
+            casper
+                .set(ctx, "knows", crate::lua::knowing::table(ctx))
+                .ok();
             // The one way a declaration reaches a process. See the module docs: a second way,
             // with no bound and no verb attached, would make this one decoration.
             casper.set(ctx, "exec", crate::lua::exec::table(ctx)).ok();

@@ -150,19 +150,19 @@ mod tests {
         // Otherwise the canary is noise and nobody reads it. These are the sequences a full-screen
         // program spends its life in.
         let clean: &[&[u8]] = &[
-            b"\x1b[3;5H",             // cursor position
-            b"\x1b[2J\x1b[K",         // erase display, erase line
-            b"\x1b[1;31;42m\x1b[0m",  // colours
-            b"\x1b[38;2;1;2;3m",      // truecolour
-            b"\x1b[?1049h\x1b[?1049l", // the alternate screen
-            b"\x1b[?25l\x1b[?25h",    // hiding the cursor
-            b"\x1b[?1000h\x1b[?1006h", // asking for the mouse
+            b"\x1b[3;5H",                    // cursor position
+            b"\x1b[2J\x1b[K",                // erase display, erase line
+            b"\x1b[1;31;42m\x1b[0m",         // colours
+            b"\x1b[38;2;1;2;3m",             // truecolour
+            b"\x1b[?1049h\x1b[?1049l",       // the alternate screen
+            b"\x1b[?25l\x1b[?25h",           // hiding the cursor
+            b"\x1b[?1000h\x1b[?1006h",       // asking for the mouse
             b"\x1b[5A\x1b[5B\x1b[5C\x1b[5D", // relative moves
             b"\x1b[2L\x1b[2M\x1b[2P\x1b[2X", // insert and delete
-            b"\x1b[3;9r",             // a scrolling region
-            b"\x1b7\x1b8",            // save and restore the cursor
-            b"\x1b[10d\x1b[10G",      // absolute row, absolute column
-            b"hello\r\n\ttext",       // and ordinary output
+            b"\x1b[3;9r",                    // a scrolling region
+            b"\x1b7\x1b8",                   // save and restore the cursor
+            b"\x1b[10d\x1b[10G",             // absolute row, absolute column
+            b"hello\r\n\ttext",              // and ordinary output
         ];
         for one in clean {
             assert_eq!(
