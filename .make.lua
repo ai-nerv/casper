@@ -81,16 +81,6 @@ local function report(path)
   print("")
 end
 
--- The same, for artifacts whose exact path the build system decides. Walked with find rather than
--- globbed: oslo's `**` matches a single directory level, and build trees nest deeper than that.
-local function report_found(root, pattern)
-  local found = oslo.run{ "find", root, "-type", "f", "-name", pattern, capture = true }
-  for path in (found.out or ""):gmatch("[^\n]+") do
-    report(path)
-    return
-  end
-end
-
 
 make.recipe{ name = "version", desc = "what this checkout calls itself",
              run = function() print(("%s v%s"):format(NAME, VERSION)) end }
@@ -122,20 +112,45 @@ make.recipe{
 
 ---------------------------------------------------------------------------- rust
 
-local EXAMPLE = os.getenv("EXAMPLE") or "main"
+-- Where `build` leaves it, and what `run` and `install` then reach for.
+local function binary_path()
+  return "target/release/" .. NAME
+end
 
-make.recipe{ name = "build", desc = "the library",
-             run = function()
-               sh.cargo("build", "--lib")
-               report_found("target", "*.rlib")
-             end }
+-- **The binary, not the library.** casper is a program: the library exists so the tests can
+-- reach inside it, and nobody runs an rlib. This built `--lib` for a while, inherited from the
+-- scaffold, and the cost was not an error -- it was `make build` succeeding and leaving the
+-- previous binary in place, so a change to `config/tools.lua` (which rides in the binary through
+-- `include_str!`) was absent from the thing you then ran.
+--
+-- Release, because this is the binary somebody runs. `make debug` is for iterating.
+make.recipe{
+  name = "build",
+  desc = "the binary",
+  run = function()
+    sh.cargo("build", "--release", "--bin", NAME)
+    report(binary_path())
+  end,
+}
 make.alias("b", "build")
 
 make.recipe{
+  name = "debug",
+  desc = "an unoptimized build, for iterating",
+  run = function()
+    sh.cargo("build", "--bin", NAME)
+    report("target/debug/" .. NAME)
+  end,
+}
+
+make.recipe{
   name = "run",
-  desc = "run a development example: --example NAME",
-  params = { { "--example", desc = "which example to run", default = EXAMPLE } },
-  run = function(a) sh.cargo("run", "--example", a.example or EXAMPLE) end,
+  desc = "run the binary: --args='tools'",
+  params = { { "--args", desc = "what to pass it" } },
+  run = function(a)
+    sh.cargo("build", "--release", "--bin", NAME)
+    sh.sh("-c", ("%s %s"):format(binary_path(), a.args or ""))
+  end,
 }
 make.alias("r", "run")
 
@@ -145,14 +160,11 @@ make.recipe{
   -- The declarations ride in the binary rather than beside it: casper with no tools is not a
   -- casper, and a relative `config/` would load whichever checkout the working directory
   -- happened to be in -- which is how a sibling ends up running another project's tools.
+  deps = { "build" },
   run = function()
-    -- Built here rather than depended on: the scaffold's `build` is the library alone and in
-    -- debug, and installing a debug binary as if it were the real one is the kind of thing
-    -- nobody notices until it is slow.
-    sh.cargo("build", "--release", "--bin", NAME)
     local bin = PREFIX .. "/bin"
     assert(oslo.run{ "mkdir", "-p", bin }.ok, "could not create " .. bin)
-    assert(oslo.run{ "install", "-m", "755", "target/release/" .. NAME, bin .. "/" .. NAME }.ok,
+    assert(oslo.run{ "install", "-m", "755", binary_path(), bin .. "/" .. NAME }.ok,
            "could not install to " .. bin)
     print(("installed %s"):format(bin .. "/" .. NAME))
   end,
