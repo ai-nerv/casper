@@ -15,7 +15,17 @@ set -eu
 root=$(mktemp -d "${TMPDIR:-/tmp}/gate-hermetic-XXXXXX")
 trap 'rm -rf "$root"' EXIT HUP INT TERM
 
-TMPDIR="$root" cargo test --all-targets --quiet >/dev/null
+# Kept rather than discarded. When this fails it is a test failing, not a leak, and the name of
+# the test is the whole answer — a gate that printed only "exit 101" sent the reader back to
+# `cargo test` to find out what it already knew.
+out=$(mktemp "${TMPDIR:-/tmp}/gate-hermetic-log-XXXXXX")
+trap 'rm -rf "$root" "$out"' EXIT HUP INT TERM
+
+if ! TMPDIR="$root" cargo test --all-targets --quiet >"$out" 2>&1; then
+  cat "$out" >&2
+  echo "gate-hermetic: the suite failed; nothing was checked" >&2
+  exit 1
+fi
 
 # Nothing here is entitled to leave anything: casper has no temporary directory of its own, and
 # its allowlist is empty on purpose. If this starts failing, something new started writing to

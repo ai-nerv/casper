@@ -10,6 +10,7 @@
 
 pub mod framing;
 pub mod lua;
+pub mod noted;
 pub mod paint;
 pub mod pty;
 pub mod surface;
