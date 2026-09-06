@@ -5,14 +5,20 @@
     nixpkgs.url = "github:NixOS/nixpkgs?rev=4c1018dae018162ec878d42fec712642d214fdfa";
     flake-utils.url = "github:numtide/flake-utils";
     nixgl.url = "github:nix-community/nixGL";
+    # A pinned toolchain, as the workspace siblings have. `pkgs.rustc` is whatever nixpkgs ships
+    # that day, and this repository builds under `-Dwarnings`, where one new lint is a failed
+    # verify — which is how CI here went red for a week on lints nobody had written code for.
+    rust-overlay.url = "github:oxalica/rust-overlay";
+    rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
-    { nixpkgs, flake-utils, nixgl, ... }:
+    { nixpkgs, flake-utils, nixgl, rust-overlay, ... }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
         overlays = [
+          (import rust-overlay)
           (final: prev: {
             xorg = prev.xorg // {
               libX11 = final.libx11;
@@ -69,16 +75,21 @@
           libxi
           libxrandr
         ];
+        # The same version the workspace siblings pin, so a lint that fails there fails here.
+        rust = pkgs.rust-bin.stable."1.94.0".default.override {
+          extensions = [ "rust-src" ];
+        };
       in
       {
         devShells.default = pkgs.mkShell {
           packages = [
-            pkgs.rustc
-            pkgs.cargo
-            pkgs.rustfmt
-            pkgs.clippy
+            rust
             pkgs.rust-analyzer
             pkgs.git-cliff
+            # Reads every manifest against its own sources, so a dependency nothing uses is a
+            # failure rather than a line somebody eventually notices. See the note in
+            # `Cargo.toml` for why this and not `unused_crate_dependencies`.
+            pkgs.cargo-machete
             pkgs.clang
             pkgs.mold
             pkgs.pkg-config
