@@ -215,7 +215,7 @@ make.recipe{
   desc = "the architectural gates",
   run = function()
     local failed = {}
-    for _, name in ipairs({ "gate-file-size", "gate-modules" }) do
+    for _, name in ipairs({ "gate-cycles", "gate-file-size", "gate-modules" }) do
       -- Executed, not handed to `sh`: the shebang is the portability contract, and CI runs
       -- these on a machine whose /bin/sh is dash.
       local result = oslo.run{ "scripts/" .. name .. ".sh", capture = true }
