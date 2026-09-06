@@ -13,6 +13,47 @@ when a tool needs more than a line of output — hold rows on the harness's own 
 into them. It knows nothing about models, turns or transcripts. Those belong to whatever harness
 is using it.
 
+## What it offers
+
+```sh
+casper tools                 # every tool it offers, as declarations a harness can register
+casper run <tool>            # run one; the call arrives as JSON on stdin
+casper surface <tool>        # hold rows on the harness's screen and draw into them
+```
+
+| | |
+|---|---|
+| `cat` `ls` `find` `grep` `patch` | read the tree |
+| `shell` `pwd` | run a command, and remember where it ran |
+| `screen` | an interactive program — a pager, an editor, `htop`, `git add -p` — in rows on the screen |
+| `hexe` `oslo` `session` | ask the multiplexer, the shell, or the harness about themselves |
+| `dino` `birdy` | two games, because a surface that can draw a game can draw anything |
+
+Every one of them is declared in `config/tools.lua`, in Lua, and nothing about them is compiled
+in. A tool of your own goes in the same file.
+
+## Surfaces
+
+Most tools print and exit. Some need the screen: an editor, a pager, a picker, a permission
+prompt, a game. A **surface** is a tool that asks the harness for a number of rows and then owns
+them — it is handed keys and clicks, it draws each frame, and it ends when it says so or when
+the person presses escape twice.
+
+The harness decides how many rows; casper decides what goes in them. That split is the whole
+protocol: a harness that knows nothing about pagers can host one, and a tool that knows nothing
+about terminals can be drawn by any harness that can lend it rows.
+
+A surface may also ask the harness questions it cannot answer itself:
+
+```lua
+local who   = casper.knows("session")                       -- which session, and where
+local found = casper.knows("memories", { query = "deploy" }) -- what it remembers
+```
+
+`casper.knows` exists only inside a surface, and structurally so: a `run` is one exec whose
+stdout is its reply, and a question written there would reach the harness as the tool's own
+result.
+
 ## Commands
 
 The build is `.make.lua`, read by [oslo](https://github.com/termworks/oslo). At an oslo prompt in
