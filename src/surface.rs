@@ -210,25 +210,25 @@ mod tests {
     fn an_unreadable_frame_is_a_tick_rather_than_the_end() {
         // A newer harness saying something this build has no name for. Ending the surface over it
         // would make every addition to the protocol a breaking one.
-        assert_eq!(read(r#"{"to":"nothing_yet"}"#), ToSurface::Tick);
+        assert_eq!(read(r#"{"event":"nothing_yet"}"#), ToSurface::Tick);
         assert_eq!(read("not json at all"), ToSurface::Tick);
     }
 
     #[test]
     fn the_frames_this_build_knows_read_back_as_themselves() {
-        assert_eq!(read(r#"{"to":"tick"}"#), ToSurface::Tick);
-        assert_eq!(read(r#"{"to":"close"}"#), ToSurface::Close);
+        assert_eq!(read(r#"{"event":"tick"}"#), ToSurface::Tick);
+        assert_eq!(read(r#"{"event":"close"}"#), ToSurface::Close);
         // No `state` on the wire is a terminal that cannot tell a hold from a tap, which is most
         // of them and every one before the Kitty protocol.
         assert_eq!(
-            read(r#"{"to":"key","key":"space"}"#),
+            read(r#"{"event":"key","key":"space"}"#),
             ToSurface::Key {
                 key: "space".to_owned(),
                 state: crate::tools::Held::Down,
             }
         );
         assert_eq!(
-            read(r#"{"to":"key","key":"space","state":"up"}"#),
+            read(r#"{"event":"key","key":"space","state":"up"}"#),
             ToSurface::Key {
                 key: "space".to_owned(),
                 state: crate::tools::Held::Up,
@@ -241,7 +241,7 @@ mod tests {
         // Already translated by the harness, which is the only thing that knows where the rows
         // landed. Row zero is this surface's first row, so a tenant needs no bounds check.
         assert_eq!(
-            read(r#"{"to":"mouse","kind":"press","button":"left","row":2,"col":11}"#),
+            read(r#"{"event":"mouse","kind":"press","button":"left","row":2,"col":11}"#),
             ToSurface::Mouse {
                 kind: crate::tools::Pointed::Press,
                 button: Some(crate::tools::Button::Left),

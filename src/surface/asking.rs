@@ -119,8 +119,8 @@ mod tests {
         // The whole point of the queue. A key pressed while a tenant was asking a question is a
         // key the person pressed, and it has to reach them.
         WAITING.with_borrow_mut(|kept| {
-            kept.push_back(r#"{"to":"key","key":"j"}"#.to_owned());
-            kept.push_back(r#"{"to":"tick"}"#.to_owned());
+            kept.push_back(r#"{"event":"key","key":"j"}"#.to_owned());
+            kept.push_back(r#"{"event":"tick"}"#.to_owned());
         });
         let mut frames = frames();
         assert!(matches!(
@@ -150,7 +150,7 @@ mod tests {
         // repositories with separate copies of these types, so the shape is checked from a
         // literal rather than from a round trip through one of them.
         let told = super::super::read(
-            r#"{"to":"answer","wondered":3,"answer":"told","said":{"id":"s-7"}}"#,
+            r#"{"event":"answer","wondered":3,"answer":"told","said":{"id":"s-7"}}"#,
         );
         let ToSurface::Answer {
             wondered,
@@ -166,7 +166,7 @@ mod tests {
         assert_eq!(said["id"], "s-7");
 
         let refused = super::super::read(
-            r#"{"to":"answer","wondered":4,"answer":"refused","because":"memories: no balthasar"}"#,
+            r#"{"event":"answer","wondered":4,"answer":"refused","because":"memories: no balthasar"}"#,
         );
         let ToSurface::Answer {
             answer, because, ..

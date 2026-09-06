@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! -> {"call":"tools","args":[]}
-//! <- {"ok":true,"n":1,"result":[[{"name":"cat",…}]]}
+//! <- {"ok":true,"family":1,"n":1,"result":[[{"name":"cat",…}]]}
 //! ```
 //!
 //! Four-byte big-endian length, then the body. `result` is a **list** and `n` says how long it
@@ -29,8 +29,75 @@
 //! This is not a precaution that can be added later. A verb that ran something would be reachable
 //! by every process of this user the moment it shipped, and taking it away afterwards breaks
 //! whoever started calling it.
+//!
+//! # How this family talks
+//!
+//! Three transports, two shapes, one encoding. Written out here because it was written out
+//! nowhere: four wires had grown four different ways to say the same thing — `say`/`heard`,
+//! `to`/`from`, `message`, and a call envelope — and nothing anywhere said which was meant.
+//!
+//! **Three transports, and the choice between them is about what is being asked.**
+//!
+//! | | |
+//! |---|---|
+//! | **argv** | a question with an answer and nothing to hold open. One JSON object on stdout. |
+//! | **pipe** | a parent and the child it started. Newline-delimited JSON, both directions. |
+//! | **socket** | anything may knock. Four bytes of big-endian length, then JSON. |
+//!
+//! JSON is on all three. It is the *encoding*, not a transport, and naming it as one is how the
+//! diagram of this family came to have "argv + json" on an edge.
+//!
+//! **Two shapes, and the difference is whether anybody is waiting.**
+//!
+//! A **call** is answered:
+//!
+//! ```text
+//! -> {"call":"status","args":[]}
+//! <- {"ok":true,"family":1,"n":1,"result":[{"busy":false}]}
+//! ```
+//!
+//! An **event** is not:
+//!
+//! ```text
+//! {"event":"listening","at":"…"}
+//! ```
+//!
+//! `result` is a **list** and `n` says how long it is: a sibling that unpacks a list would read
+//! a bare value as *nothing at all*, so an answer would come back empty rather than wrong — and
+//! an empty answer looks like an empty session. `family` says which revision of this the reply
+//! is written in; a reader refuses a number it does not know and tolerates one it predates.
+//!
+//! A refused call is a **reply**, not a dropped connection. The caller then sees the far end's
+//! error rather than a transport error, and "no such call: nope" says what to fix where
+//! "connection reset" does not.
+//!
+//! **The tag key is `event`, everywhere, in both directions.** `scripts/gate-wire.sh` refuses
+//! any other, because the failure mode is silent: casper is another checkout with its own copy
+//! of these frames, so when two spellings drift nothing fails — the surface simply stops being
+//! answered.
 
 use serde::{Deserialize, Serialize};
+
+/// Which revision of the family wire this speaks.
+///
+/// **There was no version anywhere, in four implementations that already disagree.** casper's
+/// reply always sends `n`; a sibling's makes it optional and adds a `fault` field casper has
+/// never had. Both are "the family wire". A consumer meeting an unexpected shape learns about it
+/// as a missing field at the point of use, which reads as the peer being broken rather than as
+/// the peer being a different version.
+///
+/// The number is duplicated in each sibling for the same reason the types are — a shared crate
+/// would be a dependency between repositories, and this family has none. It is bumped when a
+/// consumer that does not know about a change would misread a reply, not when a field is added
+/// that an older reader ignores.
+pub const FAMILY: u16 = 1;
+
+/// The version a reply is stamped with when it does not say.
+///
+/// Serde needs a function; [`FAMILY`] is the answer.
+fn family() -> u16 {
+    FAMILY
+}
 
 /// One call, as it arrives.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -50,6 +117,13 @@ pub struct Call {
 pub struct Reply {
     /// Whether the call was answered.
     pub ok: bool,
+    /// Which revision of the family wire this reply is written in. See [`FAMILY`].
+    ///
+    /// Defaulted on the way in, so a reply from a build before this existed reads as `0` — "from
+    /// before versions" — rather than failing to parse. A reader refuses a number it does not
+    /// know and tolerates one it predates.
+    #[serde(default = "family")]
+    pub family: u16,
     /// How many values came back. Always `result.len()`.
     #[serde(default)]
     pub n: usize,
@@ -67,6 +141,7 @@ impl Reply {
     pub fn of(value: serde_json::Value) -> Self {
         Self {
             ok: true,
+            family: FAMILY,
             n: 1,
             result: vec![value],
             error: None,
@@ -78,6 +153,7 @@ impl Reply {
     pub fn done() -> Self {
         Self {
             ok: true,
+            family: FAMILY,
             n: 0,
             result: Vec::new(),
             error: None,
@@ -89,6 +165,7 @@ impl Reply {
     pub fn refused(why: impl Into<String>) -> Self {
         Self {
             ok: false,
+            family: FAMILY,
             n: 0,
             result: Vec::new(),
             error: Some(why.into()),
@@ -126,7 +203,7 @@ mod tests {
         // The family invariant. A bare value here reads as "returned nothing" to a client that
         // unpacks, and the bug presents as a casper with no tools rather than as an error.
         let wire = serde_json::to_string(&Reply::of(serde_json::json!({"a": 1}))).expect("enc");
-        assert_eq!(wire, r#"{"ok":true,"n":1,"result":[{"a":1}]}"#);
+        assert_eq!(wire, r#"{"ok":true,"family":1,"n":1,"result":[{"a":1}]}"#);
     }
 
     #[test]

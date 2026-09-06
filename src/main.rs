@@ -40,7 +40,7 @@ fn say(reply: &Reply) {
         Ok(line) => println!("{line}"),
         // Nothing else can be done from here, and silence is the one answer a client cannot
         // read: it would wait for a frame that never comes.
-        Err(why) => println!(r#"{{"ok":false,"n":0,"result":[],"error":"{why}"}}"#),
+        Err(why) => println!(r#"{{"ok":false,"family":1,"n":0,"result":[],"error":"{why}"}}"#),
     }
 }
 

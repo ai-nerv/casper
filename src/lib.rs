@@ -8,7 +8,6 @@
 //! the same content — a permission question has a view and no result, a `shell` has a result and
 //! no view — so they are two fields and either may be absent.
 
-pub mod framing;
 pub mod lua;
 pub mod noted;
 pub mod paint;
