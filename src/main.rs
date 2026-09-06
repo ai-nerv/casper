@@ -14,6 +14,11 @@
 //! Every verb prints the **wire** shape, not something shaped for a person to read, and a refusal
 //! is `{"ok":false,…}` with a zero exit. Otherwise every client needs two parsers and a real
 //! error arrives as "exited 1".
+//!
+//! **In JSON or in CBOR**, chosen with `--json` or `--cbor`. One shape, two encodings: the family
+//! settled on JSON as what a reply *is*, and CBOR is the same reply for a caller that is not
+//! going to read it. The other two siblings took the pair on their one-shot doors and this one
+//! did not, so a caller asking the family for CBOR still had to keep a JSON parser for casper.
 
 use casper::lua::engine::Engine;
 use casper::tools::{Call, Ran};
@@ -21,27 +26,70 @@ use casper::wire::{Reply, VERBS};
 
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let how = asked(&args);
     match args.first().map(String::as_str).unwrap_or("help") {
-        "verbs" => say(&Reply::of(described())),
-        "tools" => say(&tools()),
-        "run" => say(&ran()),
+        "verbs" => say(how, &Reply::of(described())),
+        "tools" => say(how, &tools()),
+        "run" => say(how, &ran()),
         // Not a call and not a reply: frames both ways for as long as the tool holds its rows.
         // See `casper::surface` for why this cannot be one exec per event.
         "surface" => held(args.get(1).map(String::as_str).unwrap_or_default()),
         "help" | "--help" | "-h" => usage(),
-        other => say(&Reply::refused(format!("no such call: {other}"))),
+        other => say(how, &Reply::refused(format!("no such call: {other}"))),
     }
     std::process::ExitCode::SUCCESS
 }
 
-/// Print one reply, in the shape every client parses.
-fn say(reply: &Reply) {
-    match serde_json::to_string(reply) {
-        Ok(line) => println!("{line}"),
-        // Nothing else can be done from here, and silence is the one answer a client cannot
-        // read: it would wait for a frame that never comes.
-        Err(why) => println!(r#"{{"ok":false,"family":1,"n":0,"result":[],"error":"{why}"}}"#),
+/// Which encoding the caller asked for.
+///
+/// JSON unless CBOR was named, which is the family's rule — melchior and balthasar take the same
+/// pair of flags on their own one-shot doors. `--json` is accepted and means the default, so a
+/// caller can be explicit without having to know which sibling treats it as which.
+///
+/// Scanned from argv rather than parsed: the verb is the first word and everything a tool needs
+/// arrives on stdin, so there is no argument this can be confused with.
+fn asked(args: &[String]) -> As {
+    if args.iter().any(|a| a == "--cbor") {
+        As::Cbor
+    } else {
+        As::Json
     }
+}
+
+/// How a reply leaves.
+#[derive(Clone, Copy)]
+enum As {
+    /// Text, and the default.
+    Json,
+    /// Bytes, for a caller that is not going to read it.
+    Cbor,
+}
+
+/// One reply as bytes, in the encoding the caller asked for.
+///
+/// A reply that will not encode as CBOR comes back as JSON rather than as nothing. Silence is the
+/// one answer a client cannot read — it waits for a frame that never comes — so every path here
+/// ends in bytes.
+fn encoded(how: As, reply: &Reply) -> Vec<u8> {
+    if let As::Cbor = how {
+        let mut bytes = Vec::new();
+        if ciborium::into_writer(reply, &mut bytes).is_ok() {
+            return bytes;
+        }
+    }
+    match serde_json::to_string(reply) {
+        Ok(line) => format!("{line}\n").into_bytes(),
+        Err(why) => {
+            format!("{{\"ok\":false,\"family\":1,\"n\":0,\"result\":[],\"error\":\"{why}\"}}\n")
+                .into_bytes()
+        }
+    }
+}
+
+/// Print one reply, in the shape every client parses and the encoding it asked for.
+fn say(how: As, reply: &Reply) {
+    use std::io::Write;
+    let _ = std::io::stdout().lock().write_all(&encoded(how, reply));
 }
 
 /// What the socket answers, as name and description.
@@ -144,6 +192,8 @@ fn usage() {
          \x20 casper run          one call on stdin, one result on stdout\n\
          \x20 casper verbs        what its socket answers\n\
          \n\
+         \x20 --json | --cbor   which encoding a reply comes back in\n\
+         \n\
          Every verb prints the family's reply shape. `run` is deliberately not\n\
          reachable over the socket: see DESIGN.md."
     );
@@ -158,4 +208,52 @@ fn held(tool: &str) {
         return;
     };
     casper::surface::hold(tool, &mut engine);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_is_the_default_and_cbor_is_asked_for() {
+        assert!(matches!(asked(&[]), As::Json));
+        assert!(matches!(asked(&["tools".to_owned()]), As::Json));
+        assert!(matches!(
+            asked(&["tools".to_owned(), "--json".to_owned()]),
+            As::Json
+        ));
+        assert!(matches!(
+            asked(&["tools".to_owned(), "--cbor".to_owned()]),
+            As::Cbor
+        ));
+    }
+
+    #[test]
+    fn both_encodings_carry_the_same_answer() {
+        // The property every door in the family owes a caller: the encoding changes, the shape
+        // does not. casper answered in JSON alone, so a caller that asked melchior and balthasar
+        // for CBOR still needed a JSON parser for this one.
+        let reply = Reply::of(serde_json::json!([{ "name": "cat" }]));
+        let from_json: serde_json::Value =
+            serde_json::from_slice(&encoded(As::Json, &reply)).expect("json");
+        let from_cbor: serde_json::Value =
+            ciborium::from_reader(encoded(As::Cbor, &reply).as_slice()).expect("cbor");
+        assert_eq!(from_json, from_cbor, "one shape, two encodings");
+        assert_eq!(
+            from_cbor["family"],
+            serde_json::json!(1),
+            "and it says which"
+        );
+    }
+
+    #[test]
+    fn a_refusal_encodes_in_both_too() {
+        // A refusal is a reply, so it takes the same route. Worth pinning separately: the JSON
+        // fallback here is hand-written, and a fallback nobody exercises is a fallback that
+        // stops compiling into something valid.
+        let reply = Reply::refused("no such tool: nope".to_owned());
+        let from_cbor: serde_json::Value =
+            ciborium::from_reader(encoded(As::Cbor, &reply).as_slice()).expect("cbor");
+        assert_eq!(from_cbor["ok"], serde_json::json!(false));
+    }
 }
