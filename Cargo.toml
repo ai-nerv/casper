@@ -18,7 +18,6 @@ path = "src/main.rs"
 # produced; who asked, and what they will do with it, is not its business. What crosses does so as
 # data on a pipe -- see `DESIGN.md`.
 [dependencies]
-rustix = { version = "0.38", features = ["process"] }
 # A screen a real program runs in. Two small crates, neither of which knows what a harness is:
 # one allocates a pty and puts a child on it, the other reads the bytes that come back as a grid
 # of cells. Writing either by hand would mean `unsafe` in a crate that denies it.
@@ -36,6 +35,15 @@ thiserror = "2.0"
 # The same gate the siblings are written under.
 [lints.rust]
 unsafe_code = "deny"
+# A dependency nothing uses is a lie about the graph — an edge that exists in `Cargo.toml`, in
+# the lockfile and in every diagram somebody draws from them, and nowhere in the code. Nine of
+# them were declared across this family.
+#
+# Enforced by `cargo machete` in `verify`, not by `unused_crate_dependencies`. That lint finds
+# the same thing and then finds a great deal more: it runs per *target*, so every integration
+# test is reported for every dev-dependency that one file happens not to name — twenty-odd
+# warnings here, none of them a lie, and `clippy -Dwarnings` fails on all of them. machete reads
+# the manifest against the whole package and has no such blind spot.
 unused = { level = "deny", priority = -1 }
 
 [lints.clippy]
