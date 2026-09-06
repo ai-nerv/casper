@@ -8,6 +8,11 @@
 
 <p align="center"><em>The tools a coding agent runs, and the screen they draw on.</em></p>
 
+<p align="center">
+  <a href="https://claude.ai/code/artifact/cf3ff7f0-1c1d-472a-b01e-d08a854178b1"><strong>How the four fit together</strong></a> —
+  a turn end to end, writing a tool, memory both directions, what may run
+</p>
+
 A separate binary a harness runs to do things: read a file, search a tree, run a command, and —
 when a tool needs more than a line of output — hold rows on the harness's own screen and draw
 into them. It knows nothing about models, turns or transcripts. Those belong to whatever harness
