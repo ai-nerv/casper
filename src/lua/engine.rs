@@ -232,11 +232,6 @@ impl Engine {
             casper
                 .set(ctx, "tapped", crate::lua::keying::table(ctx))
                 .ok();
-            // The direction that did not exist: a surface asking the harness about the session it
-            // is drawn in, rather than only being told things at open.
-            casper
-                .set(ctx, "knows", crate::lua::knowing::table(ctx))
-                .ok();
             // The one way a declaration reaches a process. See the module docs: a second way,
             // with no bound and no verb attached, would make this one decoration.
             casper.set(ctx, "exec", crate::lua::exec::table(ctx)).ok();
@@ -248,6 +243,25 @@ impl Engine {
             casper.set(ctx, "paint", crate::lua::paint::table(ctx)).ok();
 
             ctx.set_global("casper", casper);
+        });
+    }
+
+    /// Put one more callable on the `casper` table, after the VM is built.
+    ///
+    /// For a capability that only exists in one of the two things this VM is used for.
+    /// `casper.knows` was the case: it asks the harness a question over the surface protocol,
+    /// which means it can only work inside a surface — and it was installed here anyway, for
+    /// every `run` as well, guarded at the far end by a thread-local that answered "only a
+    /// surface may ask". Registering it from [`crate::surface::hold`] instead makes that fact
+    /// structural, and it is what broke the circle between this module and `surface`: a VM that
+    /// knew about surfaces while surfaces are built out of a VM.
+    pub fn lend(&mut self, name: &str, build: fn(luna::Context<'_>) -> Callback<'_>) {
+        let name = name.to_owned();
+        self.lua.enter(|ctx| {
+            let Ok(Value::Table(casper)) = ctx.get_global("casper") else {
+                return;
+            };
+            casper.set(ctx, name.as_str(), build(ctx)).ok();
         });
     }
 

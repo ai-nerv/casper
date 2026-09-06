@@ -30,25 +30,6 @@ pub mod noticing;
 pub mod painting;
 pub mod rewriting;
 
-/// Append a line to `$CASPER_DEBUG_LOG`, if it is set.
-///
-/// A surface owns its pipes — stdout carries frames and stderr is thrown away by the harness — so
-/// printing is not available for diagnosis. This is the only way anything in here can say
-/// something to a person. Off unless the variable is set, because a tool that wrote a file nobody
-/// asked for is a tool that fills a disk.
-fn noted(line: &str) {
-    let Some(path) = std::env::var_os("CASPER_DEBUG_LOG") else {
-        return;
-    };
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(file, "{line}");
-    }
-}
-
 /// What to run, as a declaration described it.
 #[derive(Debug, Clone, Default)]
 pub struct Spec {
@@ -277,7 +258,7 @@ impl Screen {
         // failure here with no clue attached: the program ran, it drew, and what came out is
         // quietly not what it meant. One line naming the sequence turns that into a fact.
         if let Some(said) = self.vt.callbacks().summary() {
-            noted(&format!("{}: {said}", self.named));
+            crate::noted!("{}: {said}", self.named);
         }
         let _ = self.child.kill();
         let _ = self.child.wait();

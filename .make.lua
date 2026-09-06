@@ -211,8 +211,67 @@ make.recipe{ name = "compile", desc = "clean, then build", deps = { "clean", "bu
 make.alias("c", "compile")
 
 make.recipe{
+  name = "gates",
+  desc = "the architectural gates",
+  run = function()
+    local failed = {}
+    for _, name in ipairs({ "gate-cycles", "gate-file-size", "gate-modules", "gate-wire" }) do
+      -- Executed, not handed to `sh`: the shebang is the portability contract, and CI runs
+      -- these on a machine whose /bin/sh is dash.
+      local result = oslo.run{ "scripts/" .. name .. ".sh", capture = true }
+      print((result.ok and "\u{2713}  %s" or "\u{2717}  %s"):format(name))
+      if not result.ok then
+        failed[#failed + 1] = name
+        print(((result.out or "") .. (result.err or "")))
+      end
+    end
+    assert(#failed == 0, ("%d gate(s) failed"):format(#failed))
+  end,
+}
+make.alias("g", "gates")
+
+
+-- Runs the whole suite a second time, under a `TMPDIR` of its own, and asserts the directory is
+-- empty afterwards. Its own recipe rather than one of the `gates` above, because those are greps
+-- that finish instantly and this one costs a full test run — and because a failure here is a
+-- leaking test, not a violated rule about how the code is written.
+make.recipe{
+  name = "gate-hermetic",
+  desc = "the suite leaves nothing behind in the temporary directory",
+  run = function()
+    local ran = oslo.run{ "scripts/gate-hermetic.sh" }
+    assert(ran.ok, "gate-hermetic failed")
+  end,
+}
+
+-- Every dependency a manifest declares is one the code actually uses.
+--
+-- Nine were not, across this family: an edge in `Cargo.toml`, in the lockfile and in every
+-- diagram drawn from them, and nowhere in the source. See the note in `Cargo.toml` for why this
+-- rather than the `unused_crate_dependencies` lint.
+make.recipe{
+  name = "machete",
+  desc = "no dependency nothing uses",
+  run = function()
+    -- Through the dev shell when it is not already on the path. `make` is run from a plain
+    -- terminal as often as from inside `nix develop`, and a check that quietly did not run
+    -- because a tool was missing is worse than one that is slow: CI would then be the only
+    -- place it happened, which is the arrangement this milestone exists to end.
+    local direct = oslo.run{ "cargo", "machete", capture = true }
+    if direct.ok then return end
+    local said = (direct.out or "") .. (direct.err or "")
+    if not said:find("no such command") then
+      print(said)
+      error("cargo machete failed")
+    end
+    local shelled = oslo.run{ "nix", "develop", "--command", "cargo", "machete" }
+    assert(shelled.ok, "cargo machete failed")
+  end,
+}
+
+make.recipe{
   name = "verify",
   desc = "the whole local gate",
-  deps = { "fmt-check", "check", "test", "check-all", "test-all", "clippy", "rustdoc" },
+  deps = { "fmt-check", "check", "test", "check-all", "test-all", "clippy", "rustdoc", "gates", "gate-hermetic", "machete" },
 }
 make.alias("v", "verify")

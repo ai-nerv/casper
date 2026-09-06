@@ -98,11 +98,14 @@ pub fn run(program: &str, args: &[String]) -> Done {
             err: bounded(&String::from_utf8_lossy(&done.stderr)),
             code: done.status.code().map_or(-1, i64::from),
         },
-        Err(why) => Done {
-            out: String::new(),
-            err: format!("{program} could not be run: {why}"),
-            code: -1,
-        },
+        Err(why) => {
+            crate::noted!("exec: {program} could not be run: {why}");
+            Done {
+                out: String::new(),
+                err: format!("{program} could not be run: {why}"),
+                code: -1,
+            }
+        }
     }
 }
 

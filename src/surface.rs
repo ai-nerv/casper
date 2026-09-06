@@ -24,16 +24,31 @@ mod screening;
 
 /// Asking the harness something, from inside the frame a tenant is drawing.
 mod asking;
+mod knowing;
 
 pub(crate) use asking::{frames, wonder};
+
+/// What a surface is given that a `run` is not.
+///
+/// From here there is a harness on the other end of the pipe, so a tenant may ask it things —
+/// and only from here, which is why `casper.knows` goes on the table at this point rather than
+/// in the VM. A `run` is one exec whose stdout is its reply; a question written there would
+/// reach the harness as the tool's own result, from a tool that looked like it had failed.
+///
+/// A named function rather than two lines inside [`hold`], so a test can call the same thing
+/// the loop calls. Inline, the only test that could reach it would have to drive a real pipe,
+/// which is why the capability could have been dropped in a refactor with the whole suite green.
+fn lent(engine: &mut Engine) {
+    asking::holding();
+    engine.lend("knows", knowing::table);
+}
 
 /// Run the frame loop for `tool` until it finishes or stdin closes.
 ///
 /// The arguments the call was made with arrive on the first frame, so a surface opens knowing what
 /// it was asked about — a permission needs the command, a picker needs the list.
 pub fn hold(tool: &str, engine: &mut Engine) {
-    // From here there is a harness on the other end of the pipe, so a tenant may ask it things.
-    asking::holding();
+    lent(engine);
     let mut lines = frames();
     // The first frame says how much room there is and what the call was given. Opening before it
     // arrives would mean guessing at a size, and a tenant that laid itself out for the wrong one
@@ -195,25 +210,25 @@ mod tests {
     fn an_unreadable_frame_is_a_tick_rather_than_the_end() {
         // A newer harness saying something this build has no name for. Ending the surface over it
         // would make every addition to the protocol a breaking one.
-        assert_eq!(read(r#"{"to":"nothing_yet"}"#), ToSurface::Tick);
+        assert_eq!(read(r#"{"event":"nothing_yet"}"#), ToSurface::Tick);
         assert_eq!(read("not json at all"), ToSurface::Tick);
     }
 
     #[test]
     fn the_frames_this_build_knows_read_back_as_themselves() {
-        assert_eq!(read(r#"{"to":"tick"}"#), ToSurface::Tick);
-        assert_eq!(read(r#"{"to":"close"}"#), ToSurface::Close);
+        assert_eq!(read(r#"{"event":"tick"}"#), ToSurface::Tick);
+        assert_eq!(read(r#"{"event":"close"}"#), ToSurface::Close);
         // No `state` on the wire is a terminal that cannot tell a hold from a tap, which is most
         // of them and every one before the Kitty protocol.
         assert_eq!(
-            read(r#"{"to":"key","key":"space"}"#),
+            read(r#"{"event":"key","key":"space"}"#),
             ToSurface::Key {
                 key: "space".to_owned(),
                 state: crate::tools::Held::Down,
             }
         );
         assert_eq!(
-            read(r#"{"to":"key","key":"space","state":"up"}"#),
+            read(r#"{"event":"key","key":"space","state":"up"}"#),
             ToSurface::Key {
                 key: "space".to_owned(),
                 state: crate::tools::Held::Up,
@@ -226,7 +241,7 @@ mod tests {
         // Already translated by the harness, which is the only thing that knows where the rows
         // landed. Row zero is this surface's first row, so a tenant needs no bounds check.
         assert_eq!(
-            read(r#"{"to":"mouse","kind":"press","button":"left","row":2,"col":11}"#),
+            read(r#"{"event":"mouse","kind":"press","button":"left","row":2,"col":11}"#),
             ToSurface::Mouse {
                 kind: crate::tools::Pointed::Press,
                 button: Some(crate::tools::Button::Left),
@@ -241,6 +256,39 @@ mod tests {
 #[cfg(test)]
 mod holding {
     use crate::lua::engine::Engine;
+
+    /// `casper.knows` exists inside a surface and nowhere else.
+    ///
+    /// The half of [`super::hold`] a frame test cannot reach: it is installed by that function
+    /// rather than by the VM, so a refactor that dropped the one `lend` line would take the
+    /// capability with it and every test here would still pass.
+    #[test]
+    fn a_surface_is_lent_the_question_a_run_is_not() {
+        // Asserted in Lua, because that is the only place the `casper` table can be seen. A
+        // failed `assert` raises, and a raise is what `run` reports.
+        let mut engine = Engine::new();
+        assert!(
+            engine
+                .run(
+                    r#"assert(casper.knows == nil, "a run has it")"#,
+                    "before.lua"
+                )
+                .is_ok(),
+            "a `run` cannot ask the harness anything: there is no harness on the pipe"
+        );
+
+        // The same call `hold` makes, so dropping it from there fails here.
+        super::lent(&mut engine);
+        assert!(
+            engine
+                .run(
+                    r#"assert(type(casper.knows) == "function", "a surface has not")"#,
+                    "after.lua"
+                )
+                .is_ok(),
+            "`hold` lends it, and this is the line that says so"
+        );
+    }
 
     /// An engine with one surface tool declared, and the frames it draws for `events`.
     fn played(source: &str, events: &[serde_json::Value]) -> Vec<serde_json::Value> {

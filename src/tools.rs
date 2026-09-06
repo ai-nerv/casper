@@ -304,7 +304,7 @@ pub struct At {
 
 /// What the harness sends a surface while it holds its rows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "to")]
+#[serde(rename_all = "snake_case", tag = "event")]
 pub enum ToSurface {
     /// The room it actually got, and what the call was given.
     ///
@@ -393,7 +393,7 @@ pub enum ToSurface {
 
 /// What a surface sends back.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "from")]
+#[serde(rename_all = "snake_case", tag = "event")]
 pub enum FromSurface {
     /// What to put in the rows, in the same roles everything else is painted in.
     Draw {
