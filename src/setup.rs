@@ -138,10 +138,43 @@ pub fn apply(settings: &serde_json::Map<String, serde_json::Value>) -> Applied {
     applied
 }
 
-/// What a coordinator said about `name`, if anything.
+/// What a coordinator said, from the environment it spawned this process with.
+///
+/// **casper is not a daemon, and this is the difference that follows from it.** melchior and
+/// balthasar are asked once and then run for the session, so `configure` setting something
+/// in-process is the whole of what they need. casper is one process per call: a `configure` that
+/// only reached this process would report `set` for a setting that evaporates on exit, which is a
+/// program answering the contract and doing nothing.
+///
+/// So whoever spawns casper says what it should be, on every spawn, in `CASPER_CONFIGURE` — the
+/// same JSON object `configure` would have applied. One process, one configuration, no state on
+/// disk for two sessions to fight over and none to outlive the session that set it.
+///
+/// `configure` still exists and still answers, because a coordinator wants to know *which* of its
+/// settings would be refused before it commits to them. That is what the verb is for here: a dry
+/// run that names what it did not understand.
+static FROM_ENV: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+
+/// The settings in force: what `configure` set in this process, or what spawned it.
+fn in_force() -> &'static serde_json::Value {
+    if let Some(told) = TOLD.get() {
+        return told;
+    }
+    FROM_ENV.get_or_init(|| {
+        let Some(raw) = std::env::var_os("CASPER_CONFIGURE") else {
+            return serde_json::Value::Object(serde_json::Map::new());
+        };
+        // Unreadable is empty, not fatal. A coordinator that sent something malformed has a bug,
+        // and refusing to run any tool over it would take the session down for a setting.
+        serde_json::from_slice(raw.as_encoded_bytes())
+            .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()))
+    })
+}
+
+/// One setting a coordinator gave, if it gave one.
 #[must_use]
 pub fn told(name: &str) -> Option<&'static serde_json::Value> {
-    TOLD.get()?.get(name)
+    in_force().get(name)
 }
 
 /// Where a person's own declarations live.
@@ -180,15 +213,88 @@ pub fn layers() -> Vec<(std::path::PathBuf, crate::plugins::Trust)> {
     })
 }
 
-/// Whether a tool was switched off by configuration.
+/// Whether a tool was switched off entirely.
+///
+/// Off means gone: not listed, and refused if something asks for it by name anyway. A model that
+/// was never told about a tool can still guess at one, and answering the guess would make `off`
+/// mean "hidden" for anything persistent enough to try.
 #[must_use]
 pub fn is_off(tool: &str) -> bool {
+    flag(tool, "off")
+}
+
+/// Whether a tool is kept runnable but taken out of what the model is shown.
+///
+/// The other half of `off`, and the reason there are two: a tool a *person* invokes through the
+/// harness should not be spending context in every request that mentions it.
+#[must_use]
+pub fn is_hidden(tool: &str) -> bool {
+    flag(tool, "hidden")
+}
+
+/// One boolean under `tools.<name>`.
+fn flag(tool: &str, which: &str) -> bool {
     matches!(
         told("tools")
             .and_then(|tools| tools.get(tool))
-            .and_then(|t| t.get("off")),
+            .and_then(|t| t.get(which)),
         Some(serde_json::Value::Bool(true))
     )
+}
+
+/// How much of a tool's output crosses back before it is cut.
+///
+/// **Declared with a default since this existed and applied to nothing.** A setting a program
+/// advertises in `needs` and then ignores is worse than one it does not offer: a coordinator sets
+/// it, is told it was taken, and the behaviour never changes.
+#[must_use]
+pub fn output_bytes() -> usize {
+    const DEFAULT: usize = 262_144;
+    told("output_bytes")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT)
+}
+
+/// Cut `text` to `output_bytes`, keeping both ends.
+///
+/// Head *and* tail, because which one matters depends on the tool: a file read wants its head, a
+/// build that failed wants its tail. Cut on a character boundary, so the result is still a string.
+#[must_use]
+pub fn bounded(text: String) -> String {
+    let cap = output_bytes();
+    if text.len() <= cap {
+        return text;
+    }
+    let half = cap / 2;
+    let head = floor_char_boundary(&text, half);
+    let tail = ceil_char_boundary(&text, text.len() - (cap - half));
+    let dropped = tail - head;
+    format!(
+        "{}\n… {dropped} bytes dropped, of {} …\n{}",
+        &text[..head],
+        text.len(),
+        &text[tail..]
+    )
+}
+
+/// The largest index at or below `at` that starts a character.
+fn floor_char_boundary(text: &str, at: usize) -> usize {
+    let mut at = at.min(text.len());
+    while at > 0 && !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
+}
+
+/// The smallest index at or above `at` that starts a character.
+fn ceil_char_boundary(text: &str, at: usize) -> usize {
+    let mut at = at.min(text.len());
+    while at < text.len() && !text.is_char_boundary(at) {
+        at += 1;
+    }
+    at
 }
 
 /// Run a coordinator's configuration chunk and say what was done with each name.

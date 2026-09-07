@@ -202,7 +202,15 @@ fn tools() -> Reply {
         Ok(engine) => engine,
         Err(why) => return Reply::refused(why),
     };
-    match serde_json::to_value(engine.tools()) {
+    // **What a coordinator switched off is not listed.** `off` and `hidden` were declared in
+    // `needs` from the day `needs` existed and were read by nothing at all: a coordinator set
+    // one, was told it was taken, and every tool stayed exactly where it was.
+    let offered: Vec<_> = engine
+        .tools()
+        .into_iter()
+        .filter(|card| !casper::setup::is_off(&card.name) && !casper::setup::is_hidden(&card.name))
+        .collect();
+    match serde_json::to_value(offered) {
         Ok(cards) => listing(cards),
         Err(why) => Reply::refused(format!("the tools cannot be described: {why}")),
     }
@@ -222,11 +230,20 @@ fn ran() -> Reply {
         Ok(engine) => engine,
         Err(why) => return Reply::refused(why),
     };
+    // **Off means gone, not merely unlisted.** A model that was never told about a tool can
+    // still guess at one, and answering the guess would make `off` mean `hidden` for anything
+    // persistent enough to try. `hidden` is the setting that means hidden, and it still runs.
+    if casper::setup::is_off(&call.tool) {
+        return Reply::refused(format!("no such tool: {}", call.tool));
+    }
     // A tool nobody declared is a refusal rather than a failed result: the model asked for
     // something that does not exist, and telling it the call *failed* invites a retry.
-    let Some(ran) = engine.call(&call.tool, &given(&call)) else {
+    let Some(mut ran) = engine.call(&call.tool, &given(&call)) else {
         return Reply::refused(format!("no such tool: {}", call.tool));
     };
+    // What the model reads is capped; what the person is shown is not, because it is drawn once
+    // and costs no context.
+    ran.said = casper::setup::bounded(ran.said);
     answer(&ran)
 }
 
