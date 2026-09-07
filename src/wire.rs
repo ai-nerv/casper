@@ -249,3 +249,29 @@ mod tests {
         assert!(!known("nope"));
     }
 }
+
+/// What the command line answers, as against [`VERBS`], which is the socket.
+///
+/// Two doors, two surfaces, and the difference is data rather than something a reader has to
+/// notice. **`run` is on this list and deliberately not on the other**: casper's job is running
+/// programs, and a socket that runs commands is a remote shell wearing a friendly name — the
+/// spawn link carries the trust instead, because a parent that can spawn casper could have run
+/// the command itself.
+pub const CLI_VERBS: &[(&str, &str)] = &[
+    ("verbs", "what this program answers, on each of its doors"),
+    (
+        "tools",
+        "every tool it offers, with schemas and what each needs",
+    ),
+    ("run", "run one; the call arrives as JSON on stdin"),
+    (
+        "surface",
+        "hold rows on the harness's screen and draw into them",
+    ),
+    ("needs", "what a coordinator may tell it, as declarations"),
+    ("configure", "take that configuration, as Lua on stdin"),
+    (
+        "client",
+        "the client library for its surface — casper has none, and says so",
+    ),
+];

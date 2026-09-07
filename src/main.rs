@@ -31,6 +31,22 @@ fn main() -> std::process::ExitCode {
         "verbs" => say(how, &Reply::of(described())),
         "tools" => say(how, &tools()),
         "run" => say(how, &ran()),
+        // The coordinated half of the family contract. casper listed `needs` in its own verb
+        // table and dispatched nothing for it, so the answer to "what may I tell you" was
+        // "no such call" — from the one program in the family whose whole subject is tools.
+        "needs" => say(how, &Reply::of(needs())),
+        "configure" => say(how, &configure()),
+        // `client` is the family's name for it. casper's surface is reached by spawning it with
+        // a JSON call, so there is no Lua library to hand over — and that is an answer, where
+        // saying nothing is not.
+        "client" | "lua-api" => say(
+            how,
+            &Reply::refused(
+                "casper has no client library: its surface is reached by spawning it with a call \
+                 on stdin, not from a Lua VM"
+                    .to_owned(),
+            ),
+        ),
         // Not a call and not a reply: frames both ways for as long as the tool holds its rows.
         // See `casper::surface` for why this cannot be one exec per event.
         "surface" => held(args.get(1).map(String::as_str).unwrap_or_default()),
@@ -92,14 +108,42 @@ fn say(how: As, reply: &Reply) {
     let _ = std::io::stdout().lock().write_all(&encoded(how, reply));
 }
 
+/// What a coordinator may tell this casper.
+fn needs() -> serde_json::Value {
+    serde_json::to_value(casper::setup::needs()).unwrap_or(serde_json::Value::Null)
+}
+
+/// Read configuration on stdin, apply it, and say what was done with each name.
+///
+/// Lua on stdin, like every other sibling takes it — the coordinator writes one dialect, not
+/// three. A chunk that will not run is a refusal rather than a crash: the coordinator sent
+/// something, and what it needs back is which part was wrong.
+fn configure() -> Reply {
+    let mut source = String::new();
+    if let Err(why) = std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut source) {
+        return Reply::refused(format!("nothing to read: {why}"));
+    }
+    match casper::setup::read(&source) {
+        Ok(applied) => match serde_json::to_value(applied) {
+            Ok(value) => Reply::of(serde_json::Value::Array(vec![value])),
+            Err(why) => Reply::refused(format!("that cannot be described: {why}")),
+        },
+        Err(why) => Reply::refused(why),
+    }
+}
+
 /// What the socket answers, as name and description.
 fn described() -> serde_json::Value {
-    serde_json::Value::Array(
-        VERBS
-            .iter()
-            .map(|(name, about)| serde_json::json!({"verb": name, "about": about}))
-            .collect(),
-    )
+    // Both doors, each verb saying which it is on. A conformance check that probed the socket
+    // list against the command line would report `run` as missing from a door that never
+    // claimed it — and miss that `needs` was claimed by a door that did not answer it.
+    let cli = casper::wire::CLI_VERBS
+        .iter()
+        .map(|(name, about)| serde_json::json!({"verb": name, "about": about, "door": "cli"}));
+    let socket = VERBS
+        .iter()
+        .map(|(name, about)| serde_json::json!({"verb": name, "about": about, "door": "socket"}));
+    serde_json::Value::Array(cli.chain(socket).collect())
 }
 
 /// Every tool, as a card.
@@ -179,6 +223,25 @@ fn loaded() -> Result<Engine, String> {
     engine
         .run(include_str!("../config/tools.lua"), "tools.lua")
         .map_err(|why| why.to_string())?;
+
+    // **Then whatever a person or a coordinator added, layered over it.** Additive, because the
+    // registry replaces by name: a file declaring `cat` means it, and a file declaring something
+    // new adds one. This was the whole of what casper could not do — thirteen tools compiled in,
+    // no config directory read, and `needs` advertised while nothing dispatched it.
+    //
+    // A layer that will not run is named on stderr and does not stop the others: a broken file of
+    // somebody's own costs them that file, not the thirteen that shipped.
+    for path in casper::setup::layers() {
+        match std::fs::read_to_string(&path) {
+            Ok(source) => {
+                if let Err(why) = engine.run(&source, &path.to_string_lossy()) {
+                    eprintln!("casper: {}: {why}", path.display());
+                }
+            }
+            Err(why) => eprintln!("casper: {}: {why}", path.display()),
+        }
+    }
+
     engine.harvest();
     Ok(engine)
 }

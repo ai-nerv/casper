@@ -486,6 +486,15 @@ impl Engine {
     pub fn setting(&self, name: &str) -> Option<serde_json::Value> {
         self.declared.borrow().settings.get(name).cloned()
     }
+
+    /// Every name a declaration assigned.
+    ///
+    /// So that a name nobody declared can be refused *by name* rather than ignored: a
+    /// configuration line that did nothing looks exactly like one that worked.
+    #[must_use]
+    pub fn settings(&self) -> Vec<String> {
+        self.declared.borrow().settings.keys().cloned().collect()
+    }
 }
 
 /// Read a declaration's data half.

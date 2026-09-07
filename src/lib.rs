@@ -12,6 +12,7 @@ pub mod lua;
 pub mod noted;
 pub mod paint;
 pub mod pty;
+pub mod setup;
 pub mod surface;
 pub mod tools;
 pub mod wire;
