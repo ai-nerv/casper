@@ -28,13 +28,23 @@ fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let how = asked(&args);
     match args.first().map(String::as_str).unwrap_or("help") {
-        "verbs" => say(how, &listing(described())),
+        // The one verb that says which registrar surface this program offers -- a fact about the
+        // program, not about the reply, so it rides on the self-description and nowhere else.
+        "verbs" => {
+            let mut reply = listing(described());
+            reply.surface = Some(casper::wire::SURFACE);
+            say(how, &reply);
+        }
         "tools" => say(how, &tools()),
         "run" => say(how, &ran()),
         // The coordinated half of the family contract. casper listed `needs` in its own verb
         // table and dispatched nothing for it, so the answer to "what may I tell you" was
         // "no such call" — from the one program in the family whose whole subject is tools.
         "needs" => say(how, &listing(needs())),
+        // The distribution half. A package under `site/pack/` is somebody else's code that
+        // arrived by being fetched, so it runs once you have said it may -- and stops the moment
+        // it changes. Your own files are yours and run on sight.
+        "acknowledge" => say(how, &acknowledged()),
         "configure" => say(how, &configure()),
         // `client` is the family's name for it. casper's surface is reached by spawning it with
         // a JSON call, so there is no Lua library to hand over — and that is an answer, where
@@ -108,6 +118,36 @@ fn say(how: As, reply: &Reply) {
     let _ = std::io::stdout().lock().write_all(&encoded(how, reply));
 }
 
+/// Acknowledge every installed package, so its declarations may run.
+///
+/// Answers with what it took, in the family's reply shape like everything else here. Nothing
+/// installed is an empty answer rather than a refusal: it is what a machine that has installed
+/// nothing should say.
+fn acknowledged() -> Reply {
+    let Some(dir) = casper::setup::config_dir() else {
+        return Reply::refused("no configuration directory to write a manifest in".to_owned());
+    };
+    let files: Vec<(std::path::PathBuf, String)> = casper::setup::layers()
+        .into_iter()
+        .filter(|(_, trust)| trust.needs_acknowledging())
+        .filter_map(|(path, _)| {
+            std::fs::read_to_string(&path)
+                .ok()
+                .map(|source| (path, source))
+        })
+        .collect();
+
+    let manifest = casper::acknowledged::manifest_in(&dir);
+    match casper::acknowledged::acknowledge(&manifest, &files) {
+        Ok(_) => listing(serde_json::Value::Array(
+            files
+                .iter()
+                .map(|(path, _)| serde_json::json!({ "acknowledged": path.display().to_string() }))
+                .collect(),
+        )),
+        Err(why) => Reply::refused(why),
+    }
+}
 /// A listing verb's answer, as rows.
 ///
 /// An array becomes the rows themselves. Anything else is one row, which is what it already was.
@@ -241,9 +281,29 @@ fn loaded() -> Result<Engine, String> {
     //
     // A layer that will not run is named on stderr and does not stop the others: a broken file of
     // somebody's own costs them that file, not the thirteen that shipped.
-    for path in casper::setup::layers() {
+    let known = casper::setup::config_dir()
+        .map(|dir| casper::acknowledged::recorded(&casper::acknowledged::manifest_in(&dir)))
+        .unwrap_or_default();
+
+    for (path, trust) in casper::setup::layers() {
         match std::fs::read_to_string(&path) {
             Ok(source) => {
+                // **A package runs when you have said it may, and not before.** Your own files
+                // run on sight; this is for what arrived under `site/pack/` by being fetched,
+                // and can change under you between one run and the next. casper is the program
+                // whose declarations name commands, so this is the one where it matters most.
+                if trust.needs_acknowledging()
+                    && !casper::acknowledged::cleared(&known, &path, &source)
+                {
+                    eprintln!(
+                        "casper: {}; run `casper acknowledge` to clear it",
+                        casper::acknowledged::Held {
+                            path: path.clone(),
+                            known: casper::acknowledged::seen(&known, &path),
+                        }
+                    );
+                    continue;
+                }
                 if let Err(why) = engine.run(&source, &path.to_string_lossy()) {
                     eprintln!("casper: {}: {why}", path.display());
                 }

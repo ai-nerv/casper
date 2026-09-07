@@ -92,6 +92,21 @@ use serde::{Deserialize, Serialize};
 /// that an older reader ignores.
 pub const FAMILY: u16 = 1;
 
+/// The revision of the *registrar* surface — what a third party writes against.
+///
+/// Separate from [`FAMILY`], because they change for different reasons and a consumer cares about
+/// different halves. `family` is the wire between these programs: the reply shape, the encodings,
+/// which verbs exist. `surface` is what somebody's plugin file is written against: the registrar
+/// names, the fields each declaration owes, and what a callback is handed.
+///
+/// **It goes up when something already published stops working.** Adding a registrar, a field, or
+/// an event does not move it — a file written against 1 keeps running. Renaming one, removing one,
+/// or changing what a field means does, and that is the number a plugin checks if it wants to
+/// refuse rather than fail halfway.
+///
+/// Reported on `verbs`, beside `family`. See EXTENDING.md.
+pub const SURFACE: u16 = 1;
+
 /// The version a reply is stamped with when it does not say.
 ///
 /// Serde needs a function; [`FAMILY`] is the answer.
@@ -124,6 +139,12 @@ pub struct Reply {
     /// know and tolerates one it predates.
     #[serde(default = "family")]
     pub family: u16,
+    /// Which revision of the registrar surface this program offers. See [`SURFACE`].
+    ///
+    /// Only on `verbs`, because it is a fact about the program rather than about the reply.
+    /// Absent everywhere else, and absent from a build that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface: Option<u16>,
     /// How many values came back. Always `result.len()`.
     #[serde(default)]
     pub n: usize,
@@ -142,6 +163,7 @@ impl Reply {
         Self {
             ok: true,
             family: FAMILY,
+            surface: None,
             n: 1,
             result: vec![value],
             error: None,
@@ -159,6 +181,7 @@ impl Reply {
         Self {
             ok: true,
             family: FAMILY,
+            surface: None,
             n: values.len(),
             result: values,
             error: None,
@@ -171,6 +194,7 @@ impl Reply {
         Self {
             ok: true,
             family: FAMILY,
+            surface: None,
             n: 0,
             result: Vec::new(),
             error: None,
@@ -183,6 +207,7 @@ impl Reply {
         Self {
             ok: false,
             family: FAMILY,
+            surface: None,
             n: 0,
             result: Vec::new(),
             error: Some(why.into()),
@@ -234,6 +259,10 @@ pub const CLI_VERBS: &[(&str, &str)] = &[
     (
         "client",
         "the client library for its surface — casper has none, and says so",
+    ),
+    (
+        "acknowledge",
+        "clear the installed packages, so their declarations may run",
     ),
 ];
 #[cfg(test)]

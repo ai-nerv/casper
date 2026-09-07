@@ -151,35 +151,33 @@ pub fn told(name: &str) -> Option<&'static serde_json::Value> {
 /// in, which is how a sibling ends up running another project's declarations.
 #[must_use]
 pub fn config_dir() -> Option<std::path::PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
-        return Some(std::path::PathBuf::from(xdg).join("casper"));
-    }
-    std::env::var_os("HOME")
-        .filter(|v| !v.is_empty())
-        .map(|home| std::path::PathBuf::from(home).join(".config/casper"))
+    crate::plugins::config_dir()
 }
 
 /// Every declarations file to run, in order, after the shipped one.
 ///
-/// `tools.lua` in the config directory, then anything a coordinator named with `load`. Both are
-/// additive: the registry replaces by name, so a file declaring `cat` means it, and a file
-/// declaring `mine` adds one.
+/// All of it additive: the registry replaces by name, so a file declaring `cat` means it and a
+/// file declaring `mine` adds one. The order is the precedence, and it is
+/// [`crate::plugins::runtimepath`] — the config's own `tools.lua`, then what is installed under
+/// `plugin/` and `pack/`, then `after/`, then whatever a coordinator named with `load`.
+///
+/// This used to be two files: `tools.lua` and the coordinator's. So the one program in the
+/// family whose whole subject is tools could be extended by editing one file or by rebuilding it,
+/// and a package somebody else wrote had nowhere to go.
 #[must_use]
-pub fn layers() -> Vec<std::path::PathBuf> {
-    let mut found = Vec::new();
-    if let Some(dir) = config_dir() {
-        let theirs = dir.join("tools.lua");
-        if theirs.is_file() {
-            found.push(theirs);
-        }
-    }
-    if let Some(serde_json::Value::String(named)) = told("load") {
-        let path = std::path::PathBuf::from(named);
-        if path.is_file() {
-            found.push(path);
-        }
-    }
-    found
+pub fn layers() -> Vec<(std::path::PathBuf, crate::plugins::Trust)> {
+    crate::plugins::runtimepath(&crate::plugins::Roots {
+        config: config_dir(),
+        site: crate::plugins::site_dir(),
+        // The coordinator's file is a *setting*, so it is read here rather than in `plugins`:
+        // that module answers "which files, in what order" from what it is handed, and asking it
+        // to reach back for a setting would make the two depend on each other in both
+        // directions.
+        given: match told("load") {
+            Some(serde_json::Value::String(named)) => Some(std::path::PathBuf::from(named)),
+            _ => None,
+        },
+    })
 }
 
 /// Whether a tool was switched off by configuration.
