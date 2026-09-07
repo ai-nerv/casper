@@ -28,13 +28,13 @@ fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let how = asked(&args);
     match args.first().map(String::as_str).unwrap_or("help") {
-        "verbs" => say(how, &Reply::of(described())),
+        "verbs" => say(how, &listing(described())),
         "tools" => say(how, &tools()),
         "run" => say(how, &ran()),
         // The coordinated half of the family contract. casper listed `needs` in its own verb
         // table and dispatched nothing for it, so the answer to "what may I tell you" was
         // "no such call" — from the one program in the family whose whole subject is tools.
-        "needs" => say(how, &Reply::of(needs())),
+        "needs" => say(how, &listing(needs())),
         "configure" => say(how, &configure()),
         // `client` is the family's name for it. casper's surface is reached by spawning it with
         // a JSON call, so there is no Lua library to hand over — and that is an answer, where
@@ -108,6 +108,16 @@ fn say(how: As, reply: &Reply) {
     let _ = std::io::stdout().lock().write_all(&encoded(how, reply));
 }
 
+/// A listing verb's answer, as rows.
+///
+/// An array becomes the rows themselves. Anything else is one row, which is what it already was.
+fn listing(value: serde_json::Value) -> Reply {
+    match value {
+        serde_json::Value::Array(rows) => Reply::rows(rows),
+        other => Reply::of(other),
+    }
+}
+
 /// What a coordinator may tell this casper.
 fn needs() -> serde_json::Value {
     serde_json::to_value(casper::setup::needs()).unwrap_or(serde_json::Value::Null)
@@ -125,7 +135,7 @@ fn configure() -> Reply {
     }
     match casper::setup::read(&source) {
         Ok(applied) => match serde_json::to_value(applied) {
-            Ok(value) => Reply::of(serde_json::Value::Array(vec![value])),
+            Ok(value) => Reply::rows(vec![value]),
             Err(why) => Reply::refused(format!("that cannot be described: {why}")),
         },
         Err(why) => Reply::refused(why),
@@ -153,7 +163,7 @@ fn tools() -> Reply {
         Err(why) => return Reply::refused(why),
     };
     match serde_json::to_value(engine.tools()) {
-        Ok(cards) => Reply::of(cards),
+        Ok(cards) => listing(cards),
         Err(why) => Reply::refused(format!("the tools cannot be described: {why}")),
     }
 }
@@ -318,5 +328,29 @@ mod tests {
         let from_cbor: serde_json::Value =
             ciborium::from_reader(encoded(As::Cbor, &reply).as_slice()).expect("cbor");
         assert_eq!(from_cbor["ok"], serde_json::json!(false));
+    }
+    #[test]
+    fn a_listing_is_rows_and_not_one_row_that_is_a_list() {
+        // The shape melchior and balthasar were already sending, and the one casper was not:
+        // `result` is the rows. A coordinator that deserialised each row found an array where a
+        // declaration should have been, took nothing from it, and reported casper as declaring
+        // no settings at all.
+        let reply = listing(serde_json::json!([{ "name": "tools" }, { "name": "load" }]));
+        assert_eq!(reply.n, 2, "n is the number of rows");
+        assert_eq!(reply.result.len(), 2);
+        assert!(reply.result[0].is_object(), "a row is not a list");
+    }
+
+    #[test]
+    fn n_is_the_number_of_rows_for_every_verb_that_lists() {
+        // The invariant `n == result.len()`, on the real answers rather than a fixture, because
+        // it was the count being wrong that made the wrapping visible from outside.
+        for reply in [listing(described()), listing(needs())] {
+            assert_eq!(reply.n, reply.result.len(), "{reply:?}");
+            assert!(reply.n > 1, "a listing has rows: {reply:?}");
+            for row in &reply.result {
+                assert!(row.is_object(), "{row}");
+            }
+        }
     }
 }

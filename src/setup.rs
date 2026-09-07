@@ -193,6 +193,48 @@ pub fn is_off(tool: &str) -> bool {
     )
 }
 
+/// Run a coordinator's configuration chunk and say what was done with each name.
+///
+/// **Lua on stdin, like every sibling takes it.** A coordinator writes one dialect for the family
+/// rather than three, which is the whole reason `configure` is a verb and not a flag.
+///
+/// Harvested from the VM rather than parsed as JSON: the chunk is a program, and a coordinator
+/// that had to serialise its settings into a second format before sending them would be one that
+/// could not send a table at all.
+///
+/// # Errors
+/// When the chunk will not run — which is a refusal to report, not a crash: the coordinator sent
+/// something, and what it needs back is which part was wrong.
+pub fn read(source: &str) -> Result<Applied, String> {
+    let mut engine = crate::lua::engine::Engine::new();
+
+    // **What the VM arrives holding is not what the coordinator said.** The engine lends the
+    // client libraries as `casper.clients` before any chunk runs, so reading every name after the
+    // fact reported one the coordinator never wrote — and refused it, by name, in every reply.
+    engine.harvest();
+    let before: std::collections::BTreeSet<String> = engine.settings().into_iter().collect();
+
+    engine
+        .run(source, "configure")
+        .map_err(|why| why.to_string())?;
+    engine.harvest();
+
+    let mut settings = serde_json::Map::new();
+    for name in engine.settings() {
+        if before.contains(&name) {
+            continue;
+        }
+        // `Null` when the value is not describable — the name is what a refusal needs, and a
+        // declared setting reads its real value below.
+        settings.insert(name, serde_json::Value::Null);
+    }
+    for need in needs() {
+        if let Some(value) = engine.setting(&need.name) {
+            settings.insert(need.name.clone(), value);
+        }
+    }
+    Ok(apply(&settings))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,47 +287,4 @@ mod tests {
         assert!(dir.is_absolute(), "{}", dir.display());
         assert!(dir.ends_with("casper"), "{}", dir.display());
     }
-}
-
-/// Run a coordinator's configuration chunk and say what was done with each name.
-///
-/// **Lua on stdin, like every sibling takes it.** A coordinator writes one dialect for the family
-/// rather than three, which is the whole reason `configure` is a verb and not a flag.
-///
-/// Harvested from the VM rather than parsed as JSON: the chunk is a program, and a coordinator
-/// that had to serialise its settings into a second format before sending them would be one that
-/// could not send a table at all.
-///
-/// # Errors
-/// When the chunk will not run — which is a refusal to report, not a crash: the coordinator sent
-/// something, and what it needs back is which part was wrong.
-pub fn read(source: &str) -> Result<Applied, String> {
-    let mut engine = crate::lua::engine::Engine::new();
-
-    // **What the VM arrives holding is not what the coordinator said.** The engine lends the
-    // client libraries as `casper.clients` before any chunk runs, so reading every name after the
-    // fact reported one the coordinator never wrote — and refused it, by name, in every reply.
-    engine.harvest();
-    let before: std::collections::BTreeSet<String> = engine.settings().into_iter().collect();
-
-    engine
-        .run(source, "configure")
-        .map_err(|why| why.to_string())?;
-    engine.harvest();
-
-    let mut settings = serde_json::Map::new();
-    for name in engine.settings() {
-        if before.contains(&name) {
-            continue;
-        }
-        // `Null` when the value is not describable — the name is what a refusal needs, and a
-        // declared setting reads its real value below.
-        settings.insert(name, serde_json::Value::Null);
-    }
-    for need in needs() {
-        if let Some(value) = engine.setting(&need.name) {
-            settings.insert(need.name.clone(), value);
-        }
-    }
-    Ok(apply(&settings))
 }

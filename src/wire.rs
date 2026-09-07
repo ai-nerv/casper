@@ -148,6 +148,23 @@ impl Reply {
         }
     }
 
+    /// An answer of several values, which is what a listing verb has.
+    ///
+    /// **A list is the rows, not one row that is a list.** `of` given an array produced
+    /// `result: [[...]]` with `n: 1`, and every listing casper had went out that way while
+    /// melchior and balthasar sent theirs flat. A coordinator reading the contract found one
+    /// row it could not parse and concluded casper declared nothing.
+    #[must_use]
+    pub fn rows(values: Vec<serde_json::Value>) -> Self {
+        Self {
+            ok: true,
+            family: FAMILY,
+            n: values.len(),
+            result: values,
+            error: None,
+        }
+    }
+
     /// An answer of none, for a verb that does something rather than reporting something.
     #[must_use]
     pub fn done() -> Self {
@@ -194,6 +211,31 @@ pub fn known(verb: &str) -> bool {
     VERBS.iter().any(|(name, _)| *name == verb)
 }
 
+/// What the command line answers, as against [`VERBS`], which is the socket.
+///
+/// Two doors, two surfaces, and the difference is data rather than something a reader has to
+/// notice. **`run` is on this list and deliberately not on the other**: casper's job is running
+/// programs, and a socket that runs commands is a remote shell wearing a friendly name — the
+/// spawn link carries the trust instead, because a parent that can spawn casper could have run
+/// the command itself.
+pub const CLI_VERBS: &[(&str, &str)] = &[
+    ("verbs", "what this program answers, on each of its doors"),
+    (
+        "tools",
+        "every tool it offers, with schemas and what each needs",
+    ),
+    ("run", "run one; the call arrives as JSON on stdin"),
+    (
+        "surface",
+        "hold rows on the harness's screen and draw into them",
+    ),
+    ("needs", "what a coordinator may tell it, as declarations"),
+    ("configure", "take that configuration, as Lua on stdin"),
+    (
+        "client",
+        "the client library for its surface — casper has none, and says so",
+    ),
+];
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,29 +291,3 @@ mod tests {
         assert!(!known("nope"));
     }
 }
-
-/// What the command line answers, as against [`VERBS`], which is the socket.
-///
-/// Two doors, two surfaces, and the difference is data rather than something a reader has to
-/// notice. **`run` is on this list and deliberately not on the other**: casper's job is running
-/// programs, and a socket that runs commands is a remote shell wearing a friendly name — the
-/// spawn link carries the trust instead, because a parent that can spawn casper could have run
-/// the command itself.
-pub const CLI_VERBS: &[(&str, &str)] = &[
-    ("verbs", "what this program answers, on each of its doors"),
-    (
-        "tools",
-        "every tool it offers, with schemas and what each needs",
-    ),
-    ("run", "run one; the call arrives as JSON on stdin"),
-    (
-        "surface",
-        "hold rows on the harness's screen and draw into them",
-    ),
-    ("needs", "what a coordinator may tell it, as declarations"),
-    ("configure", "take that configuration, as Lua on stdin"),
-    (
-        "client",
-        "the client library for its surface — casper has none, and says so",
-    ),
-];

@@ -272,6 +272,24 @@ make.recipe{
 make.recipe{
   name = "verify",
   desc = "the whole local gate",
-  deps = { "fmt-check", "check", "test", "check-all", "test-all", "clippy", "rustdoc", "gates", "gate-hermetic", "machete" },
+  deps = { "fmt-check", "check", "test", "check-all", "test-all", "clippy", "rustdoc", "gates", "gate-hermetic", "gate-family", "machete" },
 }
 make.alias("v", "verify")
+
+-- The family contract: does this binary answer what FAMILY.md says every family program answers?
+--
+-- Its own recipe because it needs a *built binary* rather than a grep over the source, and
+-- because it is the one gate that would equally catch a fifth program written by somebody else.
+-- The two rules a reader cannot check are the ones it exists for: everything advertised is
+-- dispatched, and everything dispatched is advertised.
+make.recipe{
+  name = "gate-family",
+  desc = "the binary answers the family contract",
+  deps = { "build" },
+  run = function()
+    local where = "target/x86_64-unknown-linux-musl/release/casper"
+    if not oslo.fs.exists(where) then where = "target/release/casper" end
+    local ran = oslo.run{ "scripts/gate-family.sh", where  }
+    assert(ran.ok, "gate-family failed")
+  end,
+}
