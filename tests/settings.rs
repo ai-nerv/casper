@@ -12,10 +12,28 @@
 
 use std::process::Command;
 
+/// A config directory holding this checkout's declarations.
+///
+/// **Pointed at rather than inherited.** These spawn the binary, and the binary reads its
+/// declarations from `$XDG_CONFIG_HOME/casper` — so without this they would pass on a machine
+/// where somebody had run `make install` and fail on a runner where nobody had, which is being
+/// green for a reason that has nothing to do with what is being tested.
+fn installed() -> casper::scratch::Scratch {
+    let dir = casper::scratch::Scratch::new("casper-settings", "config");
+    let into = dir.join("casper");
+    std::fs::create_dir_all(&into).expect("mkdir");
+    std::fs::write(into.join("tools.lua"), include_str!("../config/tools.lua")).expect("write");
+    dir
+}
+
 /// Run casper with a configuration, and give back stdout.
 fn with(configured: &str, args: &[&str], stdin: Option<&str>) -> String {
+    let dir = installed();
     let mut command = Command::new(env!("CARGO_BIN_EXE_casper"));
-    command.args(args).env("CASPER_CONFIGURE", configured);
+    command
+        .args(args)
+        .env("CASPER_CONFIGURE", configured)
+        .env("XDG_CONFIG_HOME", &*dir);
     let Some(body) = stdin else {
         let out = command.output().expect("casper runs");
         return String::from_utf8_lossy(&out.stdout).into_owned();

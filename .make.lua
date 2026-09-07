@@ -22,6 +22,7 @@ end
 
 local NAME, VERSION = project()
 local PREFIX = os.getenv("PREFIX") or (os.getenv("HOME") .. "/.local")
+local CONFIG = (os.getenv("XDG_CONFIG_HOME") or (os.getenv("HOME") .. "/.config")) .. "/" .. NAME
 
 ------------------------------------------------------------------ what was built
 
@@ -154,12 +155,41 @@ make.recipe{
 }
 make.alias("r", "run")
 
+
+make.recipe{
+  name = "configs",
+  desc = ("install config/ to %s"):format(CONFIG),
+  -- **The declarations are a file you edit, not a string in the binary.** They were
+  -- `include_str!`d, which meant changing one tool -- or reading what the thirteen actually do --
+  -- was a rebuild, and the config directory could only ever *layer over* something you could not
+  -- see. melchior and balthasar have installed their declarations since they had any; casper was
+  -- the one that did not.
+  --
+  -- Overwritten on every install, like the siblings: a binary newer than the declarations it
+  -- reads is how a tool that shipped with it silently does not exist. Keep your own edits in
+  -- `plugin/` or `after/plugin/`, which this never touches.
+  run = function()
+    -- `capture` and `.out`: without it oslo streams the output to the terminal and hands back
+    -- nothing, so a listing like this prints the files and copies none of them.
+    local found = oslo.run{ "find", "config", "-type", "f", "-name", "*.lua", capture = true }
+    assert(found.ok, "could not list config/")
+    local copied = 0
+    for file in (found.out or ""):gmatch("[^\n]+") do
+      local into = CONFIG .. "/" .. file:gsub("^config/", "")
+      assert(oslo.run{ "mkdir", "-p", (into:match("^(.*)/[^/]*$")) }.ok, "could not create " .. into)
+      assert(oslo.run{ "install", "-m", "644", file, into }.ok, "could not install " .. file)
+      copied = copied + 1
+    end
+    print(("%d files -> %s"):format(copied, CONFIG))
+  end,
+}
+
 make.recipe{
   name = "install",
-  desc = ("install the binary to %s/bin"):format(PREFIX),
-  -- The declarations ride in the binary rather than beside it: casper with no tools is not a
-  -- casper, and a relative `config/` would load whichever checkout the working directory
-  -- happened to be in -- which is how a sibling ends up running another project's tools.
+  desc = ("install the binary to %s/bin, and config/ where it reads it"):format(PREFIX),
+  -- The declarations are read from `$XDG_CONFIG_HOME/casper`, named rather than searched: a
+  -- relative `config/` would load whichever checkout the working directory happened to be in,
+  -- which is how a sibling ends up running another project's tools.
   deps = { "build" },
   run = function()
     local bin = PREFIX .. "/bin"
@@ -167,6 +197,9 @@ make.recipe{
     assert(oslo.run{ "install", "-m", "755", binary_path(), bin .. "/" .. NAME }.ok,
            "could not install to " .. bin)
     print(("installed %s"):format(bin .. "/" .. NAME))
+    -- Last, and part of the install rather than a step to remember: a binary newer than the
+    -- declarations it reads is how a tool that shipped with it silently does not exist.
+    make.run("configs")
   end,
 }
 

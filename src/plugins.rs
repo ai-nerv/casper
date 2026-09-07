@@ -101,8 +101,9 @@ fn data_home() -> Option<PathBuf> {
 ///   <given>                            what a coordinator handed over
 /// ```
 ///
-/// The shipped declarations are not here: they are compiled in and run first by the caller, and
-/// a second copy of that decision would be two places to change it.
+/// `tools.lua` is the first of these and is a file like the rest — it used to be `include_str!`d,
+/// which made changing one tool a rebuild and left the config directory able only to layer over
+/// something a person could not see.
 #[must_use]
 pub fn runtimepath(roots: &Roots) -> Vec<(PathBuf, Trust)> {
     let mut out = Vec::new();
@@ -211,7 +212,7 @@ mod tests {
     #[test]
     fn dropping_a_file_in_plugin_is_enough_to_declare_a_tool() {
         // The whole point: no rebuild, no edit to anything shipped. casper carried thirteen
-        // tools compiled into the binary and read exactly one file of anybody else's.
+        // tools in one file and nowhere for anybody else's to go.
         let dir = Scratch::new("casper-rtp", "dropped");
         touch(&dir.join("plugin/mine.lua"), "-- nothing\n");
 

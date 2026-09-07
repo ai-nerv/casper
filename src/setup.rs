@@ -7,11 +7,14 @@
 //! out loud: nothing is compiled in, *because a binary carrying a copy is a binary you rebuild to
 //! fix a wire format*.
 //!
-//! **The shipped declarations stay, as the floor.** A casper with no configuration is still a
-//! casper with thirteen tools; what changes is that there is now somewhere to put a fourteenth.
-//! Layering rather than replacing is the family's rule — melchior's `apis.lua` replaced, so
-//! adding one wire protocol meant forking eight hundred lines and owning the drift forever, and
-//! that is the mistake this copies away from rather than toward.
+//! **The declarations are an installed file now, like every sibling's.** `oslo make install`
+//! copies `config/**/*.lua` into `$XDG_CONFIG_HOME/casper`, which is the `configs` recipe
+//! melchior and balthasar have always had and casper alone lacked. Editing `tools.lua` changes
+//! the tools on the next call; a rebuild is for Rust.
+//!
+//! Everything after it layers rather than replaces, which is the family's rule — melchior's
+//! `apis.lua` replaced, so adding one wire protocol meant forking eight hundred lines and owning
+//! the drift forever, and that is the mistake this copies away from rather than toward.
 
 use serde::{Deserialize, Serialize};
 

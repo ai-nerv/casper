@@ -284,25 +284,40 @@ fn answer(ran: &Ran) -> Reply {
 /// An engine with the declarations loaded.
 fn loaded() -> Result<Engine, String> {
     let mut engine = Engine::new();
-    // Shipped rather than looked for. A casper with no tools is not a casper, and a relative
-    // path would load whichever checkout the working directory happened to be in — which is how
-    // a sibling ends up running another project's declarations.
-    engine
-        .run(include_str!("../config/tools.lua"), "tools.lua")
-        .map_err(|why| why.to_string())?;
 
-    // **Then whatever a person or a coordinator added, layered over it.** Additive, because the
-    // registry replaces by name: a file declaring `cat` means it, and a file declaring something
-    // new adds one. This was the whole of what casper could not do — thirteen tools compiled in,
-    // no config directory read, and `needs` advertised while nothing dispatched it.
+    // **The declarations are a file, not a string in the binary.** They were `include_str!`d, so
+    // changing one tool -- or reading what the thirteen actually do -- meant a rebuild, and the
+    // config directory could only ever layer over something a person could not see or edit.
+    // melchior and balthasar have installed their declarations since they had any; casper was the
+    // one that did not, and there was no reason for it to be different.
     //
-    // A layer that will not run is named on stderr and does not stop the others: a broken file of
-    // somebody's own costs them that file, not the thirteen that shipped.
+    // Named rather than searched: `$XDG_CONFIG_HOME/casper`, because a relative `config/` would
+    // load whichever checkout the working directory happened to be in -- which is how a sibling
+    // ends up running another project's tools.
     let known = casper::setup::config_dir()
         .map(|dir| casper::acknowledged::recorded(&casper::acknowledged::manifest_in(&dir)))
         .unwrap_or_default();
 
-    for (path, trust) in casper::setup::layers() {
+    let files = casper::setup::layers();
+    if files.is_empty() {
+        // A casper with no declarations is not a casper, and saying so beats answering an empty
+        // tool list -- which reads to a coordinator as "this machine has no tools" rather than
+        // as "this install is half finished".
+        return Err(format!(
+            "no declarations in {}: run `oslo make install` in casper's checkout to put them there",
+            casper::setup::config_dir()
+                .map(|dir| dir.display().to_string())
+                .unwrap_or_else(|| "the config directory".to_owned())
+        ));
+    }
+
+    // Layered, because the registry replaces by name: a file declaring `cat` means it, and a file
+    // declaring something new adds one. The order is the precedence -- `tools.lua`, then
+    // `plugin/`, then installed packages, then `after/plugin/`, then a coordinator's own file.
+    //
+    // A layer that will not run is named on stderr and does not stop the others: a broken file of
+    // somebody's own costs them that file, not the rest.
+    for (path, trust) in files {
         match std::fs::read_to_string(&path) {
             Ok(source) => {
                 // **A package runs when you have said it may, and not before.** Your own files
