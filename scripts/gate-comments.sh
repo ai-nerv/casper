@@ -17,16 +17,18 @@ over=$(
   find $ROOT -name '*.rs' -type f -not -path '*/target/*' -not -path '*/xtra/*' | sort |
     while IFS= read -r file; do
       awk -v file="$file" -v limit="$LIMIT" -v floor="$FLOOR" '
-        # A run of comment lines is one block. Held until it ends, so that a `SAFETY:` anywhere
-        # in it exempts the whole note rather than the single line carrying the word.
+        # A run of comment lines is one block, held until it ends so a multi-line `SAFETY:` note
+        # is exempt whole. Exempt from the `SAFETY:` line onward only: anything above it is an
+        # ordinary comment that happens to sit next to one, and counting it is what stops a
+        # paragraph being parked above a safety note to escape the budget.
         function settle() {
-          if (!safe) comments += held
+          comments += (safe ? safe - 1 : held)
           held = 0; safe = 0
         }
         { line = $0; sub(/^[ \t]+/, "", line) }
         line ~ /^\/\// {
           held++
-          if (line ~ /SAFETY:/) safe = 1
+          if (line ~ /SAFETY:/ && !safe) safe = held
           next
         }
         { settle() }
