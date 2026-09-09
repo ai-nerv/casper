@@ -216,3 +216,24 @@ fn a_surface_whose_frames_landed_is_a_success() {
     assert!(out.status.success(), "{:?}", panicked(&out));
     assert!(!out.stdout.is_empty(), "and it drew something");
 }
+
+/// A surface on a machine with no declarations still says it is finished.
+///
+/// The harness reserves the rows before this process starts, so an install with nothing in it
+/// used to leave them held for a tenant that was never going to draw — the one path out of
+/// `surface` that said nothing at all.
+#[test]
+fn a_surface_with_nothing_to_draw_still_says_so() {
+    let dir = Scratch::new("casper-delivered", "empty");
+    std::fs::create_dir_all(dir.join("config/casper")).expect("mkdir");
+    let out = against(&dir, &["surface", "dino"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("casper runs");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("\"done\""),
+        "{:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
