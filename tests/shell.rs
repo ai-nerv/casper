@@ -11,6 +11,7 @@
 //! answers 0 for a command that failed is worse than the leak it was fixed for**, so the status
 //! is checked in both directions, and so is the `cd` that has to survive to the next call.
 
+use casper::scratch::Scratch;
 use std::process::{Command, Stdio};
 
 /// The binary under test.
@@ -23,13 +24,15 @@ const CASPER: &str = env!("CARGO_BIN_EXE_casper");
 /// what is in the repository — and `shell` writes the directory it is to use next into the
 /// runtime directory, which on a developer's machine is one a person is using.
 struct Alone {
-    dir: std::path::PathBuf,
+    /// A [`Scratch`] rather than a path with a `Drop` written out here: the guard, the counter
+    /// that tells two same-named fixtures apart, and the delete-before-create are all one type's
+    /// business, and there were three copies of them across this suite.
+    dir: Scratch,
 }
 
 impl Alone {
     fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("casper-shell-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = Scratch::new("casper-shell", name);
         let config = dir.join("config/casper");
         std::fs::create_dir_all(&config).expect("mkdir");
         std::fs::copy(
@@ -45,7 +48,7 @@ impl Alone {
         let done = Command::new(CASPER)
             .arg("run")
             .env("XDG_CONFIG_HOME", self.dir.join("config"))
-            .env("XDG_RUNTIME_DIR", &self.dir)
+            .env("XDG_RUNTIME_DIR", &*self.dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -67,12 +70,6 @@ impl Alone {
     fn shell(&self, command: &str) -> serde_json::Value {
         let call = serde_json::json!({"tool": "shell", "args": {"command": command}});
         self.asking(&call.to_string())["result"][0].clone()
-    }
-}
-
-impl Drop for Alone {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 

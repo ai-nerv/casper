@@ -246,16 +246,28 @@ make.alias("c", "compile")
 make.recipe{
   name = "gates",
   desc = "the architectural gates",
+  -- **Found rather than listed.** This named its four gates one by one, and CI globs `scripts/`
+  -- for exactly the reason that a gate added there and forgotten here is a gate nobody local
+  -- runs. Three arrived at once and none of them would have been in the list. The two that need
+  -- something other than a bare invocation keep their own recipes and are skipped here.
   run = function()
+    local found = oslo.run{ "sh", "-c", "ls scripts/gate-*.sh", capture = true }
+    assert(found.ok, "could not list scripts/")
     local failed = {}
-    for _, name in ipairs({ "gate-cycles", "gate-file-size", "gate-modules", "gate-wire" }) do
-      -- Executed, not handed to `sh`: the shebang is the portability contract, and CI runs
-      -- these on a machine whose /bin/sh is dash.
-      local result = oslo.run{ "scripts/" .. name .. ".sh", capture = true }
-      print((result.ok and "\u{2713}  %s" or "\u{2717}  %s"):format(name))
-      if not result.ok then
-        failed[#failed + 1] = name
-        print(((result.out or "") .. (result.err or "")))
+    for path in (found.out or ""):gmatch("[^\n]+") do
+      local name = path:match("([^/]+)%.sh$")
+      -- `gate-family` takes a built binary and `gate-hermetic` runs the whole suite; both are
+      -- recipes of their own, so a failure is attributable to one of them rather than to "the
+      -- gates".
+      if name ~= "gate-family" and name ~= "gate-hermetic" then
+        -- Executed, not handed to `sh`: the shebang is the portability contract, and CI runs
+        -- these on a machine whose /bin/sh is dash.
+        local result = oslo.run{ path, capture = true }
+        print((result.ok and "\u{2713}  %s" or "\u{2717}  %s"):format(name))
+        if not result.ok then
+          failed[#failed + 1] = name
+          print(((result.out or "") .. (result.err or "")))
+        end
       end
     end
     assert(#failed == 0, ("%d gate(s) failed"):format(#failed))

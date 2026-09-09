@@ -17,6 +17,7 @@
 //! closes and the kernel hangs the session up, so the one asked for here is a program that
 //! *ignores* the hangup, which nothing but the death signal will end.
 
+use casper::scratch::Scratch;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -39,12 +40,17 @@ const CASPER: &str = env!("CARGO_BIN_EXE_casper");
 /// default, and that is the whole exercise.
 struct Caller {
     shell: Child,
+    /// Zero until the shell has said which casper it started. See [`Caller::spawning`].
     served: u32,
     /// The command casper is running, so the test leaves nothing behind either.
     ran: Option<u32>,
     /// The program the person actually asked for, below whatever wrapper is between.
     leaf: Option<u32>,
-    dir: std::path::PathBuf,
+    /// Everything else the caller started, read while it was all still up. See [`below`].
+    under: Vec<u32>,
+    /// Held only for its `Drop`, which is what removes the fixture on the unwind as well as on
+    /// the return. Nothing reads it after the spawn.
+    _dir: Scratch,
 }
 
 impl Caller {
@@ -90,9 +96,7 @@ impl Caller {
     }
 
     fn spawning(name: &str, frame: &str, running: impl Fn(&Path) -> String) -> Self {
-        let dir = std::env::temp_dir().join(format!("casper-tied-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = Scratch::new("casper-tied", name);
         let call = dir.join("call.json");
         // Newline-terminated: `run` reads to end of file and would not care, but a surface reads
         // lines and an unterminated one leaves it waiting for the rest of a frame that is all
@@ -122,21 +126,28 @@ impl Caller {
             .arg("-c")
             .arg(script)
             .env("XDG_CONFIG_HOME", dir.join("config"))
-            .env("XDG_RUNTIME_DIR", &dir)
+            .env("XDG_RUNTIME_DIR", &*dir)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .expect("start the caller");
-        let served = read_pid(&pids).expect("the caller said which casper it started");
-        let ran = running_under(served);
-        Self {
+        // **Owned before anything else can panic.** `Child` has no `Drop` that kills, so a
+        // `read_pid` that timed out used to leave the shell and its casper running for the rest
+        // of the session — and the directory with them. Everything after this line unwinds into
+        // the guard below instead.
+        let mut caller = Self {
             shell,
-            served,
-            ran,
+            served: 0,
+            ran: None,
             leaf: None,
-            dir,
-        }
+            under: Vec::new(),
+            _dir: dir,
+        };
+        caller.served = read_pid(&pids).expect("the caller said which casper it started");
+        caller.ran = running_under(caller.served);
+        caller.under = below(caller.shell.id());
+        caller
     }
 
     /// End the caller the way a crash would: with nothing running inside it.
@@ -144,17 +155,27 @@ impl Caller {
         let _ = self.shell.kill();
         let _ = self.shell.wait();
     }
+}
 
-    /// Leave nothing running and nothing on disk, whatever the assertions are about to do.
-    fn cleared(mut self) {
-        self.killed();
+/// Leave nothing running and nothing on disk, whatever the assertions did.
+///
+/// It was a `cleared()` the tests called by hand, one line before their assertions — which
+/// covered the passing run and nothing else. Every `expect` above it and the `assert!` that
+/// three of these open with unwind straight past a call like that, so the run that failed was
+/// the run that left a shell, a casper, a `sleep 30` and a directory behind. A guard runs on
+/// the unwind too, which is the case that was leaking.
+impl Drop for Caller {
+    fn drop(&mut self) {
+        // Before the shell, not after: a test may already have killed it, and reading `/proc`
+        // for a pid that has been reaped asks about whoever holds it now.
         for pid in [Some(self.served), self.ran, self.leaf]
             .into_iter()
             .flatten()
+            .chain(self.under.iter().copied())
         {
             end(pid);
         }
-        let _ = std::fs::remove_dir_all(&self.dir);
+        self.killed();
     }
 }
 
@@ -171,20 +192,53 @@ fn read_pid(at: &Path) -> Option<u32> {
     None
 }
 
-/// The first child of `pid` right now, if it has one.
+/// Every child of `pid` right now.
 ///
 /// Read out of `/proc` rather than tracked, because the process that spawned it is not this one.
-fn child_of(pid: u32) -> Option<u32> {
-    let threads = std::fs::read_dir(format!("/proc/{pid}/task")).ok()?;
+fn children_of(pid: u32) -> Vec<u32> {
+    let Ok(threads) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
     for thread in threads.flatten() {
-        if let Ok(listed) = std::fs::read_to_string(thread.path().join("children"))
-            && let Some(first) = listed.split_whitespace().next()
-            && let Ok(child) = first.parse::<u32>()
-        {
-            return Some(child);
+        if let Ok(listed) = std::fs::read_to_string(thread.path().join("children")) {
+            found.extend(
+                listed
+                    .split_whitespace()
+                    .filter_map(|one| one.parse::<u32>().ok()),
+            );
         }
     }
-    None
+    found
+}
+
+/// The first child of `pid` right now, if it has one.
+fn child_of(pid: u32) -> Option<u32> {
+    children_of(pid).into_iter().next()
+}
+
+/// Everything running below `pid`, however deep, not counting `pid` itself.
+///
+/// **A pipeline has more than one child and the guard only ever knew about one.** The screened
+/// case runs `{ cat …; sleep 30; } | casper surface screen`, so the shell has two children: the
+/// casper the test watches, and a subshell feeding it that nothing was tracking. Killing the
+/// shell left that subshell and its `sleep` running — for thirty seconds, every run, passing or
+/// failing. Nothing said so, because a leak of processes is not a leak of directories and the
+/// hermeticity gate only ever looked at directories.
+///
+/// Read while everything is still up, and kept. Once the shell is gone its children are
+/// reparented to init and `/proc` no longer relates them to it — and a pid that has been reaped
+/// belongs to whoever gets it next, which is not something to aim a `kill -9` at.
+fn below(pid: u32) -> Vec<u32> {
+    let mut walked = vec![pid];
+    let mut at = 0;
+    while at < walked.len() {
+        let next = children_of(walked[at]);
+        walked.extend(next);
+        at += 1;
+    }
+    walked.remove(0);
+    walked
 }
 
 /// The first child of `pid`, once it has one.
@@ -242,8 +296,15 @@ fn gone_within(pid: u32, patience: Duration) -> bool {
     !alive(pid)
 }
 
-/// Leave nothing running, whatever the assertions did.
+/// Kill one process outright.
+///
+/// Never pid 0: `kill -9 0` means "this whole process group", which from here is the test runner
+/// and everything else cargo has running. A [`Caller`] carries a zero for the moment between the
+/// spawn and the pid being read, and the guard walks the same list either way.
 fn end(pid: u32) {
+    if pid == 0 {
+        return;
+    }
     let _ = Command::new("kill")
         .arg("-9")
         .arg(pid.to_string())
@@ -280,7 +341,6 @@ fn a_call_does_not_outlive_the_process_that_asked_for_it() {
     let ran_went = gone_within(ran, NOTICES_WITHIN);
     let leaf_went = gone_within(leaf, NOTICES_WITHIN);
 
-    caller.cleared();
     assert!(
         went,
         "a casper must not outlive the process that started it"
@@ -307,7 +367,6 @@ fn a_program_on_a_screen_does_not_outlive_it_either() {
     caller.killed();
     let went = gone_within(ran, NOTICES_WITHIN);
 
-    caller.cleared();
     assert!(
         went,
         "a program on a screen must not outlive the casper that started it"

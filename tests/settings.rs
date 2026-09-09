@@ -26,14 +26,25 @@ fn installed() -> casper::scratch::Scratch {
     dir
 }
 
+/// The declarations the tools themselves read and write, which is a second directory.
+///
+/// `$XDG_CONFIG_HOME` is not the whole of what the shipped `tools.lua` reaches for: `shell`
+/// writes the directory it is to use next under `$XDG_RUNTIME_DIR/casper/cwd` and `pwd` reads it
+/// back. Without this the `pwd` below read the one a person is actually using — so the test was
+/// reporting on the machine, and would have gone on passing with the runtime path spelled any
+/// way at all. `gate-hermetic` could not see it either: `$XDG_RUNTIME_DIR` is not `$TMPDIR`.
+fn pointed(command: &mut Command, at: &casper::scratch::Scratch) {
+    command
+        .env("XDG_CONFIG_HOME", &**at)
+        .env("XDG_RUNTIME_DIR", &**at);
+}
+
 /// Run casper with a configuration, and give back stdout.
 fn with(configured: &str, args: &[&str], stdin: Option<&str>) -> String {
     let dir = installed();
     let mut command = Command::new(env!("CARGO_BIN_EXE_casper"));
-    command
-        .args(args)
-        .env("CASPER_CONFIGURE", configured)
-        .env("XDG_CONFIG_HOME", &*dir);
+    command.args(args).env("CASPER_CONFIGURE", configured);
+    pointed(&mut command, &dir);
     let Some(body) = stdin else {
         let out = command.output().expect("casper runs");
         return String::from_utf8_lossy(&out.stdout).into_owned();

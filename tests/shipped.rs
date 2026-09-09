@@ -190,9 +190,23 @@ mod conformance {
 
     /// Run `command` for long enough to draw, and report what the emulator threw away.
     fn dropped_by(command: &str, rows: u16, cols: u16) -> Vec<(String, usize)> {
+        // **A home of this test's own.** These are real programs, and real programs save their
+        // settings: `btop` writes `$XDG_CONFIG_HOME/btop` and `top` writes
+        // `$XDG_CONFIG_HOME/procps` on the way out, so every run of the suite edited the
+        // preferences of whoever ran it. Nothing said so for as long as the hermeticity gate
+        // could only see `$TMPDIR`, which is not where either of them writes.
+        let home = casper::scratch::Scratch::new("casper-conformance", "home");
+        let at = |name: &str| home.join(name).display().to_string();
         let spec = Spec {
             command: "sh".to_owned(),
             args: vec!["-c".to_owned(), command.to_owned()],
+            env: vec![
+                ("HOME".to_owned(), home.display().to_string()),
+                ("XDG_CONFIG_HOME".to_owned(), at("config")),
+                ("XDG_DATA_HOME".to_owned(), at("data")),
+                ("XDG_STATE_HOME".to_owned(), at("state")),
+                ("XDG_CACHE_HOME".to_owned(), at("cache")),
+            ],
             ..Spec::default()
         };
         let Ok(mut screen) = Screen::open(&spec, rows, cols) else {
