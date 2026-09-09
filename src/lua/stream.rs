@@ -20,9 +20,11 @@ const MAX_RECV: usize = 16 * 1024 * 1024;
 /// A connected socket, shared between the handle's methods.
 type Handle = Rc<RefCell<Option<UnixStream>>>;
 
-/// Whether `path` is a socket a config may dial: this user's own runtime directories and nothing
-/// else. There is no permission seam to gate with here — a config file is read before anything
-/// that could ask a person exists — so the reachable set is narrowed instead.
+/// Whether `path` is a socket a config may dial: under [`roots`] and nowhere else. There is no
+/// permission seam to gate with here — a config file is read before anything that could ask a
+/// person exists — so the reachable set is narrowed instead. Narrowed, not sealed: one of the
+/// roots is the shared temporary directory, and the check is on the written path rather than the
+/// one a symlink leads to. What seals this seam is that a declaration has [`crate::lua::exec`].
 fn dialable(path: &std::path::Path) -> bool {
     roots().iter().any(|root| under(path, root))
 }
