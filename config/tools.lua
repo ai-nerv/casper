@@ -268,10 +268,20 @@ do -- shell
       -- nothing here can see -- a script, a `pushd`, a `cd` inside an `if`.
       local held = where() or args.cwd or "."
       local kept = remembered()
+      -- **Backgrounded so this shell can hear a signal, grouped so it can pass one on.** `pwd`
+      -- has to follow the command, so dash forks for it rather than exec'ing it, and
+      -- `PR_SET_PDEATHSIG` is cleared across every fork: killing a magi took casper and this
+      -- shell and left `sleep 300` under init. casper starts this shell leading a process group
+      -- of its own (`tied.rs`), so `-$$` is the command and what it started and can never be
+      -- casper. The `&` is what lets the trap run at all -- a shell waiting on a *foreground*
+      -- command handles the signal once that command returns, which here is never.
       local done = casper.exec("sh", {
         "-c",
-        ("mkdir -p \"$(dirname %q)\"; cd %q 2>/dev/null || cd .; { %s; }; code=$?; pwd > %q; exit $code")
-          :format(kept, held, args.command, kept),
+        ([[
+mkdir -p "$(dirname %q)"; cd %q 2>/dev/null || cd .
+trap 'trap "" TERM HUP; kill -TERM -$$ 2>/dev/null; exit 143' TERM HUP
+{ %s; code=$?; pwd > %q; exit $code; } &
+wait $!]]):format(kept, held, args.command, kept),
       })
 
       local out = done.out

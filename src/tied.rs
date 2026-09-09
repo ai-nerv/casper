@@ -9,12 +9,16 @@
 //! the window between the `fork` and the `exec`, which is what `pre_exec` is. That window is
 //! also the reason this is the only `unsafe` in the crate: only the forking thread exists in the
 //! child, so anything the others were holding — an allocator's lock above all — is held forever
-//! by nobody. What runs down there is two raw syscalls and a comparison, and nothing else may
+//! by nobody. What runs down there is three raw syscalls and a comparison, and nothing else may
 //! be added to it.
 //!
-//! **What this does not cover is the great-grandchild.** A shell casper starts can start
-//! anything, and each `fork` clears the signal again. The chain is only as long as each link
-//! chooses to make it; what casper owes is its own link.
+//! **The great-grandchild is where the chain used to end.** A program casper starts can start
+//! anything, and each `fork` clears the signal again: the `shell` tool's wrapper died with its
+//! casper and left the command it had forked for running under init. Nothing casper can set on
+//! the wrapper reaches past it, so what casper hands over instead is a *handle* — the wrapper
+//! leads a process group of its own, and a program that wants its whole subtree to go can aim
+//! one signal at that group when its own death signal arrives. `config/tools.lua` does exactly
+//! that; a tool that does not is no worse off than before.
 
 use std::os::unix::process::CommandExt as _;
 
@@ -37,6 +41,21 @@ fn arm(casper: rustix::process::Pid) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Lead a process group of this program's own, from inside the child.
+///
+/// Async-signal-safe on the same terms as [`arm`]: one raw syscall, nothing else.
+///
+/// It is what makes "kill the command" mean "kill the command and what it started". A program
+/// that forks — a shell above all — leaves children the death signal never reaches, and the only
+/// address that covers all of them at once is a process group. This one is a group casper is not
+/// in, which is the half that matters as much: a program aiming a signal at its own group here
+/// cannot reach casper, the magi above it, or the person's session, because none of them are in
+/// it. Without this the same signal would go to whatever group casper was spawned into.
+fn alone() -> std::io::Result<()> {
+    rustix::process::setpgid(None, None)?;
+    Ok(())
+}
+
 /// Have `command` die with casper, however casper goes.
 ///
 /// The signal is delivered when the *thread* that forked exits, not when the process does, which
@@ -45,13 +64,18 @@ fn arm(casper: rustix::process::Pid) -> std::io::Result<()> {
 /// its command to completion in the one it was called on, and a screen is opened by the same
 /// thread that then drives its frames — and a caller of this library that spawns from a thread
 /// it lets go would be asking for something else.
-// SAFETY: the closure is `arm` and a `Pid` copied into it: two raw syscalls and a comparison,
-// which is all `pre_exec` permits between the fork and the exec of a process that has other
-// threads. See the module documentation.
+// SAFETY: the closure is `alone` and `arm` and a `Pid` copied into it: three raw syscalls and a
+// comparison, which is all `pre_exec` permits between the fork and the exec of a process that
+// has other threads. See the module documentation.
 #[allow(unsafe_code)]
 pub fn running(command: &mut std::process::Command) {
     let casper = rustix::process::getpid();
-    unsafe { command.pre_exec(move || arm(casper)) };
+    unsafe {
+        command.pre_exec(move || {
+            alone()?;
+            arm(casper)
+        })
+    };
 }
 
 /// The same, for a program being put on a pty.
@@ -61,6 +85,11 @@ pub fn running(command: &mut std::process::Command) {
 /// A program that ignores `SIGHUP` is not, and one was left running behind a killed casper to
 /// prove it. The two are not alternatives — the hangup is what lets a program end the way it
 /// would in any terminal, and this is the floor underneath when it will not.
+///
+/// No [`alone`] here, and it would be a mistake to add one: `pty_process` has already made this
+/// a session leader, and `setpgid` on a session leader is `EPERM` — which `arm` reports as a
+/// refusal, so every screen would fail to open. A session is a stronger form of the same thing
+/// anyway, and the hangup that comes with it is what a group has to be signalled by hand.
 // SAFETY: as for [`running`]. `pty_process` composes this after its own `setsid` and `ioctl`,
 // both of which are equally safe down there, and the death signal survives both.
 #[allow(unsafe_code)]
