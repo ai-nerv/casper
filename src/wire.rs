@@ -22,10 +22,6 @@ pub const FAMILY: u16 = 1;
 /// something already published stops working. Reported on `verbs`, beside `family`.
 pub const SURFACE: u16 = 1;
 
-fn family() -> u16 {
-    FAMILY
-}
-
 /// One call, as it arrives.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct Call {
@@ -48,8 +44,8 @@ pub enum Fault {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Reply {
     pub ok: bool,
-    /// Defaulted on the way in, so a reply from a build before this existed reads as `0`.
-    #[serde(default = "family")]
+    /// Missing reads as `0`: a peer from before the field, not one that named this revision.
+    #[serde(default)]
     pub family: u16,
     /// Only on `verbs`: a fact about the program rather than about the reply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
