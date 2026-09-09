@@ -71,27 +71,16 @@ for gone in io package dofile loadfile require; do
   fi
 done
 
-# ---- and fetched code still has to be let in ----------------------------------------------------
-# The other half of the boundary. A file under `site/pack/` arrived from somewhere else and can
-# change between one run and the next, so it runs once somebody has said it may — and casper is
-# the program whose declarations name commands, which is why it is this one that bothers.
+# ---- the other half of the boundary is not here, and that is deliberate ------------------------
+# A file under `site/pack/` arrived from somewhere else and runs once somebody has said it may.
+# That used to be three greps in this file — `Self::Installed`, `needs_acknowledging()`,
+# `acknowledged::cleared` — and each of them would have fired on an honest rename while passing
+# against a defence wired to nothing. `tests/acknowledged.rs` drives the real binary through the
+# whole arrangement instead: a fetched package held, the owner's own file running on sight, the
+# package running once acknowledged, and held again the moment it changes. Breaking any one of
+# the three turns three of those four red.
 #
-# Both ends are checked: the rule that says which trust needs it, and the call site that asks.
-# Either alone passes with the defence gone — a `needs_acknowledging` nobody consults is a
-# function, not a gate.
-if ! grep -q 'Self::Installed' "$ROOT/plugins.rs"; then
-  echo "gate-sandbox: nothing marks an installed package as needing acknowledgement" >&2
-  fail=1
-fi
-if ! grep -rq 'needs_acknowledging()' "$ROOT/main.rs"; then
-  echo "gate-sandbox: the loader no longer asks whether a layer has been acknowledged" >&2
-  echo "gate-sandbox: fetched declarations would then run on sight, which is the whole risk" >&2
-  fail=1
-fi
-if ! grep -rq 'acknowledged::cleared' "$ROOT/main.rs"; then
-  echo "gate-sandbox: the loader asks, and nothing checks the answer against the manifest" >&2
-  fail=1
-fi
+# What is left here is only what a test cannot reach: how many VMs there are.
 
 [ "$fail" -eq 0 ] || { echo "gate-sandbox: failed" >&2; exit 1; }
 echo "gate-sandbox: ok"
