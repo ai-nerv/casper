@@ -24,9 +24,50 @@ use casper::lua::engine::Engine;
 use casper::tools::{Call, Ran};
 use casper::wire::{Reply, VERBS};
 
+/// Ask the kernel to end this process when whoever started it ends.
+///
+/// **casper is nobody's daemon.** It is one exec per call, started by a magi and belonging to
+/// it, and every way it has of noticing that magi has gone runs out before the work does: the
+/// call arrives on stdin and stdin is read to end of file *before* a tool is run, so from the
+/// moment the command starts there is no pipe left to close. A magi killed in the middle of a
+/// call left casper reparented to init with nothing to answer to. `PR_SET_PDEATHSIG` needs no
+/// pipe: a `kill -9`, an OOM and a panic that runs no destructor are covered exactly as well as
+/// a clean exit is.
+///
+/// `SIGTERM` rather than `SIGKILL`. Both end this, and the first lets the pty go the way a
+/// hangup does, so the program on the far end is told rather than left holding a closed screen.
+///
+/// The signal watches only from the moment it is set, so a caller that died a moment before is
+/// a death nothing was ever sent for. Reading who the parent is on either side of the call
+/// closes what can be closed from in here: a different answer means the reparenting has already
+/// happened. The window before the first of those reads would take the caller naming its own
+/// pid, the way balthasar's `--tied` does, and it does not have to: a call that never arrives
+/// is refused a moment later anyway. Comparing against pid 1 is the tempting version and is
+/// wrong — a caller that is itself pid 1 in a container would spawn a casper that answers
+/// nothing.
+fn tie_to_caller() -> Result<(), rustix::io::Errno> {
+    let caller = rustix::process::getppid();
+    rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::TERM))?;
+    if rustix::process::getppid() != caller {
+        std::process::exit(0);
+    }
+    Ok(())
+}
+
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let how = asked(&args);
+    // Refused in the reply shape rather than on stderr with an exit code, like every other
+    // refusal here: a client that has to parse two things parses neither.
+    if let Err(why) = tie_to_caller() {
+        say(
+            how,
+            &Reply::refused(format!(
+                "casper cannot be tied to the process that started it: {why}"
+            )),
+        );
+        return std::process::ExitCode::SUCCESS;
+    }
     match args.first().map(String::as_str).unwrap_or("help") {
         // The one verb that says which registrar surface this program offers -- a fact about the
         // program, not about the reply, so it rides on the self-description and nowhere else.

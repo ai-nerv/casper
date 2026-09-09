@@ -30,6 +30,10 @@ ciborium = "0.2"
 anyhow = "1"
 luna = { git = "https://github.com/onix-os/luna", tag = "v0.5.0" }
 thiserror = "2.0"
+# The kernel's half of "casper belongs to the magi that started it": `PR_SET_PDEATHSIG`, and
+# nothing else from it. Already in the lockfile underneath pty-process, so this is a feature
+# and not a package.
+rustix = { version = "1", features = ["process"] }
 
 [dev-dependencies]
 
