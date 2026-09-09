@@ -204,6 +204,16 @@ mod tests {
     }
 
     #[test]
+    fn no_verb_here_opens_a_door_casper_does_not_have() {
+        assert!(
+            !known("serve"),
+            "`serve` is how this family opens a socket, and `{DOOR}` is stamped on every verb \
+             without asking which door it is on — so a socket added here would be advertised as \
+             the command line, and the checks that hold casper to one door would all stay green"
+        );
+    }
+
+    #[test]
     fn verbs_is_answerable_from_the_first_version() {
         assert!(
             known("verbs"),

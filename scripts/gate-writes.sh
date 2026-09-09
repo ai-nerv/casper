@@ -41,7 +41,13 @@ REMOVERS='src/scratch.rs'
 
 # What counts as reaching for the filesystem to change it. `File::create` and `OpenOptions` are
 # here because both truncate or create without the word `write` appearing anywhere.
-WRITING='fs::(write|create_dir|create_dir_all|copy|rename|hard_link|soft_link)|File::create|OpenOptions'
+#
+# The pattern was checked against a wider net over the whole tree. The allowlist held — those three
+# files are still all that writes — but four names got through this pattern and not the net, and
+# each is a way to change what is on disk: `set_permissions`, `set_times`, `symlink` and
+# `File::options`, which is `OpenOptions` under another spelling. `create_new` matched only as a
+# substring of `File::create`, and is spelled out here rather than left to that.
+WRITING='fs::(write|create_dir|create_dir_all|copy|rename|hard_link|soft_link|symlink|set_permissions|set_times)|File::(create|create_new|options)|OpenOptions'
 REMOVING='fs::(remove_file|remove_dir|remove_dir_all)'
 
 fail=0

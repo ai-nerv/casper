@@ -72,6 +72,11 @@ five wires had grown five ways to say the same thing.
 
 JSON is on all three. It is the *encoding*, not a transport.
 
+**casper uses the first two.** It binds no socket, and the row above is the family's shape rather
+than a door here: casper's job is running programs, and a socket that runs commands is a remote
+shell wearing a friendly name. It is spawned per call and the spawn link carries the trust. See
+`DESIGN.md`.
+
 A **call** is answered; an **event** is not:
 
 ```
