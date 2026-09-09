@@ -3,12 +3,12 @@
 //! ```text
 //! casper tools          every tool it offers, in the family's reply shape
 //! casper run            one call on stdin, one result on stdout
-//! casper verbs          what its socket answers
+//! casper verbs          what it answers, and on which door
 //! ```
 //!
-//! `run` is here and not on the socket: a socket that runs commands is a remote shell. The spawn
-//! link carries the trust instead — a parent that can spawn casper could have run the command
-//! itself. See [`casper::wire`].
+//! casper binds no socket, and that is the design: a socket that runs commands is a remote shell,
+//! and running commands is casper's whole job. The spawn link carries the trust instead — a parent
+//! that can spawn casper could have run the command itself. See [`casper::wire`].
 //!
 //! Every verb prints the wire shape, and a refusal is `{"ok":false,…}` with a zero exit. JSON by
 //! default, CBOR with `--cbor`: one shape, two encodings.
@@ -198,15 +198,16 @@ fn configure() -> Reply {
     }
 }
 
-/// Every verb on both doors, as name and description.
+/// Every verb, as name, description and the door it is on.
 fn described() -> serde_json::Value {
-    let cli = casper::wire::CLI_VERBS
-        .iter()
-        .map(|(name, about)| serde_json::json!({"verb": name, "about": about, "door": "cli"}));
-    let socket = VERBS
-        .iter()
-        .map(|(name, about)| serde_json::json!({"verb": name, "about": about, "door": "socket"}));
-    serde_json::Value::Array(cli.chain(socket).collect())
+    serde_json::Value::Array(
+        VERBS
+            .iter()
+            .map(|(name, about)| {
+                serde_json::json!({"verb": name, "about": about, "door": casper::wire::DOOR})
+            })
+            .collect(),
+    )
 }
 
 /// Every tool, as a card.
@@ -340,12 +341,12 @@ fn usage() -> bool {
          \n\
          \x20 casper tools        every tool it offers, with schemas\n\
          \x20 casper run          one call on stdin, one result on stdout\n\
-         \x20 casper verbs        what its socket answers\n\
+         \x20 casper verbs        what it answers, and on which door\n\
          \n\
          \x20 --json | --cbor   which encoding a reply comes back in\n\
          \n\
-         Every verb prints the family's reply shape. `run` is deliberately not\n\
-         reachable over the socket: see DESIGN.md.\n"
+         Every verb prints the family's reply shape. casper binds no socket:\n\
+         it is spawned per call. See DESIGN.md.\n"
         )
         .as_bytes(),
     )
@@ -410,6 +411,21 @@ mod tests {
         assert_eq!(reply.n, 2, "n is the number of rows");
         assert_eq!(reply.result.len(), 2);
         assert!(reply.result[0].is_object(), "a row is not a list");
+    }
+
+    /// A door casper cannot open must not be advertised, and no verb twice on the one it can.
+    #[test]
+    fn every_verb_is_advertised_once_on_a_door_casper_opens() {
+        let rows = listing(described()).result;
+        let mut seen: Vec<String> = Vec::new();
+        for row in &rows {
+            let door = row["door"].as_str().unwrap_or_default();
+            assert_eq!(door, "cli", "casper binds no socket: {row}");
+            let verb = row["verb"].as_str().unwrap_or_default().to_owned();
+            assert!(!seen.contains(&verb), "`{verb}` is advertised twice");
+            seen.push(verb);
+        }
+        assert!(seen.iter().any(|verb| verb == "tools"), "{rows:?}");
     }
 
     #[test]

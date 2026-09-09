@@ -2,15 +2,15 @@
 //!
 //! ```text
 //! -> {"call":"tools","args":[]}
-//! <- {"ok":true,"family":1,"n":1,"result":[[{"name":"cat",…}]]}
+//! <- {"ok":true,"family":1,"n":2,"result":[{"name":"cat",…},{"name":"patch",…}]}
 //! ```
 //!
-//! Four bytes of big-endian length then JSON on the socket, newline-delimited JSON on a pipe, one
-//! object on stdout for argv. `result` is always a list and `n` its length; a sibling that unpacks
-//! a list reads a bare value as nothing at all. A refusal is a reply, not a dropped connection. An
-//! event's tag key is `event` in both directions, and `scripts/gate-wire.sh` refuses any other.
-//! The socket answers [`VERBS`], read-only; `run` and `configure` arrive over the spawn link,
-//! where the parent could have run the command itself.
+//! Newline-delimited JSON on a pipe, one object on stdout for argv. `result` is always a list and
+//! `n` its length; a sibling that unpacks a list reads a bare value as nothing at all. A refusal
+//! is a reply, not a dropped connection. An event's tag key is `event` in both directions, and
+//! `scripts/gate-wire.sh` refuses any other. casper binds no socket, so [`VERBS`] is one list on
+//! one door: `run` arrives over the spawn link, where the parent could have run the command
+//! itself.
 
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +34,15 @@ pub struct Call {
     pub args: Vec<serde_json::Value>,
 }
 
+/// Which kind of no an answer is. A refusal costs the caller a feature; a failure costs it the
+/// work that just happened.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Fault {
+    Refused,
+    Failed,
+}
+
 /// One reply, as it goes back. Built through the constructors, so the `n`/`result` invariant holds
 /// in one place rather than at every call site that answers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -52,6 +61,9 @@ pub struct Reply {
     pub result: Vec<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Absent means refused, which is every no casper has: it declines a call or it does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fault: Option<Fault>,
 }
 
 impl Reply {
@@ -64,6 +76,7 @@ impl Reply {
             n: 1,
             result: vec![value],
             error: None,
+            fault: None,
         }
     }
 
@@ -77,6 +90,7 @@ impl Reply {
             n: values.len(),
             result: values,
             error: None,
+            fault: None,
         }
     }
 
@@ -90,6 +104,7 @@ impl Reply {
             n: 0,
             result: Vec::new(),
             error: None,
+            fault: None,
         }
     }
 
@@ -103,30 +118,15 @@ impl Reply {
             n: 0,
             result: Vec::new(),
             error: Some(why.into()),
+            fault: None,
         }
     }
 }
 
-/// The verbs casper answers on its socket. Read-only, every one of them: `run` is not here and
-/// must never be.
+/// Every verb casper answers. One list because there is one door: casper binds no socket, so a
+/// second list would name a door nothing can open.
 pub const VERBS: &[(&str, &str)] = &[
-    ("verbs", "what casper answers"),
-    (
-        "tools",
-        "every tool it offers, with schemas and what each needs",
-    ),
-    ("needs", "what a coordinator may tell it, as declarations"),
-];
-
-#[must_use]
-pub fn known(verb: &str) -> bool {
-    VERBS.iter().any(|(name, _)| *name == verb)
-}
-
-/// What the command line answers, as against [`VERBS`], which is the socket. `run` is on this list
-/// and deliberately not on the other.
-pub const CLI_VERBS: &[(&str, &str)] = &[
-    ("verbs", "what this program answers, on each of its doors"),
+    ("verbs", "what this program answers, and on which door"),
     (
         "tools",
         "every tool it offers, with schemas and what each needs",
@@ -147,6 +147,14 @@ pub const CLI_VERBS: &[(&str, &str)] = &[
         "clear the installed packages, so their declarations may run",
     ),
 ];
+
+/// The door every verb above is on.
+pub const DOOR: &str = "cli";
+
+#[must_use]
+pub fn known(verb: &str) -> bool {
+    VERBS.iter().any(|(name, _)| *name == verb)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,14 +184,26 @@ mod tests {
     }
 
     #[test]
-    fn the_socket_runs_nothing() {
+    fn no_verb_is_listed_twice() {
         for (verb, _) in VERBS {
-            for shape in ["run", "exec", "shell", "eval", "spawn", "call"] {
-                assert!(
-                    !verb.contains(shape),
-                    "`{verb}` is a {shape}-shaped verb on a socket"
-                );
-            }
+            let listed = VERBS.iter().filter(|(name, _)| name == verb).count();
+            assert_eq!(listed, 1, "`{verb}` is advertised {listed} times on {DOOR}");
+        }
+    }
+
+    #[test]
+    fn a_fault_is_spelled_the_way_the_family_spells_it() {
+        for (fault, spelled) in [
+            (Fault::Refused, "\"refused\""),
+            (Fault::Failed, "\"failed\""),
+        ] {
+            let wire = serde_json::to_string(&fault).expect("enc");
+            assert_eq!(wire, spelled);
+            assert_eq!(
+                serde_json::from_str::<Fault>(&wire).expect("dec"),
+                fault,
+                "a sibling's fault must read back"
+            );
         }
     }
 

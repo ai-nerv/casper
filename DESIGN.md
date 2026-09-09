@@ -267,17 +267,17 @@ per keypress would work for a picker and not for anything that animates.
 
 ## What crosses, and how
 
-The family contract, unchanged: 4-byte big-endian length, JSON body, replies
-`{"ok":true,"n":N,"result":[…]}`, a refusal is `ok:false` with a fault and never a dropped
-connection, the connection stays open, `verbs()` ships from v1, peer identity from `SO_PEERCRED`.
+The family contract, unchanged: JSON body, replies `{"ok":true,"n":N,"result":[…]}`, a refusal is
+`ok:false` with a fault and never a dropped connection, `verbs` ships from v1.
 
-**But not `run`.** The skill is explicit — *a socket that runs commands is remote code execution* —
-and running commands is casper's entire job. So the surface splits by trust:
+**But no socket.** The skill is explicit — *a socket that runs commands is remote code execution* —
+and running commands is casper's entire job. casper binds none at all, so there is one door and
+`verbs` says so on every row:
 
 | link | verbs | why |
 |---|---|---|
-| **socket** | `verbs` `tools` `needs` | read-only. Anyone the walls allow may ask what exists. |
-| **spawn** (argv + stdin) | `run` `configure` | the parent could have run the command itself. |
+| **spawn** (argv + stdin) | all of them, `run` included | the parent could have run the command itself. |
+| **socket** | none: casper binds none | a read-only one would still be a door to keep shut, and nothing asks through it. |
 
 magi spawns `casper run --json` and writes the call on stdin, exactly as it spawns `melchior ask`.
 A turn is a stream — a `shell` writes output for a minute — so `run` streams a line per event and
@@ -311,7 +311,7 @@ what a tool would do and never decides whether it may.
 
 1. **The contract**, in `magi-proto::tooling`, with round-trip tests. Nothing works until both
    sides agree, and a shape settled late is two encoders that already drifted.
-2. **casper answering `verbs`/`tools`** over the socket, with a Lua VM and one declared tool.
+2. **casper answering `verbs`/`tools`** on its command line, with a Lua VM and one declared tool.
 3. **`run` over the spawn link**, streaming, with `said` only.
 4. **`shown`**: the paint vocabulary, the ANSI adapter, `cat` and `patch`.
 5. **The ask**: permission moves out of magi.
