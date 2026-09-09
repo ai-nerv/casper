@@ -68,13 +68,13 @@ fn main() -> std::process::ExitCode {
         );
         return std::process::ExitCode::SUCCESS;
     }
-    match args.first().map(String::as_str).unwrap_or("help") {
+    let delivered = match args.first().map(String::as_str).unwrap_or("help") {
         // The one verb that says which registrar surface this program offers -- a fact about the
         // program, not about the reply, so it rides on the self-description and nowhere else.
         "verbs" => {
             let mut reply = listing(described());
             reply.surface = Some(casper::wire::SURFACE);
-            say(how, &reply);
+            say(how, &reply)
         }
         "tools" => say(how, &tools()),
         "run" => say(how, &ran()),
@@ -100,11 +100,24 @@ fn main() -> std::process::ExitCode {
         ),
         // Not a call and not a reply: frames both ways for as long as the tool holds its rows.
         // See `casper::surface` for why this cannot be one exec per event.
-        "surface" => held(args.get(1).map(String::as_str).unwrap_or_default()),
-        "help" | "--help" | "-h" => usage(),
+        "surface" => {
+            held(args.get(1).map(String::as_str).unwrap_or_default());
+            true
+        }
+        "help" | "--help" | "-h" => {
+            usage();
+            true
+        }
         other => say(how, &Reply::refused(format!("no such call: {other}"))),
+    };
+    // Zero for anything casper *said*, refusals included — that is the family's rule and clients
+    // are written to it. Non-zero only when the reply did not reach the caller at all, which is
+    // not a refusal and not an answer, and which nothing else can report.
+    if delivered {
+        std::process::ExitCode::SUCCESS
+    } else {
+        std::process::ExitCode::FAILURE
     }
-    std::process::ExitCode::SUCCESS
 }
 
 /// Which encoding the caller asked for.
@@ -154,9 +167,35 @@ fn encoded(how: As, reply: &Reply) -> Vec<u8> {
 }
 
 /// Print one reply, in the shape every client parses and the encoding it asked for.
-fn say(how: As, reply: &Reply) {
+///
+/// **Answers whether the caller actually got it.** This was a `let _ =` on the write, which is
+/// the one place in casper where swallowing an error costs the caller everything: the reply *is*
+/// the answer, and a short write or a closed pipe left casper exiting 0 having said nothing or
+/// half of something. A truncated JSON frame reads at the far end as casper being broken, and
+/// there is no second channel to say otherwise — stderr is thrown away by the harness.
+///
+/// A refusal still exits zero, and that stays true: a refusal is an answer. What this
+/// distinguishes is the reply that never arrived, which is the one case an exit code is the only
+/// thing left to carry.
+fn say(how: As, reply: &Reply) -> bool {
     use std::io::Write;
-    let _ = std::io::stdout().lock().write_all(&encoded(how, reply));
+    // Flushed here rather than left to the drop at the end of main, and that is not tidiness.
+    // `stdout` is a `LineWriter`: a JSON reply ends in a newline and goes out on the `write_all`,
+    // but a CBOR frame has none and is small, so it sits in the buffer and the write reports
+    // success. Whatever went wrong then surfaces in the flush that `Drop` runs and ignores --
+    // which is the swallowed failure this function was rewritten to stop, still open on the one
+    // encoding a harness actually asks for.
+    let mut out = std::io::stdout().lock();
+    match out
+        .write_all(&encoded(how, reply))
+        .and_then(|()| out.flush())
+    {
+        Ok(()) => true,
+        Err(why) => {
+            casper::noted!("say: the reply could not be written: {why}");
+            false
+        }
+    }
 }
 
 /// Acknowledge every installed package, so its declarations may run.
