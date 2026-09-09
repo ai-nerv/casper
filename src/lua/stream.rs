@@ -104,12 +104,29 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
         };
 
         match UnixStream::connect(&path) {
-            Ok(socket) => {
-                let _ = socket.set_read_timeout(Some(timeout));
-                let _ = socket.set_write_timeout(Some(timeout));
-                let handle = handle_table(ctx, Rc::new(RefCell::new(Some(socket))));
-                stack.replace(ctx, handle);
-            }
+            // **A socket whose deadline would not take is refused, not handed over.** These were
+            // two `let _ =`, and the failure they swallowed is exactly the one the deadline
+            // exists to prevent: without it the handle blocks forever on a peer that accepts and
+            // never answers, which from Lua is a tool call that simply never returns. Better to
+            // say so at `connect` than to hang somewhere the reason is invisible.
+            Ok(socket) => match socket
+                .set_read_timeout(Some(timeout))
+                .and_then(|()| socket.set_write_timeout(Some(timeout)))
+            {
+                Ok(()) => {
+                    let handle = handle_table(ctx, Rc::new(RefCell::new(Some(socket))));
+                    stack.replace(ctx, handle);
+                }
+                Err(e) => {
+                    stack.replace(
+                        ctx,
+                        (
+                            Value::Nil,
+                            format!("this socket would take no deadline, so a peer that never answers would hang the call: {e}"),
+                        ),
+                    );
+                }
+            },
             Err(e) => {
                 stack.replace(ctx, (Value::Nil, e.to_string()));
             }

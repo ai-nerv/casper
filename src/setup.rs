@@ -137,6 +137,12 @@ pub fn apply(settings: &serde_json::Map<String, serde_json::Value>) -> Applied {
         }
     }
 
+    // Ignored, and it is worth saying why rather than leaving the next reader to work it out.
+    // `set` fails only if something already set it, and casper is one process per call with
+    // exactly one caller of this — the `configure` verb. A second `apply` in one process would
+    // report `set` for names that then changed nothing, which is the same lie as a setting that
+    // is advertised and read by nobody; if one ever appears, this is where it has to stop being
+    // ignored.
     let _ = TOLD.set(serde_json::Value::Object(kept));
     applied
 }

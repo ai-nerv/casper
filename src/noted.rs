@@ -59,50 +59,23 @@ macro_rules! noted {
 #[cfg(test)]
 mod tests {
     use super::{VARIABLE, note_to};
+    use crate::scratch::{Scratch, ScratchFile};
 
-    /// A path of this test's own under the temporary directory, removed when it returns.
+    /// A log of this test's own, in a directory removed when the test returns *or* unwinds.
     ///
-    /// casper has no scratch helper because casper writes nothing to `$TMPDIR` — these two tests
-    /// are the only reason a path there is needed at all, and a guard type for two call sites
-    /// would be more machinery than the thing it guards.
-    struct Log(std::path::PathBuf);
-
-    impl Log {
-        fn new(name: &str) -> Self {
-            let at =
-                std::env::temp_dir().join(format!("casper-noted-{}-{name}", std::process::id()));
-            let _ = std::fs::create_dir_all(&at);
-            Self(at.join("log.txt"))
-        }
-    }
-
-    impl std::ops::Deref for Log {
-        type Target = std::path::Path;
-
-        fn deref(&self) -> &std::path::Path {
-            &self.0
-        }
-    }
-
-    impl AsRef<std::path::Path> for Log {
-        fn as_ref(&self) -> &std::path::Path {
-            &self.0
-        }
-    }
-
-    impl Drop for Log {
-        fn drop(&mut self) {
-            if let Some(dir) = self.0.parent() {
-                let _ = std::fs::remove_dir_all(dir);
-            }
-        }
+    /// This was a guard written out by hand here, on the grounds that casper had no scratch
+    /// helper. It has one, and the hand-written copy was missing the counter that tells two
+    /// fixtures of the same name apart and the delete-before-create that covers a pid coming
+    /// round again.
+    fn log(name: &str) -> ScratchFile {
+        Scratch::file("casper-noted", name, "log.txt")
     }
 
     #[test]
     fn lines_are_appended_rather_than_replacing_each_other() {
         // One run of a session writes several; a log that kept only the last would answer
         // "what happened" with "the last thing".
-        let at = Log::new("append");
+        let at = log("append");
         note_to(&at, format_args!("{} exited {}", "models", 1));
         note_to(&at, format_args!("and again"));
         let held = std::fs::read_to_string(&at).expect("the log");
@@ -126,7 +99,7 @@ mod tests {
             std::env::var_os(VARIABLE).is_none(),
             "the suite sets no log"
         );
-        let at = Log::new("quiet");
+        let at = log("quiet");
         noted!("nobody asked");
         assert!(!at.exists(), "{}", at.display());
     }

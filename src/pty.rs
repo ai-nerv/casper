@@ -187,7 +187,12 @@ impl Screen {
     pub fn typed(&mut self, name: &str) {
         let application = self.vt.screen().application_cursor();
         if let Some(bytes) = keying::bytes(name, application) {
-            let _ = (&*self.pty).write_all(&bytes);
+            // Noted rather than swallowed. A dropped keystroke presents as the program ignoring
+            // a key, which is the one failure here nothing on the screen explains — and a
+            // surface owns stdout, so the log is the only place it can be said.
+            if let Err(why) = (&*self.pty).write_all(&bytes) {
+                crate::noted!("{}: the key `{name}` was not delivered: {why}", self.named);
+            }
         }
     }
 
@@ -201,7 +206,9 @@ impl Screen {
             return;
         }
         let bytes = keying::mouse(kind, button, row, col);
-        let _ = (&*self.pty).write_all(&bytes);
+        if let Err(why) = (&*self.pty).write_all(&bytes) {
+            crate::noted!("{}: a pointer event was not delivered: {why}", self.named);
+        }
     }
 
     /// Tell it the room changed.
@@ -210,9 +217,18 @@ impl Screen {
     /// `SIGWINCH` the pty sends is what makes the program redraw itself at the new size.
     pub fn resized(&mut self, rows: u16, cols: u16) {
         self.vt.screen_mut().set_size(rows.max(1), cols.max(1));
-        let _ = self
+        // The emulator has already been told, so a `SIGWINCH` that did not go out leaves the
+        // program drawing at the old size into a grid of the new one — a screen that is subtly
+        // wrong with nothing on it to say why, which is what the log is for.
+        if let Err(why) = self
             .pty
-            .resize(pty_process::Size::new(rows.max(1), cols.max(1)));
+            .resize(pty_process::Size::new(rows.max(1), cols.max(1)))
+        {
+            crate::noted!(
+                "{}: the pty was not resized to {rows}x{cols}, so the program was never told: {why}",
+                self.named
+            );
+        }
     }
 
     /// What it has painted, and where it left the cursor.

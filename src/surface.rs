@@ -197,8 +197,12 @@ fn say(frame: &FromSurface) {
     if let Ok(line) = serde_json::to_string(frame) {
         println!("{line}");
         // Flushed every frame. Buffered, a game's rows would arrive in batches and the surface
-        // would look frozen and then jump.
-        let _ = std::io::stdout().flush();
+        // would look frozen and then jump. A flush that failed is a frame the harness never got,
+        // which looks from the far end exactly like a tenant that stopped drawing — so it is
+        // noted, because stdout is the frames and stderr is thrown away.
+        if let Err(why) = std::io::stdout().flush() {
+            crate::noted!("surface: a frame was written but not flushed: {why}");
+        }
     }
 }
 
