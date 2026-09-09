@@ -74,43 +74,79 @@ pub struct Done {
     pub code: i64,
 }
 
+/// One read off a pipe.
+const CHUNK: usize = 8 * 1024;
+
 /// Run one program to completion.
 #[must_use]
 pub fn run(program: &str, args: &[String]) -> Done {
     let mut command = std::process::Command::new(program);
-    command.args(args).stdin(std::process::Stdio::null());
+    command
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     // Without this the program is reparented to init the moment a magi is killed.
     crate::tied::running(&mut command);
-    let out = command.output();
-    match out {
-        Ok(done) => Done {
-            out: bounded(&String::from_utf8_lossy(&done.stdout)),
-            err: bounded(&String::from_utf8_lossy(&done.stderr)),
-            code: done.status.code().map_or(-1, i64::from),
-        },
+    let mut child = match command.spawn() {
+        Ok(child) => child,
         Err(why) => {
             crate::noted!("exec: {program} could not be run: {why}");
-            Done {
+            return Done {
                 out: String::new(),
                 err: format!("{program} could not be run: {why}"),
                 code: -1,
-            }
+            };
         }
+    };
+    // Both pipes are read as they fill and only [`MOST`] bytes are held: collecting each stream
+    // whole first would let the program pick how much memory casper takes, and reading neither
+    // would block it on a full pipe.
+    let piped = child.stdout.take();
+    let reading = std::thread::spawn(move || kept(piped));
+    let err = kept(child.stderr.take());
+    let code = child.wait().ok().and_then(|it| it.code());
+    let out = reading.join().unwrap_or_default();
+    Done {
+        out: said(&out.0, out.1),
+        err: said(&err.0, err.1),
+        code: code.map_or(-1, i64::from),
     }
 }
 
-/// Cut `text` to what a turn can carry, saying so if anything went.
-fn bounded(text: &str) -> String {
-    if text.len() <= MOST {
-        return text.to_owned();
+/// Read `from` to its end, holding the first [`MOST`] bytes and counting the rest.
+fn kept<R: std::io::Read>(from: Option<R>) -> (Vec<u8>, usize) {
+    let (mut held, mut dropped) = (Vec::new(), 0);
+    let Some(mut from) = from else {
+        return (held, dropped);
+    };
+    let mut buffer = [0_u8; CHUNK];
+    while let Ok(read) = from.read(&mut buffer) {
+        if read == 0 {
+            break;
+        }
+        let room = MOST.saturating_sub(held.len()).min(read);
+        held.extend_from_slice(&buffer[..room]);
+        dropped += read - room;
     }
-    // On a character boundary, or the string will not build.
-    let mut at = MOST;
-    while at > 0 && !text.is_char_boundary(at) {
-        at -= 1;
+    (held, dropped)
+}
+
+/// What one stream came back as: what was held, and a line saying how much was not.
+fn said(held: &[u8], dropped: usize) -> String {
+    if dropped == 0 {
+        return String::from_utf8_lossy(held).into_owned();
     }
-    let dropped = text.len() - at;
-    format!("{}\n… {dropped} more bytes, not shown", &text[..at])
+    // Back to where a character last ended: the hold stops wherever the room ran out.
+    let whole = match std::str::from_utf8(held) {
+        Ok(_) => held.len(),
+        Err(bad) => bad.valid_up_to(),
+    };
+    format!(
+        "{}\n… {} more bytes, not shown",
+        String::from_utf8_lossy(&held[..whole]),
+        dropped + (held.len() - whole)
+    )
 }
 
 /// Raise a message into Lua.
@@ -148,25 +184,57 @@ mod tests {
 
     #[test]
     fn output_is_cut_to_what_a_turn_can_carry_and_says_it_was() {
-        let huge = "x".repeat(MOST + 500);
-        let cut = bounded(&huge);
-        assert!(cut.len() < huge.len());
+        let done = run(
+            "sh",
+            &["-c".to_owned(), "head -c 600000 /dev/zero".to_owned()],
+        );
+        assert!(done.out.len() < 600_000, "{} bytes", done.out.len());
         assert!(
-            cut.ends_with("more bytes, not shown"),
+            done.out.ends_with("337856 more bytes, not shown"),
             "{}",
-            &cut[cut.len() - 40..]
+            &done.out[done.out.len() - 40..]
         );
     }
 
     #[test]
     fn what_fits_is_left_exactly_as_it_was() {
-        assert_eq!(bounded("short"), "short");
+        assert_eq!(said(b"short", 0), "short");
     }
 
     #[test]
     fn cutting_lands_on_a_character_boundary() {
-        let huge = "é".repeat(MOST);
-        let cut = bounded(&huge);
-        assert!(cut.starts_with('é'));
+        // Three bytes to a character and `MOST` not a multiple of three, so the hold splits one.
+        let huge = "€".repeat(MOST);
+        let cut = said(&huge.as_bytes()[..MOST], 12);
+        assert!(cut.starts_with('€'));
+        assert!(!cut.contains('\u{fffd}'), "a character was split");
+        assert!(
+            cut.ends_with("13 more bytes, not shown"),
+            "{}",
+            &cut[cut.len() - 40..]
+        );
+    }
+
+    /// This process's peak resident size, in kilobytes.
+    fn peak_kb() -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .unwrap_or_default()
+            .lines()
+            .find_map(|line| line.strip_prefix("VmHWM:"))
+            .and_then(|rest| rest.trim().trim_end_matches(" kB").trim().parse().ok())
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn a_program_that_writes_without_stopping_does_not_choose_caspers_memory() {
+        let before = peak_kb();
+        // Half a gigabyte: a fixture no buffer on this path could hold by accident.
+        let done = run(
+            "sh",
+            &["-c".to_owned(), "head -c 536870912 /dev/zero".to_owned()],
+        );
+        let grew = peak_kb().saturating_sub(before);
+        assert!(done.out.len() < MOST + 64, "{} bytes held", done.out.len());
+        assert!(grew < 64 * 1024, "casper grew {grew} kB reading 512 MB");
     }
 }

@@ -78,6 +78,50 @@ for file in $SPAWNS; do
   fi
 done
 
+# ---- and neither door lets what it started choose casper's memory -----------------------------
+# A program casper starts decides how much it writes, and both doors used to hold all of it before
+# cutting it to size. `casper.exec` on a program that wrote 512MB took 525MB of peak resident
+# memory to keep 256KB of it, and a screen nobody was drawing grew 104MB a second — with
+# `Screen::read` never returning either, because there was always one more chunk already queued.
+#
+# Each door is held to its own half of the answer, and each is a one-word edit from losing it:
+#
+#   src/lua/exec.rs   reads both pipes as they fill, keeps `MOST` and counts the rest. Any call
+#                     that reads a stream to its end puts the whole of it back in memory.
+#   src/pty.rs        a bounded queue, so a program that outruns the drawing blocks in the kernel
+#                     as it would at a terminal nobody is reading. `mpsc::channel` is the
+#                     unbounded one and reads identically at a glance.
+#
+# Comments stripped, and tests with them, for the reason the checks above are.
+strip() {
+  awk '
+    /^[ \t]*#\[cfg\(test\)\]/ { skipping = 1; depth = 0; started = 0 }
+    skipping {
+      n = gsub(/\{/, "{"); depth += n
+      n = gsub(/\}/, "}"); depth -= n
+      if (n > 0 || depth > 0) started = 1
+      if (started && depth <= 0) skipping = 0
+      next
+    }
+    { sub(/\/\/.*$/, ""); print }
+  ' "$1"
+}
+
+held=$(strip src/lua/exec.rs | grep -nE '\.output\(\)|read_to_end|read_to_string' || true)
+if [ -n "$held" ]; then
+  echo "gate-spawn: src/lua/exec.rs reads a spawned program's stream to its end:" >&2
+  printf '%s\n' "$held" | sed 's/^/  /' >&2
+  echo "gate-spawn: the program then picks how much memory casper takes; keep MOST and drain" >&2
+  fail=1
+fi
+
+if strip src/pty.rs | grep -q 'mpsc::channel(' || ! strip src/pty.rs | grep -q 'sync_channel('; then
+  echo "gate-spawn: src/pty.rs no longer bounds what it queues off the pty" >&2
+  echo "gate-spawn: an unbounded queue is a program on a screen choosing casper's heap, and a" >&2
+  echo "gate-spawn: frame loop with one more chunk waiting every time it looks" >&2
+  fail=1
+fi
+
 # ---- the tie is still the two syscalls it claims to be ----------------------------------------
 # Named rather than assumed. Both landed as fixes for a leak that had already happened twice:
 # the death signal is what ends the program when casper goes, and the process group is the

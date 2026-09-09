@@ -74,6 +74,13 @@ impl Spec {
     }
 }
 
+const CHUNK: usize = 8 * 1024;
+
+/// How far ahead of the frame loop a program may get, in reads of [`CHUNK`]: the queue holds this
+/// many and one frame takes this many. Past it the program blocks in the kernel, as it does at a
+/// terminal nobody is reading, rather than filling casper's heap.
+const AHEAD: usize = 64;
+
 /// A program running on a pty, and the screen it has painted so far.
 pub struct Screen {
     /// The master side. Shared, because a thread is reading it while this writes to it.
@@ -115,10 +122,10 @@ impl Screen {
         let child = command.spawn(pts)?;
 
         let pty = Arc::new(pty);
-        let (sender, output) = std::sync::mpsc::channel();
+        let (sender, output) = std::sync::mpsc::sync_channel(AHEAD);
         let reading = Arc::clone(&pty);
         std::thread::spawn(move || {
-            let mut buffer = [0u8; 8192];
+            let mut buffer = [0u8; CHUNK];
             // Ends when the program does: the last slave fd closing makes this read fail, which
             // drops the sender and is how the frame loop learns the program is gone.
             while let Ok(read) = (&*reading).read(&mut buffer) {
@@ -145,11 +152,12 @@ impl Screen {
         })
     }
 
-    /// Take everything the program has written since the last frame.
+    /// Take what the program has written since the last frame, up to [`AHEAD`] reads of it.
     ///
-    /// `false` once it is gone — its output is closed and nothing more will be painted.
+    /// `false` once it is gone — its output is closed and nothing more will be painted. Past the
+    /// cap the rest waits for the next frame, so a program still writing cannot hold this here.
     pub fn read(&mut self) -> bool {
-        loop {
+        for _ in 0..AHEAD {
             match self.output.try_recv() {
                 Ok(mut bytes) => {
                     // Before the emulator sees them: it cannot read one of these on its own.
@@ -160,6 +168,7 @@ impl Screen {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => return false,
             }
         }
+        true
     }
 
     /// Type a named key into it.
@@ -341,6 +350,36 @@ mod tests {
         let said = screen.epitaph();
         assert!(said.contains("marker"), "{said}");
         assert!(said.contains("status 0"), "{said}");
+    }
+
+    /// This process's peak resident size, in kilobytes.
+    fn peak_kb() -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .unwrap_or_default()
+            .lines()
+            .find_map(|line| line.strip_prefix("VmHWM:"))
+            .and_then(|rest| rest.trim().trim_end_matches(" kB").trim().parse().ok())
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn a_program_that_floods_a_screen_neither_freezes_the_loop_nor_fills_the_heap() {
+        let before = peak_kb();
+        let (tell, heard) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut screen = ran("yes casper-flood-fixture", 24, 80);
+            // A second of nobody drawing. An unbounded queue took a hundred megabytes of it.
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let alive = screen.read();
+            let _ = tell.send((alive, peak_kb()));
+            screen.close();
+        });
+        let (alive, after) = heard
+            .recv_timeout(std::time::Duration::from_secs(15))
+            .expect("`read` did not return while the program was still writing");
+        assert!(alive, "the program is still running");
+        let grew = after.saturating_sub(before);
+        assert!(grew < 64 * 1024, "the screen grew {grew} kB in a second");
     }
 
     #[test]
