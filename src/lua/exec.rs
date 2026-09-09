@@ -88,10 +88,12 @@ pub struct Done {
 /// Run one program to completion.
 #[must_use]
 pub fn run(program: &str, args: &[String]) -> Done {
-    let out = std::process::Command::new(program)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .output();
+    let mut command = std::process::Command::new(program);
+    command.args(args).stdin(std::process::Stdio::null());
+    // A tool call can be a build. Without this the program is reparented to init the moment a
+    // magi is killed, because the kernel does not pass the death signal on across a fork.
+    crate::tied::running(&mut command);
+    let out = command.output();
     match out {
         Ok(done) => Done {
             out: bounded(&String::from_utf8_lossy(&done.stdout)),

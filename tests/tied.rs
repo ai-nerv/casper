@@ -9,6 +9,13 @@
 //! the `kill -9` and the OOM, where nothing in the caller runs at all. And casper is at its most
 //! exposed in the middle of a call: the call arrives on stdin and stdin is read to end of file
 //! before the tool starts, so from then on there is no pipe left for anybody to close.
+//!
+//! **And whether it takes the program it was running with it.** `PR_SET_PDEATHSIG` is cleared
+//! across `fork`, so the tie casper sets for itself stops at casper: for a while the caller's
+//! death killed casper and left its command reparented to init. Both shapes are checked, because
+//! they are covered by different things — an ordinary program on a pty goes when the master
+//! closes and the kernel hangs the session up, so the one asked for here is a program that
+//! *ignores* the hangup, which nothing but the death signal will end.
 
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -20,6 +27,9 @@ use std::time::{Duration, Instant};
 /// getting round to looking. Generous, because a slow machine failing this would report the
 /// guarantee as broken when it is only late.
 const NOTICES_WITHIN: Duration = Duration::from_secs(10);
+
+/// The binary under test, named once because every caller here is a shell script.
+const CASPER: &str = env!("CARGO_BIN_EXE_casper");
 
 /// A parent that starts one `casper run` and then does nothing at all.
 ///
@@ -38,19 +48,52 @@ struct Caller {
 impl Caller {
     /// Start a shell that starts a casper on a call that will still be running.
     fn starting(name: &str) -> Self {
+        // A regular file for stdin, so it is at end of file before the command even starts.
+        // Nothing is left on the pipe for a dying caller to close, which is the gap this covers.
+        Self::spawning(
+            name,
+            r#"{"tool":"shell","args":{"command":"sleep 30"}}"#,
+            |frame| format!("{CASPER} run <{}", frame.display()),
+        )
+    }
+
+    /// The same, for a program on a pty rather than a command run to completion.
+    ///
+    /// The program ignores `SIGHUP` on purpose. Every other one goes when the master closes and
+    /// the session is hung up, which would make this pass against a casper that had never armed
+    /// anything — the hangup and the death signal cover different programs and the test has to
+    /// be about the second.
+    ///
+    /// A pipe for stdin rather than a file, because a surface is frames until the harness stops
+    /// sending them: on end of file the loop is simply over, and the casper would exit on its
+    /// own rather than being taken.
+    fn on_a_screen(name: &str) -> Self {
+        Self::spawning(
+            name,
+            r#"{"event":"open","rows":10,"cols":40,"args":{"command":"trap \"\" HUP; sleep 30"}}"#,
+            |frame| {
+                format!(
+                    "{{ cat {}; sleep 30; }} | {CASPER} surface screen",
+                    frame.display()
+                )
+            },
+        )
+    }
+
+    fn spawning(name: &str, frame: &str, running: impl Fn(&Path) -> String) -> Self {
         let dir = std::env::temp_dir().join(format!("casper-tied-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
         let call = dir.join("call.json");
-        std::fs::write(&call, r#"{"tool":"shell","args":{"command":"sleep 30"}}"#).expect("wrote");
+        // Newline-terminated: `run` reads to end of file and would not care, but a surface reads
+        // lines and an unterminated one leaves it waiting for the rest of a frame that is all
+        // there is.
+        std::fs::write(&call, format!("{frame}\n")).expect("wrote");
 
         let pids = dir.join("pid");
-        // A regular file for stdin, so it is at end of file before the command even starts.
-        // Nothing is left on the pipe for a dying caller to close, which is the gap this covers.
         let script = format!(
-            "{binary} run <{call} >/dev/null 2>&1 & echo $! > {pids}; wait",
-            binary = env!("CARGO_BIN_EXE_casper"),
-            call = call.display(),
+            "{casper} >/dev/null 2>&1 & echo $! > {pids}; wait",
+            casper = running(&call),
             pids = pids.display(),
         );
         let shell = Command::new("sh")
@@ -158,6 +201,10 @@ fn a_call_does_not_outlive_the_process_that_asked_for_it() {
     // moment the call finished arriving.
     let mut caller = Caller::starting("killed");
     let served = caller.served;
+    // The program the call is running. One level further down than the signal reaches on its
+    // own, and the level a tool call actually costs something at: this is the build, the fetch,
+    // the thing that was still going when the magi was killed.
+    let ran = caller.ran.expect("the casper started what it was given");
     assert!(
         alive(served),
         "it is up while the caller that started it is"
@@ -165,10 +212,34 @@ fn a_call_does_not_outlive_the_process_that_asked_for_it() {
 
     caller.killed();
     let went = gone_within(served, NOTICES_WITHIN);
+    let ran_went = gone_within(ran, NOTICES_WITHIN);
 
     caller.cleared();
     assert!(
         went,
         "a casper must not outlive the process that started it"
+    );
+    assert!(
+        ran_went,
+        "a command must not outlive the casper that started it"
+    );
+}
+
+#[test]
+fn a_program_on_a_screen_does_not_outlive_it_either() {
+    // A pty covers the ordinary case by itself — the master closes, the session is hung up, the
+    // program ends. This one has said it will not take a hangup, so what is left is the death
+    // signal or nothing.
+    let mut caller = Caller::on_a_screen("screened");
+    let ran = caller.ran.expect("the casper put the program on a pty");
+    assert!(alive(ran), "it is up while the casper holding it is");
+
+    caller.killed();
+    let went = gone_within(ran, NOTICES_WITHIN);
+
+    caller.cleared();
+    assert!(
+        went,
+        "a program on a screen must not outlive the casper that started it"
     );
 }

@@ -127,6 +127,8 @@ impl Screen {
         for (key, value) in &spec.env {
             command = command.env(key, value);
         }
+        // Under the hangup the closing master already sends, for the program that ignores it.
+        command = crate::tied::on_a_screen(command);
         let child = command.spawn(pts)?;
 
         let pty = Arc::new(pty);

@@ -17,5 +17,6 @@ pub mod pty;
 pub mod scratch;
 pub mod setup;
 pub mod surface;
+pub mod tied;
 pub mod tools;
 pub mod wire;
