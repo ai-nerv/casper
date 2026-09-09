@@ -1,33 +1,18 @@
 //! Every escape sequence the emulator threw away, written down.
 //!
-//! **The canary.** [`vt100`] implements a subset of what a terminal does, and everything outside
-//! it is silently dropped — which is the worst possible failure mode, because the program keeps
-//! running and the screen just comes out wrong. `btop` positions with `ESC [ r ; c f` where the
-//! emulator only knows `ESC [ r ; c H`, so all 452 of its position commands went nowhere; what
-//! that looked like was text wrapping mid-word, and finding the cause meant sniffing a pty and
-//! ruling out three wrong theories first.
+//! [`vt100`] implements a subset of what a terminal does and silently drops the rest, so a screen
+//! comes out wrong with the program still running and nothing to say why. It hands every sequence
+//! it could not read to a [`vt100::Callbacks`], and the ones that fall through are counted here
+//! by name — `dropped CSI f ×452`.
 //!
-//! This is that diagnosis, made automatic. vt100 hands every sequence it could not read to a
-//! [`vt100::Callbacks`], so the ones that fall through are counted here by name. A screen that
-//! renders wrong now says *why* — `dropped CSI f ×452` — instead of leaving somebody to work it
-//! out from the shape of the damage.
-//!
-//! **It reports; it cannot repair.** The callback is handed a `&mut Screen`, but the only public
-//! mutators on one are `set_size` and `set_scrollback` — the cursor and the grid are not reachable
-//! from out here. So nothing can be acted on at this point, and what a sequence *should* have done
-//! is dealt with earlier, on the byte stream, where a rewrite is still possible: see
-//! [`super::rewriting`].
-//!
-//! The other half is the test suite. A conformance sweep asserts that nothing is dropped for the
-//! sequences a full-screen program actually uses, so the next gap is a failing test rather than a
-//! person reporting that their screen looks odd.
+//! This reports; it cannot repair. The callback is handed a `&mut Screen` whose cursor and grid
+//! are not reachable from out here, so a sequence that needs fixing is fixed earlier, on the byte
+//! stream: see [`super::rewriting`].
 
 use std::collections::BTreeMap;
 
-/// What was dropped, and how many times.
-///
-/// Counted rather than logged one by one: a program redraws thirty times a second, so the
-/// interesting number is "this sequence, four hundred times" and not four hundred lines of it.
+/// What was dropped, and how many times. Counted rather than logged one by one: a program redraws
+/// thirty times a second.
 #[derive(Debug, Default, Clone)]
 pub struct Noticing {
     dropped: BTreeMap<String, usize>,
@@ -79,11 +64,8 @@ impl Noticing {
 
 /// How a sequence is named, so two of the same kind count as one entry.
 ///
-/// **The parameters are kept for a private sequence and dropped for an ordinary one**, because
-/// they mean opposite things. On `CSI 3;5f` they are a row and a column — `CSI 9;9f` is the same
-/// gap, and a tally keyed on the numbers would be a line per redraw. On `CSI ?1049h` the number
-/// *is* which instruction it is: the alternate screen and the mouse are both `?…h`, and a report
-/// that called them one thing would name nothing anybody could act on.
+/// The parameters are kept for a private sequence and dropped for an ordinary one: on `CSI 3;5f`
+/// they are a row and a column, and on `CSI ?1049h` the number is which instruction it is.
 fn named(kind: &str, i1: Option<u8>, i2: Option<u8>, params: &[&[u16]], last: char) -> String {
     let mark = |i: Option<u8>| i.map(|b| (b as char).to_string()).unwrap_or_default();
     let numbers = if i1.is_some() {
@@ -133,22 +115,18 @@ mod tests {
 
     #[test]
     fn a_sequence_the_emulator_cannot_read_is_named() {
-        // The one that started this. Without the rewrite in front of it, every `f` lands here.
         assert_eq!(dropped(b"\x1b[3;5f"), [("CSI f".to_owned(), 1)]);
     }
 
     #[test]
     fn the_same_gap_many_times_is_one_entry_with_a_count() {
-        // A program redraws thirty times a second. The useful number is "this sequence, four
-        // hundred times", not four hundred lines saying so.
         let dropped = dropped(b"\x1b[1;1f\x1b[2;2f\x1b[9;9f");
         assert_eq!(dropped, [("CSI f".to_owned(), 3)]);
     }
 
     #[test]
     fn what_the_emulator_does_understand_is_not_reported() {
-        // Otherwise the canary is noise and nobody reads it. These are the sequences a full-screen
-        // program spends its life in.
+        // The sequences a full-screen program spends its life in.
         let clean: &[&[u8]] = &[
             b"\x1b[3;5H",                    // cursor position
             b"\x1b[2J\x1b[K",                // erase display, erase line
