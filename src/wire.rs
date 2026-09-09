@@ -57,7 +57,7 @@ pub struct Reply {
     pub result: Vec<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// Absent means refused, which is every no casper has: it declines a call or it does not.
+    /// Which kind of no. Set explicitly, so the three siblings refuse in identical bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fault: Option<Fault>,
 }
@@ -114,7 +114,7 @@ impl Reply {
             n: 0,
             result: Vec::new(),
             error: Some(why.into()),
-            fault: None,
+            fault: Some(Fault::Refused),
         }
     }
 }
