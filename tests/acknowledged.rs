@@ -1,20 +1,14 @@
 //! Fetched declarations run once somebody has said they may, and stop the moment they change.
 //!
-//! Against the real binary, end to end. The unit tests under `src/acknowledged.rs` and
-//! `src/plugins.rs` prove the digest arithmetic and the load order; what neither can reach is the
-//! arrangement of the two — a `Trust::Installed` that nothing consults, a `needs_acknowledging`
-//! nobody calls, a `cleared` whose answer is thrown away. Each of those was held by
-//! `gate-sandbox.sh` grepping for the symbol by name, which fires on an honest rename and passes
-//! on a defence that has been wired to nothing.
-//!
-//! A package's tool is asked for by name rather than counted, because the shipped declarations
-//! bring thirteen of their own and a count is a test that fails whenever somebody adds a tool.
+//! Against the real binary, end to end: the unit tests under `src/acknowledged.rs` and
+//! `src/plugins.rs` reach the digest arithmetic and the load order but not the arrangement of the
+//! two. A package's tool is asked for by name rather than counted, because the shipped
+//! declarations bring thirteen of their own.
 
 use casper::scratch::Scratch;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-/// The binary under test.
 const CASPER: &str = env!("CARGO_BIN_EXE_casper");
 
 /// The tool the fetched package declares, named so nothing shipped can be mistaken for it.
@@ -59,7 +53,6 @@ fn package(dir: &Scratch) -> std::path::PathBuf {
     dir.join("data/casper/site/pack/probes/start/one/plugin/probe.lua")
 }
 
-/// Run a verb against this machine.
 fn asked(dir: &Scratch, verb: &str) -> Output {
     Command::new(CASPER)
         .arg(verb)
@@ -71,7 +64,6 @@ fn asked(dir: &Scratch, verb: &str) -> Output {
         .expect("casper runs")
 }
 
-/// Whether `casper tools` offered a tool by that name.
 fn offers(dir: &Scratch, tool: &str) -> bool {
     let out = asked(dir, "tools");
     assert!(out.status.success(), "casper answered");
@@ -84,7 +76,6 @@ fn offers(dir: &Scratch, tool: &str) -> bool {
         .any(|card| card["name"] == tool)
 }
 
-/// What casper said on stderr while answering that verb.
 fn aside(dir: &Scratch, verb: &str) -> String {
     String::from_utf8_lossy(&asked(dir, verb).stderr).into_owned()
 }

@@ -1,23 +1,13 @@
 //! Every setting casper declares must change something.
 //!
-//! **A setting advertised in `needs` and read by nothing is worse than one not offered.** A
-//! coordinator sets it, is told it was taken, and the behaviour never changes — which is the same
-//! sin as a verb that is advertised and refused, one level down. casper declared three settings
-//! and honoured one of them: `is_off` was dead code that nothing called, and `output_bytes` was
-//! named in its own description and in a test and nowhere else.
-//!
-//! Driven through the binary rather than the library, because the channel is the whole point:
-//! casper is one process per call, so a `configure` that only reached the configuring process
-//! reported `set` for something that evaporated on exit.
+//! Driven through the binary rather than the library, because the channel is the point: casper is
+//! one process per call, so a `configure` that only reached the configuring process would report
+//! `set` for something that evaporated on exit.
 
 use std::process::Command;
 
-/// A config directory holding this checkout's declarations.
-///
-/// **Pointed at rather than inherited.** These spawn the binary, and the binary reads its
-/// declarations from `$XDG_CONFIG_HOME/casper` — so without this they would pass on a machine
-/// where somebody had run `make install` and fail on a runner where nobody had, which is being
-/// green for a reason that has nothing to do with what is being tested.
+/// A config directory holding this checkout's declarations, rather than whatever `make install`
+/// has put on the machine.
 fn installed() -> casper::scratch::Scratch {
     let dir = casper::scratch::Scratch::new("casper-settings", "config");
     let into = dir.join("casper");
@@ -26,19 +16,10 @@ fn installed() -> casper::scratch::Scratch {
     dir
 }
 
-/// Every directory casper finds through the environment, pointed at this test's own.
-///
-/// `$XDG_CONFIG_HOME` is not the whole of what the shipped `tools.lua` reaches for: `shell`
-/// writes the directory it is to use next under `$XDG_RUNTIME_DIR/casper/cwd` and `pwd` reads it
-/// back. Without this the `pwd` below read the one a person is actually using — so the test was
-/// reporting on the machine, and would have gone on passing with the runtime path spelled any
-/// way at all. `gate-hermetic` could not see it either: `$XDG_RUNTIME_DIR` is not `$TMPDIR`.
-///
-/// **`$XDG_DATA_HOME` is the third, and it was still the person's.** That is where installed
-/// packages live, so a machine with anything under `~/.local/share/casper/site` had that read
-/// into every run here. It passes today because this machine has no such directory, which is the
-/// definition of a test that grades the machine. `gate-hermetic` cannot see this one either: it
-/// exports all four for the whole run, so a child inherits them whether or not the test said so.
+/// Every directory casper finds through the environment, pointed at this test's own. All three
+/// matter: `tools.lua` comes from the config one, `shell` writes the next working directory under
+/// the runtime one, and installed packages are read from the data one. `gate-hermetic` cannot
+/// catch a missing one, because it exports all four for the whole run.
 fn pointed(command: &mut Command, at: &casper::scratch::Scratch) {
     command
         .env("XDG_CONFIG_HOME", &**at)
@@ -74,9 +55,7 @@ fn with(configured: &str, args: &[&str], stdin: Option<&str>) -> String {
 
 #[test]
 fn a_coordinator_reaches_a_program_it_spawns_per_call() {
-    // The hole this file exists for. `casper configure` applied to the process running it and
-    // nothing else, so magi could configure casper all it liked and every later `casper run` was
-    // a fresh process that knew nothing about it.
+    // `casper configure` applies to the process running it, and every later call is a fresh one.
     let listed = with(r#"{"tools":{"dino":{"off":true}}}"#, &["tools"], None);
     assert!(!listed.contains(r#""name":"dino""#), "{listed}");
     let plain = with("", &["tools"], None);
@@ -88,8 +67,7 @@ fn a_coordinator_reaches_a_program_it_spawns_per_call() {
 
 #[test]
 fn off_means_gone_rather_than_unlisted() {
-    // A model that was never told about a tool can still guess at one. Answering the guess would
-    // make `off` mean `hidden` for anything persistent enough to try.
+    // A model that was never told about a tool can still guess at one.
     let ran = with(
         r#"{"tools":{"dino":{"off":true}}}"#,
         &["run"],
@@ -101,8 +79,6 @@ fn off_means_gone_rather_than_unlisted() {
 
 #[test]
 fn hidden_takes_a_tool_out_of_the_listing_and_leaves_it_runnable() {
-    // The other half, and the reason there are two settings: a tool a person invokes through the
-    // harness should not spend context in every request that mentions it.
     let listed = with(r#"{"tools":{"pwd":{"hidden":true}}}"#, &["tools"], None);
     assert!(!listed.contains(r#""name":"pwd""#), "{listed}");
 
@@ -116,7 +92,6 @@ fn hidden_takes_a_tool_out_of_the_listing_and_leaves_it_runnable() {
 
 #[test]
 fn output_bytes_caps_what_the_model_reads() {
-    // Declared with a default since `needs` existed, and applied to nothing.
     let ran = with(
         r#"{"output_bytes":200}"#,
         &["run"],

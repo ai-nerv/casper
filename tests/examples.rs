@@ -1,16 +1,11 @@
 //! The shipped examples, run.
 //!
-//! pi ships roughly seventy-eight example extensions. That is not documentation — it is how they
-//! know the extension surface works, and casper's had never been used by anybody who did not
-//! write it. An example that does not load is worse than no example, because somebody copies it.
-//!
-//! These load each file over the shipped declarations, exactly as a plugin directory would, and
-//! check that it declared what it says it declares. What they cannot check is that `jq` is
-//! installed, which is the tool's business rather than the surface's.
+//! Each file is loaded over the shipped declarations, exactly as a plugin directory would, and
+//! checked for declaring what it says it declares. Whether `jq` is installed is not checked.
 
 use casper::lua::engine::Engine;
 
-/// One example, read from the tree at run time — the way a plugin directory reads one.
+/// One example, read from the tree at run time, the way a plugin directory reads one.
 fn example(name: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("examples/plugin")
@@ -32,9 +27,7 @@ fn layered(name: &str) -> Engine {
 
 #[test]
 fn an_example_adds_tools_without_taking_the_shipped_ones_with_it() {
-    // Additive, because the registry replaces by name: a file declaring `jq` adds one, and a
-    // file declaring `cat` would mean it. What stopped being possible is replacing the other
-    // thirteen by accident.
+    // The registry replaces by name, so a file declaring `cat` would replace the shipped one.
     let engine = layered("jq.lua");
     let cards = engine.tools();
     let named: Vec<&str> = cards.iter().map(|card| card.name.as_str()).collect();
@@ -49,8 +42,6 @@ fn an_example_adds_tools_without_taking_the_shipped_ones_with_it() {
 
 #[test]
 fn every_example_tool_says_what_it_is_and_what_it_needs() {
-    // The three things a declaration owes a harness. A tool that describes itself badly is worse
-    // than one that is missing: the model calls it and cannot tell why the answer is wrong.
     let engine = layered("jq.lua");
     for card in engine.tools() {
         if card.name != "jq" && card.name != "json-keys" {

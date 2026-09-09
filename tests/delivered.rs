@@ -1,25 +1,17 @@
 //! What casper's exit code says about whether the caller got what casper wrote.
 //!
 //! Against the real binary, because the thing under test is a buffered `stdout` and a process's
-//! exit code, neither of which exists inside a unit test. `/dev/full` is the fixture: it accepts
-//! an `open`, reports `ENOSPC` on every write, and is on every Linux machine — so a reply that
-//! could not be delivered is arranged without asking anything of the run's timing.
+//! exit code. `/dev/full` is the fixture: it accepts an `open` and reports `ENOSPC` on every
+//! write. Not a pipe — a kilobyte fits in a 64 KiB pipe buffer and succeeds whether or not
+//! anybody reads it, which passes against the broken version too.
 //!
-//! A pipe would be the obvious fixture and is the wrong one. `casper verbs | true` writes about
-//! a kilobyte into a 64 KiB pipe buffer and succeeds whether or not anybody is ever going to
-//! read it, so it reports delivery on a reply nothing received — it passes against both the
-//! working version and the broken one.
-//!
-//! **Every case here also asserts that nothing panicked.** `println!` and `eprintln!` panic when
-//! the write behind them fails, and a panic is a second, worse way to fail the same check: exit
-//! 101 is not exit 1, the message goes to a stderr the harness throws away, and no destructor
-//! that a surface relies on has run.
+//! Every case also asserts that nothing panicked, because `println!` and `eprintln!` panic on a
+//! failed write and exit 101 is not exit 1.
 
 use casper::scratch::Scratch;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-/// The binary under test.
 const CASPER: &str = env!("CARGO_BIN_EXE_casper");
 
 /// `/dev/full` opened for writing: every write to it is `ENOSPC`.
@@ -73,8 +65,7 @@ fn help_that_did_not_land_is_not_a_success() {
 
 #[test]
 fn a_reply_that_landed_is_a_success() {
-    // The control. Without it the cases above pass just as well against a casper that always
-    // fails, which would be a worse program and a green suite.
+    // The control for the cases above, which pass against a casper that always fails.
     let out = Command::new(CASPER)
         .arg("verbs")
         .stdin(Stdio::null())
@@ -87,8 +78,7 @@ fn a_reply_that_landed_is_a_success() {
 
 #[test]
 fn a_refusal_still_exits_zero() {
-    // The family's rule: a refusal is an answer, so it leaves by the front door. Only a reply
-    // that never arrived is a failure.
+    // A refusal is an answer. Only a reply that never arrived is a failure.
     let out = Command::new(CASPER)
         .arg("no-such-verb")
         .stdin(Stdio::null())
@@ -102,10 +92,8 @@ fn a_refusal_still_exits_zero() {
     );
 }
 
-/// A configuration directory of this test's own, holding the declarations this repository ships.
-///
-/// The installed ones would make the assertion about this machine, and a `plugin/` file dropped
-/// beside them is how a layer that will not parse is arranged.
+/// A configuration directory of this test's own, holding the declarations this repository ships
+/// rather than the machine's, and optionally a `plugin/` file that will not parse.
 fn config(name: &str, broken: bool) -> Scratch {
     let dir = Scratch::new("casper-delivered", name);
     let into = dir.join("config/casper");
@@ -217,11 +205,8 @@ fn a_surface_whose_frames_landed_is_a_success() {
     assert!(!out.stdout.is_empty(), "and it drew something");
 }
 
-/// A surface on a machine with no declarations still says it is finished.
-///
-/// The harness reserves the rows before this process starts, so an install with nothing in it
-/// used to leave them held for a tenant that was never going to draw — the one path out of
-/// `surface` that said nothing at all.
+/// A surface on a machine with no declarations still says it is finished: the harness reserves
+/// the rows before this process starts and holds them until something says otherwise.
 #[test]
 fn a_surface_with_nothing_to_draw_still_says_so() {
     let dir = Scratch::new("casper-delivered", "empty");

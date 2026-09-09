@@ -1,32 +1,19 @@
 //! What the `shell` declaration owes its caller besides ending when casper does.
 //!
-//! Against the real binary and the `tools.lua` this repository ships, because the wrapper is the
-//! thing under test: `shell` does not run the command, it writes a shell script around it, and
-//! every property here — the exit status, the remembered directory — is a property of that
-//! script rather than of any Rust in the crate. A test that built its own `Command` would agree
-//! with itself and say nothing about what a model gets back.
-//!
-//! The reason to hold it down at all is that the script had to change to stop leaking processes
-//! (see `tests/tied.rs`), and the change moved the command into a background job. **A tool that
-//! answers 0 for a command that failed is worse than the leak it was fixed for**, so the status
-//! is checked in both directions, and so is the `cd` that has to survive to the next call.
+//! Against the real binary and the `tools.lua` this repository ships: `shell` does not run the
+//! command, it writes a shell script around it, and the exit status and the remembered directory
+//! are properties of that script rather than of any Rust in the crate. The script backgrounds the
+//! command to stop leaking processes (see `tests/tied.rs`), so the status is checked in both
+//! directions and so is the `cd` that has to survive to the next call.
 
 use casper::scratch::Scratch;
 use std::process::{Command, Stdio};
 
-/// The binary under test.
 const CASPER: &str = env!("CARGO_BIN_EXE_casper");
 
-/// One casper, with a config and a runtime directory of its own.
-///
-/// Both are isolated for the same reason: casper reads `tools.lua` out of its config directory,
-/// so without this the test would report on whatever is installed on the machine rather than on
-/// what is in the repository — and `shell` writes the directory it is to use next into the
-/// runtime directory, which on a developer's machine is one a person is using.
+/// One casper, with config, runtime and data directories of its own, so the test reads this
+/// repository's declarations and not the machine's.
 struct Alone {
-    /// A [`Scratch`] rather than a path with a `Drop` written out here: the guard, the counter
-    /// that tells two same-named fixtures apart, and the delete-before-create are all one type's
-    /// business, and there were three copies of them across this suite.
     dir: Scratch,
 }
 
@@ -76,15 +63,12 @@ impl Alone {
 
 #[test]
 fn a_command_that_failed_is_reported_with_the_status_it_failed_with() {
-    // The number, not merely "something went wrong": 3 is what the program chose to say, and a
-    // model that gets 1 or 0 instead is being told about a different run than the one it asked
-    // for. `sh -c` rather than the `exit` builtin so that the status crosses a real process.
+    // `sh -c` rather than the `exit` builtin, so the status crosses a real process.
     let alone = Alone::new("failed");
     let said = alone.shell("echo working; echo broken >&2; sh -c 'exit 3'");
     assert_eq!(said["failed"], serde_json::json!(true), "{said}");
     let text = said["said"].as_str().unwrap_or_default();
     assert!(text.contains("(exit 3)"), "{text}");
-    // And what it printed on both streams, which is usually what says how to fix it.
     assert!(
         text.contains("working") && text.contains("broken"),
         "{text}"
@@ -101,8 +85,7 @@ fn a_command_that_worked_is_not_reported_as_a_failure() {
 
 #[test]
 fn the_directory_a_command_ended_in_is_where_the_next_one_starts() {
-    // The one piece of state `shell` keeps, and the first thing a background job would have
-    // broken: a `cd` in a subshell is not a `cd` in the shell that writes the directory down.
+    // A `cd` in a subshell is not a `cd` in the shell that writes the directory down.
     let alone = Alone::new("cd");
     alone.shell("cd /usr/share");
     assert_eq!(

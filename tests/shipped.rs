@@ -1,8 +1,7 @@
 //! The declarations casper actually ships, driven the way the harness drives them.
 //!
-//! Everything else tests a tenant written for the test. These load `config/tools.lua` — the same
-//! text `main.rs` embeds — because the bugs that reach a person are in the thing that ships, and a
-//! toy tenant written beside the assertion agrees with it by construction.
+//! These load `config/tools.lua`, the same text `main.rs` embeds, rather than a tenant written
+//! beside the assertion.
 
 use casper::lua::engine::Engine;
 
@@ -62,9 +61,8 @@ fn a_question() -> serde_json::Value {
 
 #[test]
 fn one_press_of_an_arrow_moves_the_permission_prompt_one_row() {
-    // **The release is not a second press.** Where the Kitty protocol is live every keystroke
-    // arrives twice, and a list that acted on both moved two rows for one press — which is a
-    // person selecting the wrong permission and not knowing why.
+    // Where the Kitty protocol is live every keystroke arrives twice, so a list that acts on the
+    // release as well as the press moves two rows for one press.
     let mut engine = opened("permission", &a_question(), 9, 60);
     let down = key(&mut engine, "down", "down");
     assert_eq!(pointing(&down), "Anything under /etc");
@@ -74,8 +72,7 @@ fn one_press_of_an_arrow_moves_the_permission_prompt_one_row() {
 
 #[test]
 fn holding_an_arrow_still_scrolls_the_list() {
-    // The other half, and why the fix is not "ignore everything but a press": a repeat says the
-    // key is still down, and a list that dropped those would need a tap per row.
+    // A repeat says the key is still down; a list that dropped those would need a tap per row.
     let mut engine = opened("permission", &a_question(), 9, 60);
     key(&mut engine, "down", "down");
     let held = key(&mut engine, "down", "repeat");
@@ -84,8 +81,7 @@ fn holding_an_arrow_still_scrolls_the_list() {
 
 #[test]
 fn a_terminal_that_says_nothing_about_holding_still_moves_one_row() {
-    // Every terminal without the protocol, where a key is one bare press and there is no state on
-    // the frame at all. The guard must not have turned those into nothing.
+    // Every terminal without the protocol sends one bare press with no state on the frame.
     let mut engine = opened("permission", &a_question(), 9, 60);
     let drew = engine
         .frame(&serde_json::json!({"kind": "key", "key": "down"}))
@@ -135,8 +131,6 @@ mod games {
 
     #[test]
     fn a_release_of_the_quit_key_does_not_end_a_game() {
-        // It used to. `q` was matched without looking at the state, so letting the key up ended
-        // the game a second time — harmless only because there was nothing left to end.
         for game in ["dino", "birdy"] {
             let mut engine = opened(game, &serde_json::json!({}), 8, 60);
             let after = key(&mut engine, "q", "up");
@@ -179,22 +173,16 @@ mod games {
     }
 }
 
-/// What the emulator behind a `screen` tool cannot read.
-///
-/// The canary, pointed at real programs. A gap here is a screen that renders subtly wrong with
-/// nothing on it to say why — which cost a pty-sniffing expedition and three wrong theories the
-/// one time it happened. Now it is a failing test.
+/// What the emulator behind a `screen` tool cannot read, against real programs. A gap here is a
+/// screen that renders subtly wrong with nothing on it to say why.
 mod conformance {
     use casper::pty::{Screen, Spec};
     use std::time::{Duration, Instant};
 
     /// Run `command` for long enough to draw, and report what the emulator threw away.
     fn dropped_by(command: &str, rows: u16, cols: u16) -> Vec<(String, usize)> {
-        // **A home of this test's own.** These are real programs, and real programs save their
-        // settings: `btop` writes `$XDG_CONFIG_HOME/btop` and `top` writes
-        // `$XDG_CONFIG_HOME/procps` on the way out, so every run of the suite edited the
-        // preferences of whoever ran it. Nothing said so for as long as the hermeticity gate
-        // could only see `$TMPDIR`, which is not where either of them writes.
+        // A home of this test's own: `btop` writes `$XDG_CONFIG_HOME/btop` and `top` writes
+        // `$XDG_CONFIG_HOME/procps` on the way out, neither of which `gate-hermetic` watches.
         let home = casper::scratch::Scratch::new("casper-conformance", "home");
         let at = |name: &str| home.join(name).display().to_string();
         let spec = Spec {
@@ -230,12 +218,8 @@ mod conformance {
             .is_ok_and(|out| out.status.success())
     }
 
-    /// Sequences the emulator drops that change nothing about what is drawn.
-    ///
-    /// Each of these was looked at once and judged harmless, and the reason is written down beside
-    /// it — because the next person to see one in a log needs to know whether it explains their
-    /// problem. Anything *not* on this list is a gap nobody has looked at yet, which is exactly
-    /// what `CSI f` was.
+    /// Sequences the emulator drops that change nothing about what is drawn, each with the reason
+    /// beside it. Anything not on this list is a gap nobody has looked at yet.
     const HARMLESS: &[(&str, &str)] = &[
         (
             "CSI ?2026h",
@@ -258,10 +242,6 @@ mod conformance {
 
     #[test]
     fn the_programs_on_this_machine_are_understood_in_full() {
-        // `btop` is the one that found the gap: it positions with `ESC [ r ; c f`, which the
-        // emulator drops, so every one of its 452 position commands went nowhere. It passes now
-        // because the byte is rewritten on the way in — and a future gap is named here rather than
-        // read off a scrambled screen.
         let programs = [
             ("top -b -n 2", "top"),
             ("btop", "btop"),
@@ -285,9 +265,8 @@ mod conformance {
 
     #[test]
     fn the_canary_is_awake() {
-        // A test that only ever passes proves nothing. This is the sequence the emulator genuinely
-        // does not know and the rewriter deliberately leaves alone — a backward tab — so seeing it
-        // reported is what says the wiring works.
+        // A backward tab: the one sequence the emulator does not know and the rewriter leaves
+        // alone, so seeing it reported is what says the wiring works.
         let dropped = dropped_by(r"printf '\033[4Z'; sleep 1", 5, 20);
         assert_eq!(
             dropped,
