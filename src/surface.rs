@@ -47,14 +47,14 @@ fn lent(engine: &mut Engine) {
 ///
 /// The arguments the call was made with arrive on the first frame, so a surface opens knowing what
 /// it was asked about — a permission needs the command, a picker needs the list.
-pub fn hold(tool: &str, engine: &mut Engine) {
+pub fn hold(tool: &str, engine: &mut Engine) -> bool {
     lent(engine);
     let mut lines = frames();
     // The first frame says how much room there is and what the call was given. Opening before it
     // arrives would mean guessing at a size, and a tenant that laid itself out for the wrong one
     // draws once wrongly before it is told.
     let Some(Ok(first)) = lines.next() else {
-        return;
+        return delivered();
     };
     let ToSurface::Open {
         rows,
@@ -65,7 +65,7 @@ pub fn hold(tool: &str, engine: &mut Engine) {
     else {
         // Anything else first is a caller that does not speak this, and answering it would be
         // answering a frame nobody meant to send.
-        return;
+        return delivered();
     };
     // What it was granted, in one table: the rows, the width, and whether this terminal will ever
     // report a key coming back up. A tenant told otherwise waits for a release that never comes,
@@ -81,7 +81,7 @@ pub fn hold(tool: &str, engine: &mut Engine) {
         .and_then(crate::pty::Spec::from_json)
     {
         screening::hold(&spec, rows, cols, lines);
-        return;
+        return delivered();
     }
     if !engine.open(tool, &args, &size) {
         // No `surface` was declared. Said rather than silent: the harness reserved rows for this
@@ -89,19 +89,19 @@ pub fn hold(tool: &str, engine: &mut Engine) {
         say(&FromSurface::Done {
             answered: String::new(),
         });
-        return;
+        return delivered();
     }
     // Drawn once before any input, so the rows are filled the moment they appear rather than on
     // the first keypress.
     let mut opened = size.clone();
     opened["kind"] = serde_json::Value::String("open".to_owned());
     if !offer(engine, &opened) {
-        return;
+        return delivered();
     }
 
     for line in lines {
         let Ok(line) = line else {
-            return;
+            return delivered();
         };
         let event = match read(&line) {
             ToSurface::Key { key, state } => serde_json::json!({
@@ -132,16 +132,17 @@ pub fn hold(tool: &str, engine: &mut Engine) {
             // something can put it down.
             ToSurface::Close => {
                 let _ = engine.frame(&serde_json::json!({"kind": "close"}));
-                return;
+                return delivered();
             }
             // An answer nobody is waiting on: the tenant asked, gave up, and the harness said so
             // anyway. Nothing to draw about.
             ToSurface::Open { .. } | ToSurface::Answer { .. } => continue,
         };
         if !offer(engine, &event) {
-            return;
+            return delivered();
         }
     }
+    delivered()
 }
 
 /// Hand one frame to the tenant and say what it drew. `false` when the surface is over.
@@ -173,10 +174,9 @@ fn offer(engine: &mut Engine, event: &serde_json::Value) -> bool {
         .cloned()
         .and_then(|at| serde_json::from_value(at).ok());
     match serde_json::from_value(lines) {
-        Ok(lines) => {
-            say(&FromSurface::Draw { lines, cursor });
-            true
-        }
+        // A frame that did not reach the harness ends the loop: there is nobody left to draw for,
+        // and the next tick would only fail the same way.
+        Ok(lines) => say(&FromSurface::Draw { lines, cursor }),
         // A frame that drew nothing readable is not fatal on its own — a tenant may answer a tick
         // it has nothing to do with — so the rows keep what they had and the loop goes on.
         Err(_) => true,
@@ -191,19 +191,54 @@ fn read(line: &str) -> ToSurface {
     serde_json::from_str(line).unwrap_or(ToSurface::Tick)
 }
 
-/// One frame out.
-fn say(frame: &FromSurface) {
+/// The surface is over before it opened, because there was nothing to open.
+///
+/// A frame rather than silence. The harness has already reserved the rows by the time this
+/// process starts, and a casper that exits without a word leaves them held for a tenant that is
+/// never going to draw — which is what a half-finished install used to do.
+pub fn nothing_to_draw() -> bool {
+    say(&FromSurface::Done {
+        answered: String::new(),
+    })
+}
+
+/// One frame out. `false` when it did not reach the harness.
+///
+/// **Written rather than printed, and the answer is a value.** `println!` panics on a write that
+/// fails, so a harness that went away turned this process into a panic on a stderr the harness
+/// was throwing away — and the flush below it, which exists to catch exactly that, was never
+/// reached. Flushed every frame because a buffered game's rows arrive in batches and the surface
+/// looks frozen and then jumps.
+fn say(frame: &FromSurface) -> bool {
     use std::io::Write;
-    if let Ok(line) = serde_json::to_string(frame) {
-        println!("{line}");
-        // Flushed every frame. Buffered, a game's rows would arrive in batches and the surface
-        // would look frozen and then jump. A flush that failed is a frame the harness never got,
-        // which looks from the far end exactly like a tenant that stopped drawing — so it is
-        // noted, because stdout is the frames and stderr is thrown away.
-        if let Err(why) = std::io::stdout().flush() {
-            crate::noted!("surface: a frame was written but not flushed: {why}");
+    let Ok(line) = serde_json::to_string(frame) else {
+        crate::noted!("surface: a frame would not encode");
+        return false;
+    };
+    let mut out = std::io::stdout().lock();
+    match out
+        .write_all(line.as_bytes())
+        .and_then(|()| out.write_all(b"\n"))
+        .and_then(|()| out.flush())
+    {
+        Ok(()) => true,
+        Err(why) => {
+            crate::noted!("surface: a frame did not reach the harness: {why}");
+            DELIVERED.store(false, std::sync::atomic::Ordering::Relaxed);
+            false
         }
     }
+}
+
+/// Whether every frame this process wrote reached the harness.
+///
+/// A flag set in one place rather than a bool threaded through the loop: [`say`] is the only
+/// writer, and each of the seven ways out of a surface would otherwise have to carry it.
+static DELIVERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// What [`DELIVERED`] holds, as the verdict every way out of [`hold`] returns.
+fn delivered() -> bool {
+    DELIVERED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg(test)]

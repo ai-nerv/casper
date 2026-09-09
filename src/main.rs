@@ -99,15 +99,10 @@ fn main() -> std::process::ExitCode {
             ),
         ),
         // Not a call and not a reply: frames both ways for as long as the tool holds its rows.
-        // See `casper::surface` for why this cannot be one exec per event.
-        "surface" => {
-            held(args.get(1).map(String::as_str).unwrap_or_default());
-            true
-        }
-        "help" | "--help" | "-h" => {
-            usage();
-            true
-        }
+        // See `casper::surface` for why this cannot be one exec per event. The exit code still
+        // says whether what casper wrote reached whoever asked.
+        "surface" => held(args.get(1).map(String::as_str).unwrap_or_default()),
+        "help" | "--help" | "-h" => usage(),
         other => say(how, &Reply::refused(format!("no such call: {other}"))),
     };
     // Zero for anything casper *said*, refusals included — that is the family's rule and clients
@@ -179,12 +174,8 @@ fn encoded(how: As, reply: &Reply) -> Vec<u8> {
 /// thing left to carry.
 fn say(how: As, reply: &Reply) -> bool {
     use std::io::Write;
-    // Flushed here rather than left to the drop at the end of main, and that is not tidiness.
-    // `stdout` is a `LineWriter`: a JSON reply ends in a newline and goes out on the `write_all`,
-    // but a CBOR frame has none and is small, so it sits in the buffer and the write reports
-    // success. Whatever went wrong then surfaces in the flush that `Drop` runs and ignores --
-    // which is the swallowed failure this function was rewritten to stop, still open on the one
-    // encoding a harness actually asks for.
+    // Flushed here: `stdout` is a `LineWriter`, and a CBOR frame carries no newline to push it
+    // out, so the failure would otherwise surface only in the drop that ignores it.
     let mut out = std::io::stdout().lock();
     match out
         .write_all(&encoded(how, reply))
@@ -196,6 +187,19 @@ fn say(how: As, reply: &Reply) -> bool {
             false
         }
     }
+}
+
+/// Say something to a person on stderr, without letting it end the process.
+///
+/// **`eprintln!` panics when the write fails, and the panic costs the reply.** A broken
+/// declaration is named here while the answer is still being assembled, so a casper run with its
+/// stderr on a full device or a closed pipe exited 101 with an empty stdout — the diagnostic
+/// destroyed the thing it was diagnosing. Nothing reads stderr: the harness throws it away, so a
+/// note that cannot be delivered is dropped rather than raised.
+fn aside(args: std::fmt::Arguments<'_>) {
+    use std::io::Write;
+    let mut err = std::io::stderr().lock();
+    let _ = err.write_fmt(args).and_then(|()| err.write_all(b"\n"));
 }
 
 /// Acknowledge every installed package, so its declarations may run.
@@ -407,20 +411,20 @@ fn loaded() -> Result<Engine, String> {
                 if trust.needs_acknowledging()
                     && !casper::acknowledged::cleared(&known, &path, &source)
                 {
-                    eprintln!(
+                    aside(format_args!(
                         "casper: {}; run `casper acknowledge` to clear it",
                         casper::acknowledged::Held {
                             path: path.clone(),
                             known: casper::acknowledged::seen(&known, &path),
                         }
-                    );
+                    ));
                     continue;
                 }
                 if let Err(why) = engine.run(&source, &path.to_string_lossy()) {
-                    eprintln!("casper: {}: {why}", path.display());
+                    aside(format_args!("casper: {}: {why}", path.display()));
                 }
             }
-            Err(why) => eprintln!("casper: {}: {why}", path.display()),
+            Err(why) => aside(format_args!("casper: {}: {why}", path.display())),
         }
     }
 
@@ -428,10 +432,17 @@ fn loaded() -> Result<Engine, String> {
     Ok(engine)
 }
 
-/// What a person gets for asking.
-fn usage() {
-    println!(
-        "casper — the tooling interface\n\
+/// What a person gets for asking, and whether they got it.
+///
+/// Written rather than printed for the reason [`say`] is: `println!` panics on a write that
+/// fails, so `casper help` with its stdout on a full device or a closed pipe exited 101 through
+/// a panic handler instead of reporting undelivered like every other verb here.
+fn usage() -> bool {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    out.write_all(
+        concat!(
+            "casper — the tooling interface\n\
          \n\
          \x20 casper tools        every tool it offers, with schemas\n\
          \x20 casper run          one call on stdin, one result on stdout\n\
@@ -440,19 +451,26 @@ fn usage() {
          \x20 --json | --cbor   which encoding a reply comes back in\n\
          \n\
          Every verb prints the family's reply shape. `run` is deliberately not\n\
-         reachable over the socket: see DESIGN.md."
-    );
+         reachable over the socket: see DESIGN.md.\n"
+        )
+        .as_bytes(),
+    )
+    .and_then(|()| out.flush())
+    .inspect_err(|why| casper::noted!("usage: it could not be written: {why}"))
+    .is_ok()
 }
 
 /// Hold a tool's rows, exchanging frames until it is finished.
 ///
 /// Nothing is printed in the reply shape here: this is a stream of frames, not a call, and a
 /// client that read it as one would take the first frame for the whole answer.
-fn held(tool: &str) {
+fn held(tool: &str) -> bool {
     let Ok(mut engine) = loaded() else {
-        return;
+        // A half-finished install used to exit here without a word, leaving the harness holding
+        // rows for a tenant that was never going to draw.
+        return casper::surface::nothing_to_draw();
     };
-    casper::surface::hold(tool, &mut engine);
+    casper::surface::hold(tool, &mut engine)
 }
 
 #[cfg(test)]

@@ -81,11 +81,16 @@ pub(crate) fn wonder(verb: &str, args: serde_json::Value) -> Result<serde_json::
         n.set(n.get() + 1);
         n.get()
     });
-    super::say(&FromSurface::Ask {
+    // A question that did not leave has no answer coming, and the loop below would wait on stdin
+    // for one until the harness closed. This is the case the paragraph above calls "never
+    // silence", and it was the one path that could still produce it.
+    if !super::say(&FromSurface::Ask {
         wondered,
         wonder: verb.to_owned(),
         args,
-    });
+    }) {
+        return Err("the question could not be put to the harness".to_owned());
+    }
 
     loop {
         let Some(Ok(line)) = read_one() else {

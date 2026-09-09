@@ -30,7 +30,9 @@ where
     };
     // Drawn before anything is typed, so the rows are filled the moment they appear. A program
     // that has not painted yet gives blank ones, which is what it looks like in any terminal.
-    draw(&mut screen);
+    if !draw(&mut screen) {
+        return;
+    }
 
     for line in frames {
         let Ok(line) = line else {
@@ -72,14 +74,18 @@ where
             });
             return;
         }
-        draw(&mut screen);
+        // A frame the harness did not get ends this too: the program keeps running behind a
+        // screen nobody can see, and `Screen`'s own drop is what closes it.
+        if !draw(&mut screen) {
+            return;
+        }
     }
 }
 
-/// Send whatever the program has painted.
-fn draw(screen: &mut Screen) {
+/// Send whatever the program has painted. `false` when it did not reach the harness.
+fn draw(screen: &mut Screen) -> bool {
     let (lines, cursor) = screen.drawn();
-    super::say(&FromSurface::Draw { lines, cursor });
+    super::say(&FromSurface::Draw { lines, cursor })
 }
 
 #[cfg(test)]
