@@ -55,18 +55,19 @@ struct Caller {
 
 impl Caller {
     /// Start a shell that starts a casper on a call that will still be running.
+    ///
+    /// A regular file for stdin, so it is at end of file before the command even starts: nothing
+    /// is left on the pipe for a dying caller to close, which is the gap this covers.
+    ///
+    /// The `sleep` is looked for from casper rather than from its first child. `shell` runs a
+    /// `cat` of its own to recall the working directory first, and a chain started at that `cat`
+    /// has nothing under it by the time anybody looks.
     fn starting(name: &str) -> Self {
-        // A regular file for stdin, so it is at end of file before the command even starts.
-        // Nothing is left on the pipe for a dying caller to close, which is the gap this covers.
         let mut caller = Self::spawning(
             name,
             r#"{"tool":"shell","args":{"command":"sleep 30"}}"#,
             |frame| format!("{CASPER} run <{}", frame.display()),
         );
-        // `shell` wraps the command in a shell, so the `sleep` is not casper's child and never
-        // was. From casper rather than from its first child: `shell` runs a `cat` of its own to
-        // recall the working directory first, and a chain started at that `cat` has nothing
-        // under it by the time anybody looks.
         caller.leaf = the_command_under(caller.served, "sleep");
         caller.ran = child_of(caller.served);
         caller
@@ -95,12 +96,20 @@ impl Caller {
         )
     }
 
+    /// The shell, the casper under it, and a fixture of this test's own.
+    ///
+    /// The frame is newline-terminated. `run` reads to end of file and would not care, but a
+    /// surface reads lines, and an unterminated one leaves it waiting for the rest of a frame
+    /// that is all there is.
+    ///
+    /// **The declarations this repository ships, not the ones on this machine.** casper finds
+    /// `tools.lua` through its configuration directory, so a test that let it find the installed
+    /// one would report on somebody's `~/.config` and would go on passing after the fix left the
+    /// repository. All three directories go with it: `shell` remembers a working directory under
+    /// the runtime one, and installed packages live under the data one.
     fn spawning(name: &str, frame: &str, running: impl Fn(&Path) -> String) -> Self {
         let dir = Scratch::new("casper-tied", name);
         let call = dir.join("call.json");
-        // Newline-terminated: `run` reads to end of file and would not care, but a surface reads
-        // lines and an unterminated one leaves it waiting for the rest of a frame that is all
-        // there is.
         std::fs::write(&call, format!("{frame}\n")).expect("wrote");
 
         let pids = dir.join("pid");
@@ -109,11 +118,6 @@ impl Caller {
             casper = running(&call),
             pids = pids.display(),
         );
-        // **The declarations this repository ships, not the ones on this machine.** casper reads
-        // `tools.lua` out of its config directory, so a test that let it find the installed one
-        // would report on somebody's `~/.config` — and would go on passing after the fix left
-        // the repository. The runtime directory goes with it: `shell` remembers a working
-        // directory there, and a test has no business writing into the one a person is using.
         let config = dir.join("config/casper");
         std::fs::create_dir_all(&config).expect("mkdir");
         std::fs::copy(
@@ -133,10 +137,8 @@ impl Caller {
             .stderr(Stdio::null())
             .spawn()
             .expect("start the caller");
-        // **Owned before anything else can panic.** `Child` has no `Drop` that kills, so a
-        // `read_pid` that timed out used to leave the shell and its casper running for the rest
-        // of the session — and the directory with them. Everything after this line unwinds into
-        // the guard below instead.
+        // Owned before anything else can panic: `Child` has no `Drop` that kills, so everything
+        // after this line unwinds into the guard below instead of leaking a shell and a casper.
         let mut caller = Self {
             shell,
             served: 0,
@@ -314,21 +316,21 @@ fn end(pid: u32) {
         .status();
 }
 
+/// The guarantee, at all three depths.
+///
+/// Nothing runs in a process that is killed outright, so the caller cannot be what enforces
+/// this — and casper's own way of noticing, the call on stdin, ran out the moment the call
+/// finished arriving.
+///
+/// `ran` is the program the call is running, and `leaf` is the command under the shell `shell`
+/// wraps it in. Every `fork` on the way down clears the death signal again, so the leaf is the
+/// one the whole arrangement is for: it was what carried on under init when only the wrapper
+/// took the signal.
 #[test]
 fn a_call_does_not_outlive_the_process_that_asked_for_it() {
-    // The guarantee. Nothing runs in a process that is killed outright, so the caller cannot be
-    // what enforces this — and casper's own way of noticing, the call on stdin, ran out the
-    // moment the call finished arriving.
     let mut caller = Caller::starting("killed");
     let served = caller.served;
-    // The program the call is running. One level further down than the signal reaches on its
-    // own, and the level a tool call actually costs something at: this is the build, the fetch,
-    // the thing that was still going when the magi was killed.
     let ran = caller.ran.expect("the casper started what it was given");
-    // And the `sleep` under it. `shell` runs its command through a shell, and every `fork` on
-    // the way down clears the death signal again, so this is the process the whole arrangement
-    // is for and the one that was left running under init when it was only the wrapper that
-    // took the signal.
     let leaf = caller
         .leaf
         .expect("the shell started the command it was given");
@@ -356,11 +358,13 @@ fn a_call_does_not_outlive_the_process_that_asked_for_it() {
     );
 }
 
+/// The same for a program on a pty, which needs a program that refuses the hangup.
+///
+/// A pty covers the ordinary case by itself: the master closes, the session is hung up, the
+/// program ends. This one has said it will not take a hangup, so what is left is the death
+/// signal or nothing.
 #[test]
 fn a_program_on_a_screen_does_not_outlive_it_either() {
-    // A pty covers the ordinary case by itself — the master closes, the session is hung up, the
-    // program ends. This one has said it will not take a hangup, so what is left is the death
-    // signal or nothing.
     let mut caller = Caller::on_a_screen("screened");
     let ran = caller.ran.expect("the casper put the program on a pty");
     assert!(alive(ran), "it is up while the casper holding it is");

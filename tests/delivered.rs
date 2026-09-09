@@ -57,8 +57,7 @@ fn a_json_reply_that_did_not_land_is_not_a_success() {
 
 #[test]
 fn a_cbor_reply_that_did_not_land_is_not_a_success_either() {
-    // CBOR carries no trailing newline, so `stdout`'s `LineWriter` holds a small reply and
-    // `write_all` returns `Ok`. Without the explicit flush this exits 0 having delivered nothing.
+    // No trailing newline, so `LineWriter` holds it and `write_all` reports success.
     let out = to_a_full_stdout(&["--cbor", "verbs"]);
     panicked(&out);
     assert!(!out.status.success());
@@ -66,8 +65,7 @@ fn a_cbor_reply_that_did_not_land_is_not_a_success_either() {
 
 #[test]
 fn help_that_did_not_land_is_not_a_success() {
-    // `usage` printed with `println!`, which panics on a failed write: exit 101 out of the panic
-    // handler rather than the family's answer to "the caller did not get it".
+    // `usage` printed with `println!`, which panics on a failed write.
     let out = to_a_full_stdout(&["help"]);
     panicked(&out);
     assert!(!out.status.success());
@@ -138,9 +136,8 @@ fn against(dir: &Scratch, args: &[&str]) -> Command {
 
 #[test]
 fn a_diagnostic_that_cannot_be_written_does_not_cost_the_reply() {
-    // The reply is what the caller asked for; the note about a broken layer is not. `eprintln!`
-    // panics on a failed write, so a full or closed stderr turned a named broken declaration
-    // into exit 101 and an empty stdout — the diagnostic destroying what it was diagnosing.
+    // `eprintln!` panics on a failed write, so a full stderr turned a named broken declaration
+    // into exit 101 and an empty stdout.
     let dir = config("aside", true);
     let out = against(&dir, &["tools"])
         .stderr(full())
@@ -174,9 +171,7 @@ fn a_broken_layer_is_still_named_when_stderr_works() {
 
 #[test]
 fn a_surface_whose_frames_did_not_land_is_not_a_success() {
-    // A surface writes frames rather than a reply, and wrote them with `println!` — so a harness
-    // that went away took this process out through the panic handler, and the flush that was
-    // added to notice was never reached.
+    // A surface wrote its frames with `println!`, which panics on a failed write.
     let dir = config("surface", false);
     let mut running = against(&dir, &["surface", "dino"])
         .stdin(Stdio::piped())
