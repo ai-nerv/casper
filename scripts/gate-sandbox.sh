@@ -71,6 +71,21 @@ for gone in io package dofile loadfile require; do
   fi
 done
 
+# ---- and the two that write to a pipe casper owns are replaced, not left -------------------------
+# Neither of these is a spawn and neither opens a file, so the list above would never have caught
+# them. `print` writes to stdout, which is the reply for a `run` and one frame a line for a
+# surface: a declaration's `print("x")` put `x` on the wire ahead of the answer, at exit 0. `warn`
+# goes through `eprintln!`, which panics on a failed write, so one line of it against a full
+# stderr was exit 101 with nothing on stdout at all. Both are rebound to `crate::noted`.
+#
+# Named here because the replacement is a list, and an empty list still compiles and still runs.
+for quiet in print warn; do
+  if ! grep -q "\"$quiet\"" "$SANDBOX"; then
+    echo "gate-sandbox: \`$quiet\` is no longer taken off the pipes casper answers on" >&2
+    fail=1
+  fi
+done
+
 # ---- the other half of the boundary is not here, and that is deliberate ------------------------
 # A file under `site/pack/` arrived from somewhere else and runs once somebody has said it may.
 # That used to be three greps in this file — `Self::Installed`, `needs_acknowledging()`,

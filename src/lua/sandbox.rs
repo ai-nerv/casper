@@ -3,7 +3,7 @@
 //! transport. Removed here rather than never installed, so what the next luna release adds is
 //! reachable until this list is extended.
 
-use luna::{Lua, Value};
+use luna::{Callback, CallbackReturn, Context, Lua, Value};
 
 /// Globals a config must not have: the ones that spawn, that write outside the `Ops` seam where
 /// path checking lives, or that end the process.
@@ -19,6 +19,12 @@ const REMOVED: &[(&str, &str)] = &[
 /// Globals removed entirely. `io` goes wholesale: a tool that needs a file has `Ops`.
 const REMOVED_TABLES: &[&str] = &["io", "package", "dofile", "loadfile", "require"];
 
+/// Globals replaced rather than taken away, because a declaration writing a diagnostic is
+/// reasonable and where luna sends it is not: `print` writes to stdout, which carries the reply
+/// and a surface's frames, and `warn` goes through `eprintln!`, which panics on a failed write.
+/// Both go to [`crate::noted`] instead, where the rest of casper's diagnostics go.
+const QUIETENED: &[&str] = &["print", "warn"];
+
 /// Take away what a config must not be able to do.
 pub fn apply(lua: &mut Lua) {
     lua.enter(|ctx| {
@@ -30,7 +36,36 @@ pub fn apply(lua: &mut Lua) {
         for name in REMOVED_TABLES {
             ctx.set_global(name, Value::Nil);
         }
+        for name in QUIETENED {
+            ctx.set_global(name, quiet(ctx, name));
+        }
     });
+}
+
+/// A `print` that goes to the debug log, and nowhere at all when nobody turned one on.
+fn quiet<'gc>(ctx: Context<'gc>, named: &'static str) -> Callback<'gc> {
+    Callback::from_fn(&ctx, move |_ctx, _exec, mut stack| {
+        if std::env::var_os(crate::noted::VARIABLE).is_some() {
+            let mut said = String::new();
+            for at in 0..stack.len() {
+                if at > 0 {
+                    said.push('\t');
+                }
+                said.push_str(&text(&stack.get(at)));
+            }
+            crate::noted::note(format_args!("{named}: {said}"));
+        }
+        stack.clear();
+        Ok(CallbackReturn::Return)
+    })
+}
+
+/// One value as text. No `__tostring`: a metamethod here would re-enter the VM from a diagnostic.
+fn text(value: &Value<'_>) -> String {
+    match value {
+        Value::String(said) => said.display_lossy().to_string(),
+        other => other.display().to_string(),
+    }
 }
 
 #[cfg(test)]
