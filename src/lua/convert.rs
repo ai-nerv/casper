@@ -1,26 +1,20 @@
-//! Turning what the config declared into owned Rust values.
-//!
-//! Conversion happens once, at the boundary, because luna's `Value<'gc>` cannot leave
-//! `lua.enter`. Everything above this crate sees `serde_json::Value`, which every other crate
-//! already speaks — a provider declaration reaches `magi-provider` in the same shape whether it
-//! came from Lua or from a file.
+//! Turning what the config declared into owned Rust values: luna's `Value<'gc>` cannot leave
+//! `lua.enter`, so everything above this crate sees `serde_json::Value`.
 
 use luna::{Table, Value};
 use serde_json::{Map, Number};
 
 /// A Lua value as JSON.
 ///
-/// Lua does not distinguish a list from a map, so a table whose keys are exactly `1..n` becomes
-/// an array and anything else an object. That is the same rule the family's client library uses,
-/// and disagreeing with it would make a config and a socket describe one table two ways.
+/// Lua does not distinguish a list from a map: a table whose keys are exactly `1..n` becomes an
+/// array, anything else an object.
 #[must_use]
 pub fn json_from_lua<'gc>(
     ctx: luna::Context<'gc>,
     value: Value<'gc>,
     depth: usize,
 ) -> Option<serde_json::Value> {
-    // Bounded because a config is user input and a cyclic table is a stack overflow, not an
-    // error, if this recurses freely.
+    // Bounded: a config is user input and a cyclic table is a stack overflow, not an error.
     if depth > 32 {
         return None;
     }
@@ -31,8 +25,7 @@ pub fn json_from_lua<'gc>(
         Value::Number(f) => Number::from_f64(f).map_or(serde_json::Value::Null, Into::into),
         Value::String(s) => serde_json::Value::String(String::from_utf8_lossy(s.as_bytes()).into()),
         Value::Table(t) => table_to_json(ctx, t, depth)?,
-        // A function cannot cross the boundary: what is stored is a declaration, and a callback
-        // belongs to the VM that made it. Registrars keep those separately.
+        // A function cannot cross the boundary; registrars keep those separately.
         _ => return None,
     })
 }
@@ -63,8 +56,7 @@ fn table_to_json<'gc>(
         let name = match key {
             Value::String(s) => String::from_utf8_lossy(s.as_bytes()).into_owned(),
             Value::Integer(i) => i.to_string(),
-            // A key that is not a name cannot be written down; skipping is wrong, so the whole
-            // table is refused and the caller reports which declaration was malformed.
+            // A key that is not a name cannot be written down, so the whole table is refused.
             _ => return None,
         };
         out.insert(name, json_from_lua(ctx, value, depth + 1)?);
@@ -89,11 +81,8 @@ impl<T: serde::de::DeserializeOwned> FromLua for T {
 
 /// A JSON value as Lua.
 ///
-/// The inverse of [`json_from_lua`], and the direction an adapter needs: a model, a context and
-/// a set of options are Rust values that a Lua function has to be handed.
-///
-/// An empty array and an empty object both become an empty table, because Lua has one table
-/// type. Adapters must not distinguish them — and none of the ten protocols does.
+/// The inverse of [`json_from_lua`]. An empty array and an empty object both become an empty
+/// table, because Lua has one table type; adapters must not distinguish them.
 pub fn lua_from_json<'gc>(ctx: luna::Context<'gc>, value: &serde_json::Value) -> Value<'gc> {
     match value {
         serde_json::Value::Null => Value::Nil,
@@ -105,8 +94,7 @@ pub fn lua_from_json<'gc>(ctx: luna::Context<'gc>, value: &serde_json::Value) ->
         serde_json::Value::Array(items) => {
             let table = Table::new(&ctx);
             for (index, item) in items.iter().enumerate() {
-                // Lua arrays are 1-based, and an adapter written against 0 would silently read
-                // one element short of the conversation.
+                // Lua arrays are 1-based.
                 table
                     .set(ctx, index as i64 + 1, lua_from_json(ctx, item))
                     .ok();
@@ -126,13 +114,8 @@ pub fn lua_from_json<'gc>(ctx: luna::Context<'gc>, value: &serde_json::Value) ->
 
 /// A Lua table as JSON, dropping anything that cannot be described.
 ///
-/// [`json_from_lua`] refuses a whole table containing a function, which is right for a value
-/// crossing the boundary: silently losing a field would be worse than refusing. A *declaration*
-/// is the other case — a tool spec deliberately holds its `run` function beside describable
-/// fields, and refusing the table would drop the tool.
-///
-/// So the two are separate functions rather than a flag: the strict one is the default, and
-/// choosing to lose something is written down at the call site.
+/// [`json_from_lua`] refuses a whole table containing a function; a tool spec holds its `run`
+/// beside describable fields, so this one drops rather than refuses.
 #[must_use]
 pub fn declaration_from_lua<'gc>(
     ctx: luna::Context<'gc>,

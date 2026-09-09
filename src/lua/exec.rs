@@ -1,9 +1,6 @@
 //! The one way a declaration reaches a process.
 //!
-//! `os.execute` and `io.popen` are gone — see [`crate::lua::sandbox`] — and this is what replaces
-//! them. Not because running programs is dangerous here; running programs is casper's entire job.
-//! Because a declaration that spawned directly would spawn *outside* everything casper is for:
-//! no bound on the output, nothing to cancel, no verb attached, and no record of what ran.
+//! `os.execute` and `io.popen` are gone — see [`crate::lua::sandbox`] — and this replaces them.
 //!
 //! ```lua
 //! local done = casper.exec("bat", { "--color=always", path })
@@ -11,17 +8,13 @@
 //! return { said = done.out }
 //! ```
 //!
-//! **Never on a socket.** This is reachable only from a declaration, and declarations run only on
-//! the spawn link — argv and stdin, from a parent that could have run the command itself. A verb
-//! that reached this over a socket would be a remote shell wearing a friendly name.
+//! Reachable only from a declaration, which runs only on the spawn link and never on a socket.
 
 use luna::{Callback, CallbackReturn, Table, Value};
 
 /// The most output one call will carry back.
 ///
-/// A tool result is read by a model with a context window, so an unbounded one is a turn that
-/// cannot be sent. Cut with a line saying so rather than silently: output that stops mid-sentence
-/// reads as a program that crashed.
+/// Cut with a line saying so rather than silently: output that stops mid-sentence reads as a crash.
 pub const MOST: usize = 256 * 1024;
 
 /// `casper.exec`, as a callable.
@@ -78,10 +71,6 @@ pub struct Done {
     /// Its standard error, bounded.
     pub err: String,
     /// Its exit status, or `-1` when it could not be started at all.
-    ///
-    /// A distinct number rather than an error, because "there is no `bat` on this machine" is
-    /// something the *model* can act on — by asking for `cat` instead — and an error the caller
-    /// had to translate would arrive as a broken tool.
     pub code: i64,
 }
 
@@ -90,8 +79,7 @@ pub struct Done {
 pub fn run(program: &str, args: &[String]) -> Done {
     let mut command = std::process::Command::new(program);
     command.args(args).stdin(std::process::Stdio::null());
-    // A tool call can be a build. Without this the program is reparented to init the moment a
-    // magi is killed, because the kernel does not pass the death signal on across a fork.
+    // Without this the program is reparented to init the moment a magi is killed.
     crate::tied::running(&mut command);
     let out = command.output();
     match out {
@@ -146,8 +134,6 @@ mod tests {
 
     #[test]
     fn a_program_that_failed_still_answers() {
-        // A non-zero exit is a result the model reads, not an error the caller invents a message
-        // for: what the program printed is usually what says how to fix it.
         let done = run("sh", &["-c".to_owned(), "echo oops >&2; exit 3".to_owned()]);
         assert_eq!(done.code, 3);
         assert_eq!(done.err.trim(), "oops");
@@ -155,8 +141,6 @@ mod tests {
 
     #[test]
     fn a_program_that_is_not_installed_is_something_the_model_can_act_on() {
-        // "there is no `bat` here" is answerable — ask for `cat` instead — and an error the
-        // caller had to translate would reach the model as a broken tool.
         let done = run("casper-no-such-program-anywhere", &[]);
         assert_eq!(done.code, -1);
         assert!(done.err.contains("could not be run"), "{}", done.err);
@@ -164,7 +148,6 @@ mod tests {
 
     #[test]
     fn output_is_cut_to_what_a_turn_can_carry_and_says_it_was() {
-        // Silently stopping mid-sentence reads as a program that crashed.
         let huge = "x".repeat(MOST + 500);
         let cut = bounded(&huge);
         assert!(cut.len() < huge.len());
@@ -182,8 +165,6 @@ mod tests {
 
     #[test]
     fn cutting_lands_on_a_character_boundary() {
-        // A multi-byte character split down the middle is a string that will not build, which
-        // would turn a long result into a panic.
         let huge = "é".repeat(MOST);
         let cut = bounded(&huge);
         assert!(cut.starts_with('é'));

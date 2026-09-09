@@ -14,14 +14,8 @@
 //! end
 //! ```
 //!
-//! **A question is not a result.** What comes back has a view and no `said`, because the call has
-//! not finished: the harness draws the question, hands the chosen id back as `answered`, and the
-//! same tool runs again with it. Sending the model an empty result instead would end a turn that
-//! is still waiting on a person.
-//!
-//! That is the whole mechanism behind "anything can ask" — a permission, a file picker, a
-//! confirmation, a form are one shape, and the list of things that can stop and ask stops being
-//! a list somebody has to extend.
+//! A question is not a result: what comes back has a view and no `said`. The harness draws the
+//! question, hands the chosen id back as `answered`, and the same tool runs again with it.
 
 use luna::{Callback, CallbackReturn, Table, Value};
 
@@ -39,9 +33,6 @@ pub fn table(ctx: luna::Context<'_>) -> Callback<'_> {
 
         let answers = read(ctx, options);
         if matches!(answers.get_value(ctx, 1), Value::Nil) {
-            // A question nobody can answer is a message, and a message is `said`. Left as a
-            // raise rather than a silent empty list: a picker with no rows is a session that
-            // waits forever on a choice it cannot offer.
             return Err(raise(
                 ctx,
                 "casper.ask: a question with no answers is a message, not a question",
@@ -57,8 +48,7 @@ pub fn table(ctx: luna::Context<'_>) -> Callback<'_> {
             ask.set(ctx, "detail", detail).ok();
         }
 
-        // The whole result, not just its view: a declaration writing `return casper.ask(…)` is
-        // saying "this call is not finished", and wrapping it here is what makes that one line.
+        // The whole result, not just its view: `return casper.ask(…)` means the call is unfinished.
         let out = Table::new(&ctx);
         out.set(ctx, "shown", ask).ok();
         stack.replace(ctx, out);
@@ -68,8 +58,7 @@ pub fn table(ctx: luna::Context<'_>) -> Callback<'_> {
 
 /// The answers a declaration offered, keeping only the ones that can be chosen.
 ///
-/// A row with no `id` is dropped: the id is what comes back, so a row without one is a button
-/// that does nothing, and a person who picks it would be left with a call that never resumes.
+/// A row with no `id` is dropped: the id is what comes back, so a row without one never resumes.
 fn read<'gc>(ctx: luna::Context<'gc>, options: Value<'gc>) -> Table<'gc> {
     let out = Table::new(&ctx);
     let Value::Table(given) = options else {
@@ -85,8 +74,7 @@ fn read<'gc>(ctx: luna::Context<'gc>, options: Value<'gc>) -> Table<'gc> {
         };
         let held = Table::new(&ctx);
         held.set(ctx, "id", id).ok();
-        // Falling back to the id, because a row has to say *something*: an unlabelled option is
-        // a blank line in a picker, and the id is at least the word the author chose.
+        // Falling back to the id: an unlabelled option is a blank line in a picker.
         let label = match row.get_value(ctx, "label") {
             Value::String(label) => label,
             _ => id,
@@ -128,8 +116,6 @@ mod tests {
 
     #[test]
     fn a_question_comes_back_as_a_view_with_no_result() {
-        // The distinction the two faces exist for. A caller that took this for a finished call
-        // would hand the model an empty string and end a turn still waiting on a person.
         let out = ran(
             r#"return casper.ask("run it?", { { id = "yes", label = "Allow" },
                                               { id = "no",  label = "Deny" } })"#,
@@ -148,8 +134,6 @@ mod tests {
 
     #[test]
     fn the_answer_comes_back_and_the_same_tool_finishes_the_call() {
-        // The other half of the mechanism, and the reason a question is not a separate kind of
-        // tool: it is the same declaration, run again, with one more thing known.
         let body = r#"if not args.answered then
                         return casper.ask("go?", { { id = "yes", label = "Yes" } })
                       end
@@ -164,8 +148,6 @@ mod tests {
 
     #[test]
     fn a_row_with_no_id_is_dropped_because_nothing_could_come_back_from_it() {
-        // The id is what returns. A row without one is a button that does nothing, and a person
-        // who picked it would be left with a call that never resumes.
         let out = ran(
             r#"return casper.ask("?", { { label = "nameless" }, { id = "real", label = "Real" } })"#,
             serde_json::Value::Null,
@@ -179,8 +161,6 @@ mod tests {
 
     #[test]
     fn a_row_with_no_label_still_says_something() {
-        // A blank row in a picker is worse than a terse one, and the id is at least the word
-        // its author chose.
         let out = ran(
             r#"return casper.ask("?", { { id = "carry-on" } })"#,
             serde_json::Value::Null,
@@ -193,8 +173,6 @@ mod tests {
 
     #[test]
     fn a_question_with_no_answers_is_refused_rather_than_drawn() {
-        // A picker with no rows is a session waiting forever on a choice it cannot offer, and
-        // the failure would show up as a hung turn rather than as a broken declaration.
         let out = ran(r#"return casper.ask("?", { })"#, serde_json::Value::Null);
         assert!(out.failed, "{out:?}");
         assert!(out.said.contains("not a question"), "{}", out.said);
@@ -202,8 +180,6 @@ mod tests {
 
     #[test]
     fn what_is_being_asked_about_can_carry_painted_rows() {
-        // A permission is not answerable from one line: the person needs to see the command.
-        // Painted, so the diff or the command is drawn in the palette everything else uses.
         let out = ran(
             r#"return casper.ask("run it?", { { id = "no", label = "Deny" } },
                                  casper.paint.diff("-was\n+now").lines)"#,
@@ -219,10 +195,7 @@ mod tests {
 
 /// What a resumed call is handed.
 ///
-/// The bug this guards: the answer travels beside the arguments on the wire and the declaration
-/// reads it *among* them, so a caller that passed the arguments alone left every tool asking
-/// forever — which presents as a harness giving up on a tool rather than as a person giving up
-/// on a question.
+/// The answer travels beside the arguments on the wire, and the declaration reads it among them.
 #[cfg(test)]
 mod resuming {
     use crate::tools::Call;
@@ -260,16 +233,12 @@ mod resuming {
 
     #[test]
     fn a_first_call_carries_no_answer_to_confuse_a_declaration_with() {
-        // `if not args.answered` is how a tool knows it is being asked for the first time. An
-        // empty string here would look like an answer nobody gave.
         let given = given(&call(serde_json::json!({"command": "ls"}), None));
         assert!(given.get("answered").is_none(), "{given}");
     }
 
     #[test]
     fn a_tool_that_takes_no_arguments_can_still_be_resumed() {
-        // There is nothing to merge into, and a call that could not carry its answer would ask
-        // forever exactly as the bug did.
         let given = given(&call(serde_json::Value::Null, Some("yes")));
         assert_eq!(given["answered"], "yes");
     }
