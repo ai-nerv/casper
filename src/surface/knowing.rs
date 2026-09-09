@@ -1,29 +1,6 @@
-//! `casper.knows(verb, args)` — what a surface may ask the harness about the session.
-//!
-//! ```lua
-//! surface = function(args, size)
-//!   return function(event)
-//!     local who = casper.knows("session")                       -- { id = …, cwd = … }
-//!     local found, why = casper.knows("memories", { query = "deploy", limit = 5 })
-//!     if not found then return { lines = { line(why) } } end
-//!     …
-//!   end
-//! end,
-//! ```
-//!
-//! **This is the direction that did not exist.** Everything else a surface has, it was handed at
-//! open: its rows, its width, the arguments of the call it belongs to. So a picker could not list
-//! what this session remembers and a game could not name the model it was being played beside —
-//! anything a tenant knew, somebody had to think of passing in.
-//!
-//! **The harness owns the list.** `session`, `model`, `memories` — read-only facts about the
-//! session the person is already looking at. A verb it does not know comes back refused *by name*,
-//! which is the difference between a tenant built against a newer harness saying so on screen and
-//! one sitting there waiting.
-//!
-//! Two values back, in Lua's own idiom: the answer, or `nil` and why not. A tenant that ignores
-//! the second gets `nil` and draws around it, which is the right failure for something that only
-//! wanted to decorate a row with the model's name.
+//! `casper.knows(verb, args)` — read-only facts about the session, from inside a surface. The
+//! harness owns the verb list — `session`, `model`, `memories` — and refuses one it does not know
+//! by name. Two values back, in Lua's own idiom: the answer, or `nil` and why not.
 
 use luna::{Callback, CallbackReturn, Value};
 
@@ -47,9 +24,7 @@ pub fn table(ctx: luna::Context<'_>) -> Callback<'_> {
             Ok(said) => {
                 stack.replace(ctx, crate::lua::convert::lua_from_json(ctx, &said));
             }
-            // `nil, why` rather than a raise. A refusal is an ordinary answer — there is no
-            // balthasar on this machine, no model is configured — and a tenant that ended over one
-            // would take its rows down over something it could have drawn a sentence about.
+            // `nil, why` rather than a raise: a refusal is an ordinary answer, not an end.
             Err(why) => {
                 stack.replace(
                     ctx,

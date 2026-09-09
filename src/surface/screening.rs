@@ -1,13 +1,8 @@
-//! The frame loop for a tenant that is a *program* rather than a drawing.
+//! The frame loop for a tenant that is a program rather than a drawing.
 //!
-//! The same frames in and the same frames out as [`crate::surface`]'s other loop — the harness
-//! cannot tell which of the two it is talking to, and that is the point. What is different is
-//! only who fills the rows: there, a Lua closure; here, whatever is running on the pty.
-//!
-//! **Nothing is re-entered per frame.** A `screen` declaration is asked once, before the program
-//! starts, what to run; from then on this is Rust talking to a pty. A tenant consulted thirty
-//! times a second to be told the same command would be a Lua call per frame for no answer that
-//! ever changes.
+//! The same frames in and the same frames out as [`crate::surface`]'s other loop; only who fills
+//! the rows differs. A `screen` declaration is asked what to run once, before the program starts,
+//! and no Lua is entered per frame after that.
 
 use crate::pty::{Screen, Spec};
 use crate::tools::{FromSurface, Held, ToSurface};
@@ -19,8 +14,7 @@ where
 {
     let mut screen = match Screen::open(spec, rows, cols) {
         Ok(screen) => screen,
-        // Said rather than silent. The harness has reserved rows for this and would otherwise
-        // hold them for a program that was never going to start.
+        // Said rather than silent: the harness is holding rows for this.
         Err(why) => {
             super::say(&FromSurface::Done {
                 answered: format!("`{}` would not start: {why}", spec.command),
@@ -28,8 +22,7 @@ where
             return;
         }
     };
-    // Drawn before anything is typed, so the rows are filled the moment they appear. A program
-    // that has not painted yet gives blank ones, which is what it looks like in any terminal.
+    // Drawn before anything is typed, so the rows are filled the moment they appear.
     if !draw(&mut screen) {
         return;
     }
@@ -39,9 +32,8 @@ where
             return;
         };
         match super::read(&line) {
-            // **Only going down.** A pty has no notion of a key coming back up: a terminal sends
-            // the bytes for a keypress and nothing at all for the release, so forwarding one
-            // would type every key twice. A repeat *is* a second keypress and is sent.
+            // A pty has no notion of a key coming back up, so forwarding a release would type
+            // every key twice. A repeat is a second keypress and is sent.
             ToSurface::Key { key, state } => {
                 if state != Held::Up {
                     screen.typed(&key);
@@ -55,9 +47,7 @@ where
             } => screen.pointed(kind, button, row, col),
             ToSurface::Resize { rows, cols, .. } => screen.resized(rows, cols),
             ToSurface::Tick => {}
-            // The reservation is over. The program is killed rather than left running: one that
-            // outlived the rows it was drawing into would be an editor nobody can see, nobody can
-            // type at, and still holding the file open.
+            // The program is killed rather than left running behind rows nobody can see.
             ToSurface::Close => {
                 screen.close();
                 return;
@@ -65,17 +55,15 @@ where
             // A pty tenant asks the harness nothing, so an answer here belongs to nobody.
             ToSurface::Open { .. } | ToSurface::Answer { .. } => continue,
         }
-        // Read after acting on the frame, so a keystroke and what it produced land in the same
-        // redraw rather than a tick apart.
+        // Read after acting on the frame, so a keystroke and what it produced land in one redraw.
         if !screen.read() {
-            // Its output closed: it exited, or it was killed. The rows cannot be filled again.
+            // Its output closed: it exited, or it was killed.
             super::say(&FromSurface::Done {
                 answered: screen.epitaph(),
             });
             return;
         }
-        // A frame the harness did not get ends this too: the program keeps running behind a
-        // screen nobody can see, and `Screen`'s own drop is what closes it.
+        // A frame the harness did not get ends this too; `Screen`'s own drop closes the program.
         if !draw(&mut screen) {
             return;
         }
@@ -92,11 +80,7 @@ fn draw(screen: &mut Screen) -> bool {
 mod tests {
     use super::*;
 
-    /// The frames a screen running `script` produces for `sent`.
-    ///
-    /// Driven the way the harness drives it: an iterator of lines in, and whatever `hold` writes
-    /// out — except that here the writes are counted rather than captured, since `say` goes to
-    /// this process's stdout. What is asserted is what the *screen* holds.
+    /// A screen running `script`, read until it has painted something.
     fn screen_for(script: &str, rows: u16, cols: u16) -> Screen {
         let spec = Spec {
             command: "sh".to_owned(),
@@ -137,8 +121,6 @@ mod tests {
 
     #[test]
     fn what_is_typed_reaches_the_program() {
-        // The half that makes it a screen rather than a picture of one. `cat` echoes what it is
-        // given, so what comes back proves the bytes went in.
         let mut screen = screen_for("cat", 3, 20);
         for key in ["h", "i", "enter"] {
             screen.typed(key);
@@ -155,8 +137,7 @@ mod tests {
 
     #[test]
     fn a_program_that_never_asked_for_the_mouse_is_not_sent_one() {
-        // Writing escape sequences at a program reading a keyboard types garbage into whatever it
-        // is reading, which for a shell is a command somebody did not write.
+        // Escape sequences at a program reading a keyboard type garbage into what it is reading.
         let mut screen = screen_for("cat", 3, 20);
         screen.pointed(crate::tools::Pointed::Press, None, 1, 1);
         screen.typed("enter");

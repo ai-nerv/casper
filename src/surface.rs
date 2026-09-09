@@ -4,17 +4,9 @@
 //! casper surface <tool>     frames on stdin, frames on stdout, until it is done
 //! ```
 //!
-//! **Why this is not `run`.** A call is one exec: request on stdin, reply on stdout, exit. A
-//! surface redraws whenever a key arrives or time passes, so the process lives for as long as it
-//! holds the rows and frames cross both ways. One exec per keypress would answer a picker and
-//! could not animate anything.
-//!
-//! One line of JSON per frame, both directions — a length prefix buys nothing over a pipe where
-//! the frames are small and a newline cannot appear inside one.
-//!
-//! **The harness owns the rows.** It says how many in [`ToSurface::Open`], and it clips what comes
-//! back. A tenant drawing more than it was given would run over whatever is below it, and only
-//! the harness knows what that is.
+//! Unlike a `run`, the process lives for as long as it holds the rows: one line of JSON per
+//! frame, both directions. The harness owns the rows — it says how many in [`ToSurface::Open`],
+//! and it clips what comes back.
 
 use crate::lua::engine::Engine;
 use crate::tools::{FromSurface, ToSurface};
@@ -30,14 +22,8 @@ pub(crate) use asking::{frames, wonder};
 
 /// What a surface is given that a `run` is not.
 ///
-/// From here there is a harness on the other end of the pipe, so a tenant may ask it things —
-/// and only from here, which is why `casper.knows` goes on the table at this point rather than
-/// in the VM. A `run` is one exec whose stdout is its reply; a question written there would
-/// reach the harness as the tool's own result, from a tool that looked like it had failed.
-///
-/// A named function rather than two lines inside [`hold`], so a test can call the same thing
-/// the loop calls. Inline, the only test that could reach it would have to drive a real pipe,
-/// which is why the capability could have been dropped in a refactor with the whole suite green.
+/// `casper.knows` goes on the table here rather than in the VM: only a surface has a harness on
+/// the other end of the pipe to ask.
 fn lent(engine: &mut Engine) {
     asking::holding();
     engine.lend("knows", knowing::table);
@@ -45,14 +31,11 @@ fn lent(engine: &mut Engine) {
 
 /// Run the frame loop for `tool` until it finishes or stdin closes.
 ///
-/// The arguments the call was made with arrive on the first frame, so a surface opens knowing what
-/// it was asked about — a permission needs the command, a picker needs the list.
+/// The first frame carries the size and the arguments the call was made with, so nothing opens
+/// before it arrives.
 pub fn hold(tool: &str, engine: &mut Engine) -> bool {
     lent(engine);
     let mut lines = frames();
-    // The first frame says how much room there is and what the call was given. Opening before it
-    // arrives would mean guessing at a size, and a tenant that laid itself out for the wrong one
-    // draws once wrongly before it is told.
     let Some(Ok(first)) = lines.next() else {
         return delivered();
     };
@@ -63,18 +46,12 @@ pub fn hold(tool: &str, engine: &mut Engine) -> bool {
         args,
     } = read(&first)
     else {
-        // Anything else first is a caller that does not speak this, and answering it would be
-        // answering a frame nobody meant to send.
         return delivered();
     };
-    // What it was granted, in one table: the rows, the width, and whether this terminal will ever
-    // report a key coming back up. A tenant told otherwise waits for a release that never comes,
-    // which is how "hold to do more" ends up doing nothing at all on most terminals.
+    // `holds` says whether this terminal ever reports a key coming back up; a tenant told
+    // otherwise waits for a release that never comes.
     let size = serde_json::json!({"rows": rows, "cols": cols, "holds": holds});
-    // **A program in the rows, if this tool declared one.** Asked before `surface`, because a
-    // declaration carrying both is two tenants for one reservation and this is the more specific
-    // of the two. From here the loop is a different one — see [`screening`] — and the harness
-    // cannot tell which it is talking to.
+    // A `screen` declaration is asked about before `surface`, and takes precedence over it.
     if let Some(spec) = engine
         .screen(tool, &args, &size)
         .as_ref()
@@ -84,15 +61,13 @@ pub fn hold(tool: &str, engine: &mut Engine) -> bool {
         return delivered();
     }
     if !engine.open(tool, &args, &size) {
-        // No `surface` was declared. Said rather than silent: the harness reserved rows for this
-        // and would otherwise hold them for a tenant that is never going to draw.
+        // No `surface` was declared. Said rather than silent: the harness is holding rows.
         say(&FromSurface::Done {
             answered: String::new(),
         });
         return delivered();
     }
-    // Drawn once before any input, so the rows are filled the moment they appear rather than on
-    // the first keypress.
+    // Drawn once before any input, so the rows are filled the moment they appear.
     let mut opened = size.clone();
     opened["kind"] = serde_json::Value::String("open".to_owned());
     if !offer(engine, &opened) {
@@ -107,11 +82,10 @@ pub fn hold(tool: &str, engine: &mut Engine) -> bool {
             ToSurface::Key { key, state } => serde_json::json!({
                 "kind": "key",
                 "key": key,
-                // `down`, `repeat` or `up`. A tenant that only looks at `key` is unaffected.
                 "state": state,
             }),
-            // Already in this surface's own coordinates: row 0 is its first row. Nothing outside
-            // the rows it was granted ever arrives, so a tenant needs no bounds check of its own.
+            // Already in this surface's own coordinates: row 0 is its first row, and nothing
+            // outside the rows it was granted ever arrives.
             ToSurface::Mouse {
                 kind,
                 button,
@@ -128,14 +102,12 @@ pub fn hold(tool: &str, engine: &mut Engine) -> bool {
             ToSurface::Resize { rows, cols, holds } => {
                 serde_json::json!({"kind": "resize", "rows": rows, "cols": cols, "holds": holds})
             }
-            // The reservation is over. The tenant is told rather than killed, so one holding
-            // something can put it down.
+            // The tenant is told rather than killed, so one holding something can put it down.
             ToSurface::Close => {
                 let _ = engine.frame(&serde_json::json!({"kind": "close"}));
                 return delivered();
             }
-            // An answer nobody is waiting on: the tenant asked, gave up, and the harness said so
-            // anyway. Nothing to draw about.
+            // A second open, or an answer nobody is waiting on any more.
             ToSurface::Open { .. } | ToSurface::Answer { .. } => continue,
         };
         if !offer(engine, &event) {
@@ -148,15 +120,13 @@ pub fn hold(tool: &str, engine: &mut Engine) -> bool {
 /// Hand one frame to the tenant and say what it drew. `false` when the surface is over.
 fn offer(engine: &mut Engine, event: &serde_json::Value) -> bool {
     let Some(drew) = engine.frame(event) else {
-        // It raised, or nothing is open. Either way the rows cannot be filled again, and holding
-        // them would leave a hole on the screen no key could close.
+        // It raised, or nothing is open; either way the rows can never be filled again.
         say(&FromSurface::Done {
             answered: String::new(),
         });
         return false;
     };
-    // An answer ends it. Checked before the lines, so a tenant that draws a farewell *and*
-    // answers in the same frame is taken as finished rather than as still drawing.
+    // An answer ends it, and is checked before the lines: a frame carrying both is finished.
     if let Some(answered) = drew.get("answered").and_then(serde_json::Value::as_str) {
         say(&FromSurface::Done {
             answered: answered.to_owned(),
@@ -167,35 +137,26 @@ fn offer(engine: &mut Engine, event: &serde_json::Value) -> bool {
         .get("lines")
         .cloned()
         .unwrap_or(serde_json::Value::Null);
-    // Optional, and a malformed one is no cursor rather than a dropped frame: a tenant that got
-    // the shape wrong should lose the caret, not the rows it drew around it.
+    // Optional, and a malformed one is no cursor rather than a dropped frame.
     let cursor = drew
         .get("cursor")
         .cloned()
         .and_then(|at| serde_json::from_value(at).ok());
     match serde_json::from_value(lines) {
-        // A frame that did not reach the harness ends the loop: there is nobody left to draw for,
-        // and the next tick would only fail the same way.
         Ok(lines) => say(&FromSurface::Draw { lines, cursor }),
-        // A frame that drew nothing readable is not fatal on its own — a tenant may answer a tick
-        // it has nothing to do with — so the rows keep what they had and the loop goes on.
+        // Nothing readable to draw is not fatal: the rows keep what they had and the loop goes on.
         Err(_) => true,
     }
 }
 
-/// One frame in, falling back to a tick for anything unreadable.
-///
-/// A tick rather than a close: a frame this build cannot parse is a newer harness saying something
-/// this one has no name for, and ending the surface over it would make every addition breaking.
+/// One frame in, falling back to a tick for anything unreadable, so that a frame from a newer
+/// harness does not end the surface.
 fn read(line: &str) -> ToSurface {
     serde_json::from_str(line).unwrap_or(ToSurface::Tick)
 }
 
-/// The surface is over before it opened, because there was nothing to open.
-///
-/// A frame rather than silence. The harness has already reserved the rows by the time this
-/// process starts, and a casper that exits without a word leaves them held for a tenant that is
-/// never going to draw — which is what a half-finished install used to do.
+/// The surface is over before it opened, said as a frame rather than as silence: the harness has
+/// already reserved the rows by the time this process starts.
 pub fn nothing_to_draw() -> bool {
     say(&FromSurface::Done {
         answered: String::new(),
@@ -204,11 +165,9 @@ pub fn nothing_to_draw() -> bool {
 
 /// One frame out. `false` when it did not reach the harness.
 ///
-/// **Written rather than printed, and the answer is a value.** `println!` panics on a write that
-/// fails, so a harness that went away turned this process into a panic on a stderr the harness
-/// was throwing away — and the flush below it, which exists to catch exactly that, was never
-/// reached. Flushed every frame because a buffered game's rows arrive in batches and the surface
-/// looks frozen and then jumps.
+/// Written rather than printed: `println!` panics on a failed write, so a harness that went away
+/// would panic this process instead of returning `false`. Flushed every frame, or a buffered
+/// tenant's rows arrive in batches.
 fn say(frame: &FromSurface) -> bool {
     use std::io::Write;
     let Ok(line) = serde_json::to_string(frame) else {
@@ -230,10 +189,7 @@ fn say(frame: &FromSurface) -> bool {
     }
 }
 
-/// Whether every frame this process wrote reached the harness.
-///
-/// A flag set in one place rather than a bool threaded through the loop: [`say`] is the only
-/// writer, and each of the seven ways out of a surface would otherwise have to carry it.
+/// Whether every frame this process wrote reached the harness. [`say`] is the only writer.
 static DELIVERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 /// What [`DELIVERED`] holds, as the verdict every way out of [`hold`] returns.
@@ -247,8 +203,6 @@ mod tests {
 
     #[test]
     fn an_unreadable_frame_is_a_tick_rather_than_the_end() {
-        // A newer harness saying something this build has no name for. Ending the surface over it
-        // would make every addition to the protocol a breaking one.
         assert_eq!(read(r#"{"event":"nothing_yet"}"#), ToSurface::Tick);
         assert_eq!(read("not json at all"), ToSurface::Tick);
     }
@@ -257,8 +211,7 @@ mod tests {
     fn the_frames_this_build_knows_read_back_as_themselves() {
         assert_eq!(read(r#"{"event":"tick"}"#), ToSurface::Tick);
         assert_eq!(read(r#"{"event":"close"}"#), ToSurface::Close);
-        // No `state` on the wire is a terminal that cannot tell a hold from a tap, which is most
-        // of them and every one before the Kitty protocol.
+        // No `state` on the wire is a terminal from before the Kitty protocol.
         assert_eq!(
             read(r#"{"event":"key","key":"space"}"#),
             ToSurface::Key {
@@ -277,8 +230,7 @@ mod tests {
 
     #[test]
     fn a_click_arrives_in_this_surface_own_rows() {
-        // Already translated by the harness, which is the only thing that knows where the rows
-        // landed. Row zero is this surface's first row, so a tenant needs no bounds check.
+        // Already translated by the harness: row zero is this surface's first row.
         assert_eq!(
             read(r#"{"event":"mouse","kind":"press","button":"left","row":2,"col":11}"#),
             ToSurface::Mouse {
@@ -297,14 +249,9 @@ mod holding {
     use crate::lua::engine::Engine;
 
     /// `casper.knows` exists inside a surface and nowhere else.
-    ///
-    /// The half of [`super::hold`] a frame test cannot reach: it is installed by that function
-    /// rather than by the VM, so a refactor that dropped the one `lend` line would take the
-    /// capability with it and every test here would still pass.
     #[test]
     fn a_surface_is_lent_the_question_a_run_is_not() {
-        // Asserted in Lua, because that is the only place the `casper` table can be seen. A
-        // failed `assert` raises, and a raise is what `run` reports.
+        // Asserted in Lua: the `casper` table can be seen from nowhere else.
         let mut engine = Engine::new();
         assert!(
             engine
@@ -316,7 +263,6 @@ mod holding {
             "a `run` cannot ask the harness anything: there is no harness on the pipe"
         );
 
-        // The same call `hold` makes, so dropping it from there fails here.
         super::lent(&mut engine);
         assert!(
             engine
@@ -362,8 +308,7 @@ mod holding {
 
     #[test]
     fn a_surface_keeps_its_state_between_frames() {
-        // The whole reason the tenant returns a closure: `n` lives in its upvalues, and nothing
-        // out here has to know that a counter has an `n` or that a game has a dinosaur.
+        // The tenant returns a closure, so `n` lives in its upvalues.
         let drew = played(
             COUNTER,
             &[
@@ -384,8 +329,6 @@ mod holding {
 
     #[test]
     fn the_size_it_was_given_reaches_the_tenant() {
-        // It asked for four rows and was told four. A tenant laid out for a size it guessed at
-        // would draw once wrongly before anything corrected it.
         let drew = played(COUNTER, &[serde_json::json!({"kind": "tick"})]);
         assert!(
             drew[0]["lines"][0][0]["text"]
@@ -403,9 +346,7 @@ mod holding {
 
     #[test]
     fn a_tenant_may_ask_for_the_terminal_own_caret() {
-        // What makes the rows a screen rather than a picture: a field somebody types into puts the
-        // real cursor in itself, and an IME and a screen reader follow that rather than a block
-        // the tenant painted.
+        // The terminal's own caret, which an IME and a screen reader follow.
         let mut engine = Engine::new();
         engine
             .run(
@@ -431,8 +372,6 @@ mod holding {
 
     #[test]
     fn a_tenant_that_raises_ends_rather_than_looping() {
-        // Its rows can never be filled again, and holding them would leave a hole on the screen
-        // that no key could close.
         let mut engine = Engine::new();
         engine
             .run(
@@ -452,7 +391,6 @@ mod holding {
 
     #[test]
     fn an_ordinary_tool_has_no_surface_to_open() {
-        // Every tool but a handful. Asked rather than required, so declaring one stays two keys.
         let mut engine = Engine::new();
         engine
             .run(
