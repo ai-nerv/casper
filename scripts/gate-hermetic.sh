@@ -42,6 +42,25 @@ set -eu
 # gives up nothing, as long as it is short.
 base="${GATE_BASE:-/tmp}"
 [ -d "$base" ] && [ -w "$base" ] || base="${TMPDIR:-.}"
+
+# **And "as long as it is short" is checked rather than asked for.** The paragraph above is the
+# whole reason the root is not nested, and an override is a way to nest it again: a scratch
+# directory two projects deep is how the same suite failed with "path must be shorter than
+# SUN_LEN" elsewhere in this family. Refused here, where it is one line, rather than found later
+# in a test that binds a socket and cannot say why.
+#
+# 107 usable bytes, and 48 reserved for what goes below the root: `runtime/casper/` is 15, a
+# `Scratch` name is `<prefix>-<pid>-<n>-<name>` and runs to about 36 in this suite, and a socket
+# file is a dozen more. That leaves 59 for the root itself, which is `<base>/gh-XXXXXX`.
+GATE_ROOM=59
+if [ "${#base}" -gt $((GATE_ROOM - 10)) ]; then
+  echo "gate-hermetic: GATE_BASE is ${#base} bytes, and a root under it leaves no room" >&2
+  echo "  $base" >&2
+  echo "gate-hermetic: a unix socket path may not exceed SUN_LEN (108 bytes), so the root" >&2
+  echo "gate-hermetic: must stay under $GATE_ROOM — pick a shorter directory" >&2
+  exit 1
+fi
+
 root=$(mktemp -d "$base/gh-XXXXXX")
 
 # Kept rather than discarded. When this fails it is a test failing, not a leak, and the name of
@@ -113,6 +132,58 @@ for path in $literal; do
   echo "gate-hermetic: that is a person's own directory, not this run's" >&2
   failed=1
 done
+
+# **A leak is not only a file, and casper is the program most exposed to the other kind.** Two
+# were found by hand last round and neither was a directory: `on_a_screen` runs
+# `{ cat …; sleep 30; } | casper surface screen`, and killing the shell left the feeding subshell
+# and its `sleep` running for thirty seconds a run, passing or failing. Nothing said so, because
+# everything that looked, looked at disk.
+#
+# Asked by what a process *has*, never by what it is called: a list of program names goes stale,
+# and matching one is how an agent comes to kill somebody else's work.
+#
+#   1. Its working directory is under `$root`, which `mktemp -d` made moments ago and nothing
+#      else on this machine has ever been in. This is magi's check, ported.
+#   2. Its environment names `$root`. **Necessary here and not there**, and this is the premise
+#      worth writing down: magi's tests give their children a cwd inside the root, and casper's
+#      do not — cargo runs a test binary in the package directory, and the `shell` tool's
+#      wrapper `cd`s to a remembered path that starts out as the repository. The `sleep 30`
+#      above inherits *that*, so check 1 alone would have reported nothing on the leak that
+#      motivated the check. Every descendant of the suite does inherit `TMPDIR`,
+#      `XDG_RUNTIME_DIR`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME`, all four of which are under
+#      `$root` and none of which any other process on this machine has ever carried.
+#
+# Both are exact-prefix matches on a name that exists for one run, so a false positive would
+# take another process having been handed this directory — which is the same guarantee magi
+# gets, arrived at from the other side.
+survivors=$(
+  {
+    for entry in /proc/[0-9]*; do
+      at=$(readlink "$entry/cwd" 2>/dev/null) || continue
+      case "$at" in
+        # A scratch already removed still answers `/tmp/gh-…/x (deleted)`, which begins with
+        # `$root` and is still a leak.
+        "$root" | "$root"/*) echo "${entry#/proc/}" ;;
+      esac
+    done
+    # One `grep` over every environment rather than one per process: `/proc` here holds thousands
+    # of entries, and a fork apiece is a gate nobody waits for. `-a` because an environment is
+    # NUL-separated and grep would otherwise call it binary and say only that it matched.
+    grep -lsa -- "$root" /proc/[0-9]*/environ 2>/dev/null |
+      sed -n 's|^/proc/\([0-9][0-9]*\)/environ$|\1|p'
+  } | sort -un | while IFS= read -r pid; do
+    [ -d "/proc/$pid" ] || continue
+    # `tr` because a cmdline is NUL-separated, and an unreadable one is still a pid worth naming.
+    echo "$pid $(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)"
+  done
+) || true
+
+if [ -n "$survivors" ]; then
+  echo "gate-hermetic: the suite left these processes running:" >&2
+  echo "$survivors" | sed 's|^|  |' >&2
+  echo "gate-hermetic: each was given this run's directories and outlived the run" >&2
+  failed=1
+fi
 
 if [ "$failed" -ne 0 ]; then
   echo "gate-hermetic: failed" >&2
