@@ -5,8 +5,7 @@
 //! return { said = done.out, shown = casper.paint.ansi(done.out) }
 //! ```
 //!
-//! Three ways in, and none of them takes a colour. A declaration that could name one would be a
-//! second palette — see [`crate::paint`] — and it would be wrong on the first theme anybody set.
+//! Three ways in, and none of them takes a colour: the palette is [`crate::paint`]'s alone.
 
 use luna::{Callback, CallbackReturn, Table, Value};
 
@@ -24,8 +23,8 @@ pub fn table(ctx: luna::Context<'_>) -> Table<'_> {
     });
     paint.set(ctx, "diff", diff).ok();
 
-    // ANSI, with whatever theme is in force. A colour the theme does not name becomes ordinary
-    // text: the escapes always go, and what varies is only whether anything was learned.
+    // ANSI, against whatever theme is in force. The escapes always go; a colour the theme does
+    // not name becomes ordinary text.
     let ansi = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
         let (text, theme): (Value, Value) = stack.consume(ctx)?;
         let painted = crate::paint::ansi(&text_of(text), &read_theme(ctx, theme));
@@ -34,7 +33,7 @@ pub fn table(ctx: luna::Context<'_>) -> Table<'_> {
     });
     paint.set(ctx, "ansi", ansi).ok();
 
-    // Plain, for output that has no structure worth naming. The floor, and never wrong.
+    // Plain, for output that has no structure worth naming.
     let plain = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
         let text: Value = stack.consume(ctx)?;
         let painted = crate::paint::plain(&text_of(text));
@@ -64,9 +63,8 @@ fn text_of(value: Value<'_>) -> String {
 ///                  ["#c678dd"] = "keyword" } -- truecolour, which is what bat sends
 /// ```
 ///
-/// A role name nobody recognises is dropped rather than guessed at: the vocabulary is closed, and
-/// inventing a colour for a name outside it is the one thing roles exist to prevent. A key that
-/// is neither a number nor a hex colour is dropped for the same reason.
+/// An unrecognised role name, or a key that is neither a number nor a hex colour, is dropped
+/// rather than guessed at.
 fn read_theme<'gc>(ctx: luna::Context<'gc>, value: Value<'gc>) -> crate::paint::Theme {
     let mut theme = crate::paint::Theme::new();
     let Value::Table(given) = value else {
@@ -100,11 +98,8 @@ fn hex(text: &str) -> Option<crate::paint::Colour> {
     Some(crate::paint::Colour::Rgb(byte(0)?, byte(2)?, byte(4)?))
 }
 
-/// Painted lines, as the view a declaration hands back.
-///
-/// Tagged, because a result carries one of two kinds of view and a reader has to tell them
-/// apart: a bare list of lines would be indistinguishable from a question with a very odd shape,
-/// and the two are drawn completely differently.
+/// Painted lines, as the view a declaration hands back. Tagged, because a bare list of lines
+/// would be indistinguishable from a question.
 fn lines<'gc>(ctx: luna::Context<'gc>, painted: &[crate::paint::Line]) -> Table<'gc> {
     let view = Table::new(&ctx);
     view.set(ctx, "shown", luna::String::from_slice(&ctx, b"painted"))
@@ -170,8 +165,6 @@ mod tests {
 
     #[test]
     fn a_theme_a_declaration_wrote_is_what_ansi_is_read_against() {
-        // The join between a program that speaks ANSI and a vocabulary that speaks meaning. It
-        // belongs in a table somebody can edit when their theme changes.
         let Shown::Painted { lines } = shown(
             r#"{ said = "fn", shown = casper.paint.ansi("\27[38;5;81mfn", { [81] = "keyword" }) }"#,
         ) else {
@@ -183,8 +176,6 @@ mod tests {
 
     #[test]
     fn a_theme_may_name_a_truecolour_by_its_hex() {
-        // Which is the one that matters in practice: `bat` sends `38;2;R;G;B`, so a theme that
-        // could only be keyed by index would match nothing it emits.
         let Shown::Painted { lines } = shown(
             r##"{ said = "fn", shown = casper.paint.ansi(
                  "\27[38;2;198;120;221mfn", { ["#c678dd"] = "keyword" }) }"##,
@@ -196,8 +187,6 @@ mod tests {
 
     #[test]
     fn a_key_that_is_neither_a_number_nor_a_colour_is_dropped() {
-        // Dropped rather than raising: a theme is a long table somebody edits by hand, and one
-        // bad row should cost that row rather than the whole file's highlighting.
         let Shown::Painted { lines } = shown(
             r##"{ said = "x", shown = casper.paint.ansi(
                  "\27[38;5;81mx", { ["mauve"] = "keyword", [81] = "string" }) }"##,
@@ -209,8 +198,6 @@ mod tests {
 
     #[test]
     fn a_role_outside_the_vocabulary_is_dropped_rather_than_invented() {
-        // Closed on purpose: a name the harness has no colour for would have one guessed, and
-        // guessing is what roles exist to prevent.
         let Shown::Painted { lines } = shown(
             r#"{ said = "x", shown = casper.paint.ansi("\27[38;5;81mx", { [81] = "sparkly" }) }"#,
         ) else {

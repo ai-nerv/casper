@@ -1,16 +1,10 @@
-//! The socket primitive the client libraries need.
-//!
-//! Layer one of three: the client carries framing and encoding in plain Lua, but it cannot open a
-//! socket, so the host lends it one. A host native like any other — deliberately *not* a VM
-//! feature, so a VM that cannot load C modules needs no change to join the family.
+//! The socket primitive the client libraries need. The client carries framing and encoding in
+//! plain Lua; only opening the socket is lent, as a host native rather than a VM feature.
 //!
 //! ```lua
 //! local h = magi.stream.connect(path, timeout_ms)
 //! h:send(bytes)   h:recv(n)   h:close()
 //! ```
-//!
-//! This is what lets magi dial *out*: oslo's `client.lua` and hexe's `hexe.lua` run unchanged
-//! in this VM, given this table.
 
 use luna::{Callback, CallbackReturn, Context, Table, Value};
 use std::cell::RefCell;
@@ -19,29 +13,16 @@ use std::os::unix::net::UnixStream;
 use std::rc::Rc;
 use std::time::Duration;
 
-/// The most a single `recv` will be asked for.
-///
-/// A peer that says a frame is enormous must not make us allocate for it before a byte of it
-/// has arrived. The client asks in pieces anyway; this bounds a hostile answer.
+/// The most a single `recv` will be asked for, so a peer claiming an enormous frame cannot make
+/// us allocate for it before a byte of it has arrived.
 const MAX_RECV: usize = 16 * 1024 * 1024;
 
 /// A connected socket, shared between the handle's methods.
 type Handle = Rc<RefCell<Option<UnixStream>>>;
 
-/// Whether `path` is a socket a config may dial.
-///
-/// **This user's own socket directories and nothing else.** This primitive used to call
-/// `UnixStream::connect` on whatever it was handed, so any Lua a config could reach could open
-/// any socket this user can: a sibling's control socket, a container runtime's.
-///
-/// Narrowed rather than gated, because there is nothing here to gate with. This VM has no
-/// permission seam, and a config file is read before anything that could ask a person exists —
-/// which is exactly the window an untrusted project file runs in. Every legitimate caller is
-/// already inside these roots: the family puts its sockets under `$XDG_RUNTIME_DIR`, falling
-/// back to the temporary directory when that is unset.
-///
-/// Lexical, on a normalised path: `..` is resolved first, so a name cannot climb out of the
-/// directory it appears to be in.
+/// Whether `path` is a socket a config may dial: this user's own runtime directories and nothing
+/// else. There is no permission seam to gate with here — a config file is read before anything
+/// that could ask a person exists — so the reachable set is narrowed instead.
 fn dialable(path: &std::path::Path) -> bool {
     roots().iter().any(|root| under(path, root))
 }
@@ -81,9 +62,8 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
         };
         let path = String::from_utf8_lossy(path.as_bytes()).into_owned();
 
-        // Refused as an ordinary answer, the way a failed connect already is: `nil` and a reason
-        // the caller can put on screen. Raising would make a config that probed for an absent
-        // sibling die instead of carrying on without it.
+        // Refused as an ordinary answer rather than a raise, so a config probing for an absent
+        // sibling carries on without it.
         if !dialable(std::path::Path::new(&path)) {
             stack.replace(
                 ctx,
@@ -95,8 +75,7 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
             return Ok(CallbackReturn::Return);
         }
 
-        // A default rather than a wait forever: a stale socket left by a killed peer accepts
-        // and never answers, which is indistinguishable from a hang without one.
+        // A default rather than a wait forever: a stale socket accepts and never answers.
         let timeout = match timeout_ms {
             Value::Integer(ms) if ms > 0 => Duration::from_millis(ms as u64),
             Value::Number(ms) if ms > 0.0 => Duration::from_millis(ms as u64),
@@ -104,11 +83,8 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
         };
 
         match UnixStream::connect(&path) {
-            // **A socket whose deadline would not take is refused, not handed over.** These were
-            // two `let _ =`, and the failure they swallowed is exactly the one the deadline
-            // exists to prevent: without it the handle blocks forever on a peer that accepts and
-            // never answers, which from Lua is a tool call that simply never returns. Better to
-            // say so at `connect` than to hang somewhere the reason is invisible.
+            // A socket that would take no deadline is refused rather than handed over: without
+            // one, a peer that accepts and never answers hangs the call forever.
             Ok(socket) => match socket
                 .set_read_timeout(Some(timeout))
                 .and_then(|()| socket.set_write_timeout(Some(timeout)))
@@ -143,7 +119,6 @@ fn handle_table<'gc>(ctx: Context<'gc>, socket: Handle) -> Table<'gc> {
 
     let held = Rc::clone(&socket);
     let send = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
-        // Called as `h:send(bytes)`, so the handle itself is the first argument.
         let (_self, bytes): (Value, Value) = stack.consume(ctx)?;
         let Value::String(bytes) = bytes else {
             stack.replace(ctx, (Value::Nil, "send needs a string"));
@@ -180,8 +155,7 @@ fn handle_table<'gc>(ctx: Context<'gc>, socket: Handle) -> Table<'gc> {
         };
         let mut buffer = vec![0_u8; want];
         match socket.read(&mut buffer) {
-            // A short read is ordinary, not an error: the client asks again until it has the
-            // whole frame. Zero means the peer hung up, and the client reads that as such.
+            // A short read is ordinary; the client asks again. Zero means the peer hung up.
             Ok(read) => {
                 buffer.truncate(read);
                 let text = luna::String::from_slice(&ctx, &buffer);
@@ -195,8 +169,7 @@ fn handle_table<'gc>(ctx: Context<'gc>, socket: Handle) -> Table<'gc> {
 
     let held = Rc::clone(&socket);
     let close = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
-        // Dropping the stream is the close; taking it also makes a second close a no-op rather
-        // than an error, which a client's cleanup path relies on.
+        // Taking the stream is the close, and makes a second close a no-op rather than an error.
         held.borrow_mut().take();
         stack.replace(ctx, true);
         Ok(CallbackReturn::Return)

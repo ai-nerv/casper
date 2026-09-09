@@ -1,24 +1,9 @@
 //! Where declarations come from, and in what order.
 //!
-//! neovim's model, unchanged: a runtimepath of roots, `plugin/` run at startup, `after/` last.
-//! Twenty years of real plugins have been written against it and most people arriving already
-//! know it. Deviating buys nothing and costs everyone the transfer.
-//!
-//! **The mechanism is balthasar's, generalised.** It was written there, tested there, and named
-//! as one program's arrangement rather than the family's — so the one program a person could
-//! extend by dropping a file in a directory was the one nobody would think to look at for it.
-//! casper is the program whose whole subject is tools, and until this it had thirteen compiled
-//! in and one file's worth of room for anybody else's.
-//!
-//! **`casper.load` stays**, because a named file is still the auditable case, and it is what a
-//! coordinator uses: magi hands casper one path rather than installing a package on its behalf.
-//! It is read last, so it wins.
-//!
-//! **The sandbox covers all of it.** A discovered file runs in the same VM as the shipped
-//! declarations, and [`crate::lua::sandbox`] removes `os.execute`, `io.popen` and the rest before
-//! any of them run — so dropping a file in a directory extends casper and cannot itself spawn a
-//! process. What a *tool* runs goes through the declared runner, which is the whole point of
-//! casper and the one thing that is not a hole.
+//! neovim's model: a runtimepath of roots, `plugin/` read at startup, `after/` last, and the path
+//! a coordinator gave last of all. Every discovered file runs in the same sandboxed VM as the
+//! shipped declarations, so dropping a file in a directory extends casper and cannot itself spawn
+//! a process — see [`crate::lua::sandbox`].
 
 use std::path::{Path, PathBuf};
 
@@ -28,11 +13,6 @@ pub enum Trust {
     /// The owner's own, or a coordinator's. Runs on sight.
     Owner,
     /// A package installed under `site/`, which runs once it has been acknowledged.
-    ///
-    /// The distinction is not about what the file can express; it is about who wrote it. A file
-    /// in your own `plugin/` directory is one you put there, and asking you to confirm your own
-    /// configuration is a prompt nobody reads. A package is somebody else's code that arrived by
-    /// being fetched, and it can change under you between one run and the next.
     Installed,
 }
 
@@ -52,17 +32,11 @@ pub struct Roots {
     /// `$XDG_DATA_HOME/casper/site`, where installed packages live.
     pub site: Option<PathBuf>,
     /// What a coordinator said, read last of all.
-    ///
-    /// A root like the others rather than a path this module looks up, so [`runtimepath`] is a
-    /// function of what it is handed — reading it inside would make the answer depend on whether
-    /// this machine happened to have a coordinator running.
     pub given: Option<PathBuf>,
 }
 
-/// The config directory: `$XDG_CONFIG_HOME/casper`, or `~/.config/casper`.
-///
-/// Named, not searched. A relative path would load whichever checkout the working directory
-/// happened to be in — which is how a sibling ends up running another project's tools.
+/// The config directory: `$XDG_CONFIG_HOME/casper`, or `~/.config/casper`. Named, not searched:
+/// a relative lookup would load whichever checkout the working directory happened to be in.
 #[must_use]
 pub fn config_dir() -> Option<PathBuf> {
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
@@ -100,10 +74,6 @@ fn data_home() -> Option<PathBuf> {
 ///   <config>/after/plugin/*.lua        the last word
 ///   <given>                            what a coordinator handed over
 /// ```
-///
-/// `tools.lua` is the first of these and is a file like the rest — it used to be `include_str!`d,
-/// which made changing one tool a rebuild and left the config directory able only to layer over
-/// something a person could not see.
 #[must_use]
 pub fn runtimepath(roots: &Roots) -> Vec<(PathBuf, Trust)> {
     let mut out = Vec::new();
@@ -130,8 +100,7 @@ pub fn runtimepath(roots: &Roots) -> Vec<(PathBuf, Trust)> {
         }
     }
 
-    // `after/` runs last, which is what lets it win: the registry replaces by name, so whoever
-    // declares a tool last decides what that name means.
+    // The registry replaces by name, so the last declaration of a name is the one that stands.
     if let Some(config) = &roots.config {
         out.extend(
             lua_files(&config.join("after/plugin"))
@@ -140,8 +109,6 @@ pub fn runtimepath(roots: &Roots) -> Vec<(PathBuf, Trust)> {
         );
     }
 
-    // And a coordinator after that. Whoever started this process is deciding what it should be,
-    // and a file on disk that quietly won would be the disagreement the arrangement exists to end.
     if let Some(given) = &roots.given
         && given.is_file()
     {
@@ -150,10 +117,8 @@ pub fn runtimepath(roots: &Roots) -> Vec<(PathBuf, Trust)> {
     out
 }
 
-/// Every `.lua` directly in a directory, alphabetically.
-///
-/// Alphabetical rather than by whatever the filesystem answers: a load order that changes between
-/// machines is a set of tools that behaves differently on each of them.
+/// Every `.lua` directly in a directory, sorted rather than in the order the filesystem answers:
+/// a load order that changes between machines is a set of tools that behaves differently on each.
 fn lua_files(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -211,8 +176,6 @@ mod tests {
 
     #[test]
     fn dropping_a_file_in_plugin_is_enough_to_declare_a_tool() {
-        // The whole point: no rebuild, no edit to anything shipped. casper carried thirteen
-        // tools in one file and nowhere for anybody else's to go.
         let dir = Scratch::new("casper-rtp", "dropped");
         touch(&dir.join("plugin/mine.lua"), "-- nothing\n");
 
@@ -227,8 +190,6 @@ mod tests {
 
     #[test]
     fn the_order_is_tools_then_plugin_then_pack_then_after_then_given() {
-        // The registry replaces by name, so this list *is* the precedence: last declaration of a
-        // name wins, and a coordinator's file wins over everything on disk.
         let dir = Scratch::new("casper-rtp", "order");
         let config = dir.join("config");
         let site = dir.join("site");
@@ -250,8 +211,6 @@ mod tests {
             .collect();
         assert_eq!(names, ["tools.lua", "b.lua", "c.lua", "d.lua", "given.lua"]);
 
-        // And which of them somebody else wrote. Only the package under `site/` needs clearing;
-        // a prompt about your own configuration is one nobody reads.
         let theirs: Vec<_> = files
             .iter()
             .filter(|(_, trust)| trust.needs_acknowledging())
@@ -262,7 +221,6 @@ mod tests {
 
     #[test]
     fn nothing_installed_is_no_files_rather_than_an_error() {
-        // The ordinary case for everybody who has not used this.
         let dir = Scratch::new("casper-rtp", "empty");
         let files = runtimepath(&Roots {
             config: Some(dir.join("nowhere")),
@@ -274,7 +232,6 @@ mod tests {
 
     #[test]
     fn only_lua_files_are_picked_up() {
-        // A README or an editor's backup in a plugin directory is not a set of declarations.
         let dir = Scratch::new("casper-rtp", "kinds");
         touch(&dir.join("plugin/real.lua"), "");
         touch(&dir.join("plugin/README.md"), "");

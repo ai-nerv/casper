@@ -1,12 +1,6 @@
-//! The VM tools are declared in.
-//!
-//! A declaration is data and a function. The data — a name, what the tool does, its schema, the
-//! verb it acts under — comes out into Rust; the function stays, because a function cannot be
-//! described as data. See [`engine`].
-//!
-//! The standard library is trimmed the way the siblings trim theirs, and for a reason that is
-//! sharper here than anywhere: casper's job is running programs, so it offers exactly one way to
-//! run one. See [`exec`].
+//! The VM tools are declared in. A declaration is data and a function: the data — name,
+//! description, schema, verb — comes out into Rust, and the function stays. The standard library
+//! is trimmed to one way of running a program.
 
 pub mod ask;
 pub mod convert;

@@ -1,12 +1,6 @@
-//! casper — the tooling interface.
-//!
-//! magi keeps `read`, `write` and `edit` as a floor it can never be without. Everything else is
-//! here: the tools, what they say to the model, and what they show the person. `DESIGN.md` is the
-//! argument; this is the code.
-//!
-//! **A tool has two faces.** The model reads text; the person reads a painted view. They are not
-//! the same content — a permission question has a view and no result, a `shell` has a result and
-//! no view — so they are two fields and either may be absent.
+//! casper — the tooling interface: the tools, what they say to the model, and what they show the
+//! person. A tool's two faces are separate fields and either may be absent — a permission question
+//! has a view and no result, a `shell` has a result and no view.
 
 pub mod acknowledged;
 pub mod lua;
