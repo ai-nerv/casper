@@ -49,6 +49,7 @@ impl Alone {
             .arg("run")
             .env("XDG_CONFIG_HOME", self.dir.join("config"))
             .env("XDG_RUNTIME_DIR", &*self.dir)
+            .env("XDG_DATA_HOME", self.dir.join("data"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

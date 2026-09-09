@@ -127,6 +127,7 @@ impl Caller {
             .arg(script)
             .env("XDG_CONFIG_HOME", dir.join("config"))
             .env("XDG_RUNTIME_DIR", &*dir)
+            .env("XDG_DATA_HOME", dir.join("data"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
