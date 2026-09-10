@@ -197,13 +197,28 @@ local function be32(s)
   return s:byte(1) * 16777216 + s:byte(2) * 65536 + s:byte(3) * 256 + s:byte(4)
 end
 
--- Read exactly `n` bytes, however many reads that takes.
-local function exactly(handle, n)
+-- Drop the connection, and say why it went.
+--
+-- A reply says nothing about which call it answers: they are matched by position. So a call given
+-- up on part-way leaves a reply on the wire that would answer the next one, and every answer after
+-- that belongs to the call before it. The handle is nilled rather than only closed, so the next
+-- call meets the guard in `Session:call` instead of a transport error. See FAMILY.md.
+local function adrift(session, why)
+  if session.handle then
+    pcall(function() session.handle:close() end)
+    session.handle = nil
+  end
+  return why
+end
+
+-- Read exactly `n` bytes, however many reads that takes. A read that cannot finish takes the
+-- connection with it, so every caller inherits the rule rather than having to remember it.
+local function exactly(session, n)
   local parts, have = {}, 0
   while have < n do
-    local chunk, why = handle:recv(n - have)
-    if not chunk then return nil, why end
-    if #chunk == 0 then return nil, "the shell closed the connection" end
+    local chunk, why = session.handle:recv(n - have)
+    if not chunk then return nil, adrift(session, why) end
+    if #chunk == 0 then return nil, adrift(session, "the shell closed the connection") end
     parts[#parts + 1] = chunk
     have = have + #chunk
   end
@@ -219,12 +234,14 @@ Session.__index = Session
 function Session:call(name, ...)
   if not self.handle then return nil, "this connection is closed" end
   local request = encode({ call = name, args = { ... } })
+  -- A write that failed part-way has put the head of a call on the wire that this side will never
+  -- finish, and the far end reads whatever comes next as the rest of it.
   local sent, why = self.handle:send(frame(request))
-  if not sent then return nil, why end
+  if not sent then return nil, adrift(self, why) end
 
-  local head, gone = exactly(self.handle, 4)
+  local head, gone = exactly(self, 4)
   if not head then return nil, gone end
-  local body, cut = exactly(self.handle, be32(head))
+  local body, cut = exactly(self, be32(head))
   if not body then return nil, cut end
 
   local reply = decode(body)
