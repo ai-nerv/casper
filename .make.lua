@@ -259,7 +259,7 @@ make.recipe{
       -- `gate-family` takes a built binary and `gate-hermetic` runs the whole suite; both are
       -- recipes of their own, so a failure is attributable to one of them rather than to "the
       -- gates".
-      if name ~= "gate-family" and name ~= "gate-hermetic" then
+      if name ~= "gate-family" and name ~= "gate-hermetic" and name ~= "gate-role" then
         -- Executed, not handed to `sh`: the shebang is the portability contract, and CI runs
         -- these on a machine whose /bin/sh is dash.
         local result = oslo.run{ path, capture = true }
@@ -317,7 +317,7 @@ make.recipe{
 make.recipe{
   name = "verify",
   desc = "the whole local gate",
-  deps = { "fmt-check", "check", "test", "check-all", "test-all", "clippy", "rustdoc", "gates", "gate-hermetic", "gate-family", "machete" },
+  deps = { "fmt-check", "check", "test", "check-all", "test-all", "clippy", "rustdoc", "gates", "gate-hermetic", "gate-family", "gate-role", "machete" },
 }
 make.alias("v", "verify")
 
@@ -336,5 +336,19 @@ make.recipe{
     if not oslo.fs.exists(where) then where = "target/release/casper" end
     local ran = oslo.run{ "scripts/gate-family.sh", where  }
     assert(ran.ok, "gate-family failed")
+  end,
+}
+
+-- The role, as against the family contract: what this program is *for*, not how it talks. See
+-- ROLES.md. Core verbs fail the gate; extensions are reported and do not.
+make.recipe{
+  name = "gate-role",
+  desc = "the binary fills the tools role",
+  deps = { "build" },
+  run = function()
+    local where = "target/x86_64-unknown-linux-musl/release/casper"
+    if not oslo.fs.exists(where) then where = "target/release/casper" end
+    local ran = oslo.run{ "scripts/gate-role.sh", "tools", where }
+    assert(ran.ok, "gate-role failed")
   end,
 }
