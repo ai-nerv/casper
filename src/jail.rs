@@ -12,17 +12,45 @@
 
 use std::path::{Path, PathBuf};
 
-/// What turns the jail on, in casper's own name as [`crate::setup`] reads its configuration: a
-/// coordinator sets it on the spawn. Absent, a command runs as before.
+/// What turns the jail on, in casper's own name as [`crate::setup`] reads its configuration. A
+/// coordinator sets it on the spawn: `1` for the conservative profile, or a JSON [`Grants`] object
+/// for one the session's own permissions widened. Absent, a command runs as before.
 pub const WANTED: &str = "CASPER_JAIL";
+
+/// What the session's grants add to the conservative floor, read off [`WANTED`] as JSON so casper
+/// need not know how magi keeps its ledger.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct Grants {
+    /// Directories a call may write, beyond the working directory.
+    #[serde(default)]
+    pub write: Vec<PathBuf>,
+    /// Whether any network was granted. bubblewrap's is all-or-nothing; per-host is Landlock's job.
+    #[serde(default)]
+    pub reach: bool,
+}
+
+impl Grants {
+    /// What [`WANTED`] carried: nothing when off, the floor for `1`, or a widened set from JSON.
+    /// Anything unparseable is the floor, never wider.
+    fn read() -> Option<Self> {
+        match std::env::var(WANTED).ok()?.trim() {
+            "" => None,
+            "1" => Some(Self::default()),
+            json => Some(serde_json::from_str(json).unwrap_or_else(|why| {
+                crate::noted!("jail: {WANTED} is not a profile ({why}); using the floor");
+                Self::default()
+            })),
+        }
+    }
+}
 
 /// The command as it should actually be started: `bwrap` and its arguments wrapping the program,
 /// or the program unchanged when the jail is off or unavailable.
 #[must_use]
 pub fn wrap(program: &str, args: &[String]) -> (String, Vec<String>) {
-    if std::env::var(WANTED).as_deref() != Ok("1") {
+    let Some(grants) = Grants::read() else {
         return (program.to_owned(), args.to_vec());
-    }
+    };
     let Some(bwrap) = which("bwrap") else {
         crate::noted!("jail: bwrap is not installed; {program} runs unsandboxed");
         return (program.to_owned(), args.to_vec());
@@ -31,7 +59,7 @@ pub fn wrap(program: &str, args: &[String]) -> (String, Vec<String>) {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
-    let mut argv = profile(&cwd, &home);
+    let mut argv = profile(&cwd, &home, &grants);
     // Cleared, then the few a command needs — never this process's own credentials, which is what
     // masking the stores on disk would miss.
     argv.push("--clearenv".to_owned());
@@ -46,10 +74,10 @@ pub fn wrap(program: &str, args: &[String]) -> (String, Vec<String>) {
     (bwrap, argv)
 }
 
-/// The bubblewrap arguments for the conservative profile: the world a command sees before any grant
-/// widens it. In order, because bubblewrap applies them in order and a later mount wins.
+/// The bubblewrap arguments: the conservative floor, widened by whatever the session's [`Grants`]
+/// carried. In order, because bubblewrap applies them in order and a later mount wins.
 #[must_use]
-pub fn profile(cwd: &Path, home: &Path) -> Vec<String> {
+pub fn profile(cwd: &Path, home: &Path, grants: &Grants) -> Vec<String> {
     let mut a: Vec<String> = Vec::new();
     let path = |a: &mut Vec<String>, flag: &str, p: &Path| {
         a.push(flag.to_owned());
@@ -65,7 +93,11 @@ pub fn profile(cwd: &Path, home: &Path) -> Vec<String> {
     a.extend(["--dev", "/dev"].map(str::to_owned));
     a.extend(["--proc", "/proc"].map(str::to_owned));
     path(&mut a, "--tmpfs", Path::new("/tmp"));
+    // The working directory always, and each directory a write grant named.
     bind(&mut a, "--bind", cwd);
+    for writable in &grants.write {
+        bind(&mut a, "--bind", writable);
+    }
     // The credential stores, masked though the machine is readable.
     for deny in mandatory_deny(home) {
         if deny.exists() {
@@ -77,17 +109,13 @@ pub fn profile(cwd: &Path, home: &Path) -> Vec<String> {
     if hooks.exists() {
         bind(&mut a, "--ro-bind", &hooks);
     }
-    // A tool command talks to nothing over a socket, so the runtime directory is not bound in: what
-    // does — a jailed child session reaching its own siblings — is the coordinator's to arrange.
-    a.extend(
-        [
-            "--unshare-net",
-            "--unshare-pid",
-            "--unshare-ipc",
-            "--unshare-uts",
-        ]
-        .map(str::to_owned),
-    );
+    // No network unless a reach grant asked for it; a tool command talks to no socket otherwise,
+    // so the runtime directory is not bound in — a jailed child session's siblings are magi's to
+    // arrange.
+    if !grants.reach {
+        a.push("--unshare-net".to_owned());
+    }
+    a.extend(["--unshare-pid", "--unshare-ipc", "--unshare-uts"].map(str::to_owned));
     a.extend(["--die-with-parent", "--new-session"].map(str::to_owned));
     path(&mut a, "--chdir", cwd);
     a
@@ -118,12 +146,38 @@ mod tests {
     use crate::scratch::Scratch;
 
     #[test]
-    fn the_profile_reads_the_world_writes_the_cwd_and_cuts_the_network() {
-        let a = profile(Path::new("/w/proj"), Path::new("/home/x")).join(" ");
+    fn the_floor_reads_the_world_writes_the_cwd_and_cuts_the_network() {
+        let a = profile(
+            Path::new("/w/proj"),
+            Path::new("/home/x"),
+            &Grants::default(),
+        )
+        .join(" ");
         assert!(a.contains("--ro-bind / /"), "{a}");
         assert!(a.contains("--bind /w/proj /w/proj"), "{a}");
         assert!(a.contains("--unshare-net"), "{a}");
         assert!(a.contains("--die-with-parent"), "{a}");
+    }
+
+    #[test]
+    fn a_grant_widens_the_floor_and_never_narrows_it() {
+        let grants = Grants {
+            write: vec![PathBuf::from("/w/other")],
+            reach: true,
+        };
+        let a = profile(Path::new("/w/proj"), Path::new("/home/x"), &grants).join(" ");
+        assert!(
+            a.contains("--bind /w/proj /w/proj"),
+            "the cwd is still writable: {a}"
+        );
+        assert!(
+            a.contains("--bind /w/other /w/other"),
+            "the granted dir is writable: {a}"
+        );
+        assert!(
+            !a.contains("--unshare-net"),
+            "a reach grant leaves the network on: {a}"
+        );
     }
 
     #[test]
@@ -153,7 +207,7 @@ mod tests {
         std::fs::create_dir_all(&work).expect("mkdir");
         std::fs::write(home.join(".ssh/id"), "THE-SECRET-KEY").expect("write");
 
-        let mut argv = profile(&work, &home);
+        let mut argv = profile(&work, &home, &Grants::default());
         argv.push("--clearenv".to_owned());
         argv.extend([
             "--setenv".to_owned(),
