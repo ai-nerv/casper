@@ -34,6 +34,8 @@ thiserror = "2.0"
 # nothing else from it. Already in the lockfile underneath pty-process, so this is a feature
 # and not a package.
 rustix = { version = "1", features = ["process"] }
+seccompiler = "0.5"
+libc = "0.2.189"
 
 [dev-dependencies]
 

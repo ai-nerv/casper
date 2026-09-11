@@ -90,6 +90,9 @@ pub fn run(program: &str, args: &[String]) -> Done {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    // The seccomp half of the jail, on the command bwrap goes on to run — and on the program
+    // itself when there is no bwrap. Off with the jail.
+    crate::jail::confine(&mut command);
     // Without this the program is reparented to init the moment a magi is killed.
     crate::tied::running(&mut command);
     let mut child = match command.spawn() {

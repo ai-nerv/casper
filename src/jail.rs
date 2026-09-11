@@ -6,9 +6,10 @@
 //! processes. It is inherited by everything the command starts, so a script that runs a program
 //! that runs a program is as bounded as the first.
 //!
-//! Off unless [`WANTED`] is set, so nothing changes for a session until a coordinator turns it on;
-//! the grant-driven profile is layered on top later. When bubblewrap is not installed the command
-//! runs unwrapped and says so — Landlock is what stands alone where bwrap cannot.
+//! Beside bubblewrap's world, a seccomp filter ([`confine`]) denies the syscalls no command needs
+//! and a hostile one wants — reading another process's memory, `io_uring` — and it holds even where
+//! there is no bubblewrap. Off unless [`WANTED`] is set, so nothing changes for a session until a
+//! coordinator turns it on; the grant-driven profile is layered on top.
 
 use std::path::{Path, PathBuf};
 
@@ -130,6 +131,62 @@ fn mandatory_deny(home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Apply the seccomp filter to `command`, when the jail is on, as a `pre_exec` step. Inherited
+/// across `exec`, so it holds for the command bubblewrap goes on to run — and it holds even where
+/// there is no bubblewrap, which is the one wall that stands without namespaces. Off with the jail.
+pub fn confine(command: &mut std::process::Command) {
+    if std::env::var(WANTED)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .is_none()
+    {
+        return;
+    }
+    let filter = deny(FORBIDDEN);
+    // SAFETY: the closure calls `seccompiler::apply_filter` and nothing else — one `prctl` pair in
+    // the window between fork and exec, the shape `tied.rs` already uses. The filter is built here
+    // and moved in, so nothing is allocated in the child.
+    #[allow(unsafe_code)]
+    unsafe {
+        use std::os::unix::process::CommandExt as _;
+        command.pre_exec(move || {
+            seccompiler::apply_filter(&filter)
+                .map_err(|why| std::io::Error::other(format!("seccomp: {why}")))
+        });
+    }
+}
+
+/// The syscalls no jailed command ever needs and that a hostile one would reach for: reading
+/// another process's memory, and `io_uring`, which can open files and sockets without the syscalls
+/// the rest of the jail watches. Denied with `EPERM`, so a program that probes them is told no.
+const FORBIDDEN: &[i64] = &[
+    libc::SYS_ptrace,
+    libc::SYS_process_vm_readv,
+    libc::SYS_process_vm_writev,
+    libc::SYS_io_uring_setup,
+    libc::SYS_io_uring_enter,
+    libc::SYS_io_uring_register,
+];
+
+/// A seccomp program that allows everything but `forbid`, each of which answers `EPERM`.
+fn deny(forbid: &[i64]) -> seccompiler::BpfProgram {
+    use seccompiler::{SeccompAction, SeccompFilter, TargetArch};
+    let rules = forbid.iter().map(|nr| (*nr, Vec::new())).collect();
+    let arch = if cfg!(target_arch = "aarch64") {
+        TargetArch::aarch64
+    } else {
+        TargetArch::x86_64
+    };
+    SeccompFilter::new(
+        rules,
+        SeccompAction::Allow,
+        SeccompAction::Errno(libc::EPERM as u32),
+        arch,
+    )
+    .and_then(std::convert::TryInto::try_into)
+    .unwrap_or_default()
+}
+
 /// The first `name` on `$PATH`.
 fn which(name: &str) -> Option<String> {
     std::env::var_os("PATH").and_then(|paths| {
@@ -192,6 +249,37 @@ mod tests {
         let (program, args) = wrap("sh", &["-c".to_owned(), "echo hi".to_owned()]);
         assert_eq!(program, "sh");
         assert_eq!(args, ["-c", "echo hi"]);
+    }
+
+    #[test]
+    fn the_real_filter_compiles_and_names_the_forbidden_calls() {
+        let program = deny(FORBIDDEN);
+        assert!(!program.is_empty(), "the seccomp program built to nothing");
+    }
+
+    #[test]
+    fn a_denied_syscall_is_refused_by_the_filter() {
+        // The mechanism, proven on a syscall a shell reaches easily: a filter denying `mkdir`
+        // makes `mkdir` fail with the errno the filter names, applied the way `confine` applies it.
+        use std::os::unix::process::CommandExt as _;
+        let filter = deny(&[libc::SYS_mkdir, libc::SYS_mkdirat]);
+        let dir = crate::scratch::Scratch::new("jail", "seccomp");
+        let target = dir.join("nope");
+        let mut command = std::process::Command::new("mkdir");
+        command.arg(&target);
+        // SAFETY: as in `confine` — one `apply_filter` between fork and exec.
+        #[allow(unsafe_code)]
+        unsafe {
+            command.pre_exec(move || {
+                seccompiler::apply_filter(&filter).map_err(|_| std::io::Error::other("seccomp"))
+            });
+        }
+        let status = command.status().expect("mkdir runs");
+        assert!(!status.success(), "mkdir was not blocked by the filter");
+        assert!(
+            !target.exists(),
+            "the directory was created despite the filter"
+        );
     }
 
     #[test]
