@@ -8,8 +8,9 @@
 //!
 //! Beside bubblewrap's world, a seccomp filter ([`confine`]) denies the syscalls no command needs
 //! and a hostile one wants — reading another process's memory, `io_uring` — and it holds even where
-//! there is no bubblewrap. Off unless [`WANTED`] is set, so nothing changes for a session until a
-//! coordinator turns it on; the grant-driven profile is layered on top.
+//! there is no bubblewrap. Where there is none, [`restrict`] adds Landlock's filesystem, network and
+//! signal walls in-process, the one containment that stands without a namespace. Off unless
+//! [`WANTED`] is set, so nothing changes for a session until a coordinator turns it on.
 
 use std::path::{Path, PathBuf};
 
@@ -187,6 +188,84 @@ fn deny(forbid: &[i64]) -> seccompiler::BpfProgram {
     .unwrap_or_default()
 }
 
+/// Restrict `command` with Landlock when the jail is on but bubblewrap will not build the world —
+/// the one path where the filesystem, network and signal walls must stand without a mount
+/// namespace. A no-op when bwrap is present (it contains the command instead), when the jail is
+/// off, or on a kernel without Landlock.
+pub fn restrict(command: &mut std::process::Command) {
+    let Some(grants) = Grants::read() else {
+        return;
+    };
+    if which("bwrap").is_some() {
+        return;
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    let Some(ruleset) = ruleset(&cwd, &grants) else {
+        return;
+    };
+    // SAFETY: like `confine` — the ruleset is built and populated here; the closure only clones its
+    // descriptor and calls `restrict_self`, which is `prctl` and one Landlock syscall, no allocation.
+    #[allow(unsafe_code)]
+    unsafe {
+        use std::os::unix::process::CommandExt as _;
+        command.pre_exec(move || {
+            let status = ruleset
+                .try_clone()
+                .map_err(|why| std::io::Error::other(format!("landlock: {why}")))?
+                .restrict_self()
+                .map_err(|why| std::io::Error::other(format!("landlock: {why}")))?;
+            if status.ruleset == landlock::RulesetStatus::NotEnforced {
+                return Err(std::io::Error::other("landlock: not enforced"));
+            }
+            Ok(())
+        });
+    }
+}
+
+/// The system directories a command reads to run at all — never `$HOME`, so the credential stores
+/// under it stay unreadable the way bubblewrap's mask makes them.
+const SYSTEM_READ: &[&str] = &[
+    "/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/opt", "/proc", "/sys", "/run",
+];
+
+/// A Landlock ruleset from the grants: read across the system directories, write at `cwd`, each
+/// granted directory and the scratch devices, TCP denied unless a reach grant, signals scoped to
+/// this domain. Best-effort, so an older kernel keeps the walls it can rather than failing.
+fn ruleset(cwd: &Path, grants: &Grants) -> Option<landlock::RulesetCreated> {
+    use landlock::{
+        ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
+        RulesetAttr, RulesetCreatedAttr, Scope,
+    };
+    let abi = ABI::V5;
+    let mut ruleset = Ruleset::default()
+        .set_compatibility(CompatLevel::BestEffort)
+        .handle_access(AccessFs::from_all(abi))
+        .ok()?
+        .scope(Scope::Signal | Scope::AbstractUnixSocket)
+        .ok()?;
+    if !grants.reach {
+        ruleset = ruleset
+            .handle_access(AccessNet::ConnectTcp | AccessNet::BindTcp)
+            .ok()?;
+    }
+    let mut created = ruleset.create().ok()?;
+    let (read, all) = (AccessFs::from_read(abi), AccessFs::from_all(abi));
+    for dir in SYSTEM_READ {
+        if let Ok(fd) = PathFd::new(dir) {
+            created = created.add_rule(PathBeneath::new(fd, read)).ok()?;
+        }
+    }
+    let writable = std::iter::once(cwd.to_path_buf())
+        .chain(grants.write.iter().cloned())
+        .chain([PathBuf::from("/tmp"), PathBuf::from("/dev")]);
+    for dir in writable {
+        if let Ok(fd) = PathFd::new(&dir) {
+            created = created.add_rule(PathBeneath::new(fd, all)).ok()?;
+        }
+    }
+    Some(created)
+}
+
 /// The first `name` on `$PATH`.
 fn which(name: &str) -> Option<String> {
     std::env::var_os("PATH").and_then(|paths| {
@@ -280,6 +359,49 @@ mod tests {
             !target.exists(),
             "the directory was created despite the filter"
         );
+    }
+
+    #[test]
+    fn landlock_alone_denies_a_read_outside_the_set_and_keeps_the_cwd_writable() {
+        // The degraded path: no bwrap, so Landlock is the only wall. A ruleset that reads the system
+        // and writes one directory is built and applied the way `restrict` applies it, then a child
+        // proves a credential-shaped path outside the set is unreadable and the granted dir writable.
+        use std::os::unix::process::CommandExt as _;
+        let dir = Scratch::new("jail", "landlock");
+        let work = dir.join("work");
+        let secret = dir.join("secret");
+        std::fs::create_dir_all(&work).expect("mkdir");
+        std::fs::write(&secret, "THE-SECRET-KEY").expect("write");
+        let Some(ruleset) = ruleset(&work, &Grants::default()) else {
+            eprintln!("skipping: no Landlock here");
+            return;
+        };
+        let script = format!(
+            "cat {} 2>&1; echo --sep--; echo ok > {}/w 2>&1 && echo WROTE || echo NOWRITE",
+            secret.display(),
+            work.display()
+        );
+        let mut command = std::process::Command::new("sh");
+        command.arg("-c").arg(&script);
+        // SAFETY: as in `restrict` — clone the descriptor and `restrict_self`, syscalls only.
+        #[allow(unsafe_code)]
+        unsafe {
+            command.pre_exec(move || {
+                ruleset
+                    .try_clone()
+                    .map_err(|why| std::io::Error::other(format!("landlock: {why}")))?
+                    .restrict_self()
+                    .map_err(|why| std::io::Error::other(format!("landlock: {why}")))?;
+                Ok(())
+            });
+        }
+        let out = command.output().expect("sh runs");
+        let said = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !said.contains("THE-SECRET-KEY"),
+            "the secret was readable under Landlock: {said}"
+        );
+        assert!(said.contains("WROTE"), "the cwd was not writable: {said}");
     }
 
     #[test]
