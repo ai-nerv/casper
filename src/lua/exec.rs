@@ -80,6 +80,10 @@ const CHUNK: usize = 8 * 1024;
 /// Run one program to completion.
 #[must_use]
 pub fn run(program: &str, args: &[String]) -> Done {
+    // Wrapped in a kernel jail when a coordinator asked for one; unchanged otherwise. This is the
+    // one place a declaration's command becomes a process, so it is the one place to contain it.
+    let (program, args) = crate::jail::wrap(program, args);
+    let (program, args) = (program.as_str(), args.as_slice());
     let mut command = std::process::Command::new(program);
     command
         .args(args)
