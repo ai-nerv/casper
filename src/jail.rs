@@ -30,6 +30,11 @@ pub struct Grants {
     /// Whether any network was granted. bubblewrap's is all-or-nothing; per-host is Landlock's job.
     #[serde(default)]
     pub reach: bool,
+    /// A host directory to mount as `/tmp`, so a project's commands share one tmp rather than each
+    /// getting a fresh empty one. Absent means a private `--tmpfs`, the old behaviour. The
+    /// coordinator makes the directory; casper only binds it.
+    #[serde(default)]
+    pub tmp: Option<PathBuf>,
 }
 
 impl Grants {
@@ -116,7 +121,16 @@ pub fn profile(cwd: &Path, home: &Path, grants: &Grants) -> Vec<String> {
     a.extend(["--ro-bind", "/", "/"].map(str::to_owned));
     a.extend(["--dev", "/dev"].map(str::to_owned));
     a.extend(["--proc", "/proc"].map(str::to_owned));
-    path(&mut a, "--tmpfs", Path::new("/tmp"));
+    // A shared `/tmp` when the coordinator gave one, so a project's commands see each other's temp
+    // files; otherwise a private tmpfs, empty per command as before.
+    match &grants.tmp {
+        Some(shared) if shared.exists() => {
+            a.push("--bind".to_owned());
+            a.push(shared.display().to_string());
+            a.push("/tmp".to_owned());
+        }
+        _ => path(&mut a, "--tmpfs", Path::new("/tmp")),
+    }
     // The working directory always, and each directory a write grant named.
     bind(&mut a, "--bind", cwd);
     for writable in &grants.write {
@@ -290,6 +304,7 @@ mod tests {
         let grants = Grants {
             write: vec![PathBuf::from("/w/other")],
             reach: true,
+            tmp: None,
         };
         let a = profile(Path::new("/w/proj"), Path::new("/home/x"), &grants).join(" ");
         assert!(
@@ -303,6 +318,25 @@ mod tests {
         assert!(
             !a.contains("--unshare-net"),
             "a reach grant leaves the network on: {a}"
+        );
+    }
+
+    #[test]
+    fn a_shared_tmp_is_bound_over_the_private_one() {
+        let dir = Scratch::new("jail", "sharedtmp");
+        let grants = Grants {
+            write: Vec::new(),
+            reach: false,
+            tmp: Some(dir.to_path_buf()),
+        };
+        let a = profile(Path::new("/w/proj"), Path::new("/home/x"), &grants).join(" ");
+        assert!(
+            a.contains(&format!("--bind {} /tmp", dir.display())),
+            "the shared tmp is bound as /tmp: {a}"
+        );
+        assert!(
+            !a.contains("--tmpfs /tmp"),
+            "the private tmpfs is gone: {a}"
         );
     }
 
