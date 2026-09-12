@@ -91,11 +91,15 @@ pub fn run(program: &str, args: &[String]) -> Done {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     // The seccomp half of the jail, on the command bwrap goes on to run — and on the program
-    // itself when there is no bwrap. Off with the jail.
-    crate::jail::confine(&mut command);
-    // Landlock's filesystem, network and signal walls, applied in-process only where there is no
-    // bwrap to build the world — the one containment that stands without a namespace.
-    crate::jail::restrict(&mut command);
+    // itself when there is no bwrap. Built by jail, armed in the one fork/exec window. Off with it.
+    if let Some(filter) = crate::jail::seccomp() {
+        crate::tied::confine(&mut command, filter);
+    }
+    // Landlock's filesystem, network and signal walls, in-process only where there is no bwrap to
+    // build the world — the one containment that stands without a namespace.
+    if let Some(ruleset) = crate::jail::landlock() {
+        crate::tied::restrict(&mut command, ruleset);
+    }
     // Without this the program is reparented to init the moment a magi is killed.
     crate::tied::running(&mut command);
     let mut child = match command.spawn() {

@@ -6,11 +6,12 @@
 //! processes. It is inherited by everything the command starts, so a script that runs a program
 //! that runs a program is as bounded as the first.
 //!
-//! Beside bubblewrap's world, a seccomp filter ([`confine`]) denies the syscalls no command needs
+//! Beside bubblewrap's world, a seccomp filter ([`seccomp`]) denies the syscalls no command needs
 //! and a hostile one wants — reading another process's memory, `io_uring` — and it holds even where
-//! there is no bubblewrap. Where there is none, [`restrict`] adds Landlock's filesystem, network and
-//! signal walls in-process, the one containment that stands without a namespace. Off unless
-//! [`WANTED`] is set, so nothing changes for a session until a coordinator turns it on.
+//! there is no bubblewrap. Where there is none, [`landlock()`] adds Landlock's filesystem, network and
+//! signal walls in-process, the one containment that stands without a namespace. Both are built here
+//! as data and armed in [`crate::tied`], the crate's one fork/exec window. Off unless [`WANTED`] is
+//! set, so nothing changes for a session until a coordinator turns it on.
 
 use std::path::{Path, PathBuf};
 
@@ -132,29 +133,16 @@ fn mandatory_deny(home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Apply the seccomp filter to `command`, when the jail is on, as a `pre_exec` step. Inherited
-/// across `exec`, so it holds for the command bubblewrap goes on to run — and it holds even where
-/// there is no bubblewrap, which is the one wall that stands without namespaces. Off with the jail.
-pub fn confine(command: &mut std::process::Command) {
-    if std::env::var(WANTED)
+/// The seccomp filter for a jailed command, or `None` with the jail off. Built here; armed in
+/// [`crate::tied::confine`] as a `pre_exec` step, inherited across `exec`, so it holds for the
+/// command bubblewrap goes on to run — and even where there is no bubblewrap, the one wall that
+/// stands without namespaces.
+#[must_use]
+pub fn seccomp() -> Option<seccompiler::BpfProgram> {
+    std::env::var(WANTED)
         .ok()
-        .filter(|v| !v.trim().is_empty())
-        .is_none()
-    {
-        return;
-    }
-    let filter = deny(FORBIDDEN);
-    // SAFETY: the closure calls `seccompiler::apply_filter` and nothing else — one `prctl` pair in
-    // the window between fork and exec, the shape `tied.rs` already uses. The filter is built here
-    // and moved in, so nothing is allocated in the child.
-    #[allow(unsafe_code)]
-    unsafe {
-        use std::os::unix::process::CommandExt as _;
-        command.pre_exec(move || {
-            seccompiler::apply_filter(&filter)
-                .map_err(|why| std::io::Error::other(format!("seccomp: {why}")))
-        });
-    }
+        .filter(|v| !v.trim().is_empty())?;
+    Some(deny(FORBIDDEN))
 }
 
 /// The syscalls no jailed command ever needs and that a hostile one would reach for: reading
@@ -188,38 +176,18 @@ fn deny(forbid: &[i64]) -> seccompiler::BpfProgram {
     .unwrap_or_default()
 }
 
-/// Restrict `command` with Landlock when the jail is on but bubblewrap will not build the world —
-/// the one path where the filesystem, network and signal walls must stand without a mount
-/// namespace. A no-op when bwrap is present (it contains the command instead), when the jail is
-/// off, or on a kernel without Landlock.
-pub fn restrict(command: &mut std::process::Command) {
-    let Some(grants) = Grants::read() else {
-        return;
-    };
+/// The Landlock ruleset for a jailed command when bubblewrap will not build the world — the one
+/// path where the filesystem, network and signal walls must stand without a mount namespace. `None`
+/// when bwrap is present (it contains the command instead), when the jail is off, or on a kernel
+/// without Landlock. Built here; armed in [`crate::tied::restrict`].
+#[must_use]
+pub fn landlock() -> Option<landlock::RulesetCreated> {
+    let grants = Grants::read()?;
     if which("bwrap").is_some() {
-        return;
+        return None;
     }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-    let Some(ruleset) = ruleset(&cwd, &grants) else {
-        return;
-    };
-    // SAFETY: like `confine` — the ruleset is built and populated here; the closure only clones its
-    // descriptor and calls `restrict_self`, which is `prctl` and one Landlock syscall, no allocation.
-    #[allow(unsafe_code)]
-    unsafe {
-        use std::os::unix::process::CommandExt as _;
-        command.pre_exec(move || {
-            let status = ruleset
-                .try_clone()
-                .map_err(|why| std::io::Error::other(format!("landlock: {why}")))?
-                .restrict_self()
-                .map_err(|why| std::io::Error::other(format!("landlock: {why}")))?;
-            if status.ruleset == landlock::RulesetStatus::NotEnforced {
-                return Err(std::io::Error::other("landlock: not enforced"));
-            }
-            Ok(())
-        });
-    }
+    ruleset(&cwd, &grants)
 }
 
 /// The system directories a command reads to run at all — never `$HOME`, so the credential stores
@@ -339,20 +307,13 @@ mod tests {
     #[test]
     fn a_denied_syscall_is_refused_by_the_filter() {
         // The mechanism, proven on a syscall a shell reaches easily: a filter denying `mkdir`
-        // makes `mkdir` fail with the errno the filter names, applied the way `confine` applies it.
-        use std::os::unix::process::CommandExt as _;
+        // makes `mkdir` fail with the errno the filter names, armed the way `tied::confine` arms it.
         let filter = deny(&[libc::SYS_mkdir, libc::SYS_mkdirat]);
         let dir = crate::scratch::Scratch::new("jail", "seccomp");
         let target = dir.join("nope");
         let mut command = std::process::Command::new("mkdir");
         command.arg(&target);
-        // SAFETY: as in `confine` — one `apply_filter` between fork and exec.
-        #[allow(unsafe_code)]
-        unsafe {
-            command.pre_exec(move || {
-                seccompiler::apply_filter(&filter).map_err(|_| std::io::Error::other("seccomp"))
-            });
-        }
+        crate::tied::confine(&mut command, filter);
         let status = command.status().expect("mkdir runs");
         assert!(!status.success(), "mkdir was not blocked by the filter");
         assert!(
@@ -363,15 +324,31 @@ mod tests {
 
     #[test]
     fn landlock_alone_denies_a_read_outside_the_set_and_keeps_the_cwd_writable() {
-        // The degraded path: no bwrap, so Landlock is the only wall. A ruleset that reads the system
-        // and writes one directory is built and applied the way `restrict` applies it, then a child
-        // proves a credential-shaped path outside the set is unreadable and the granted dir writable.
-        use std::os::unix::process::CommandExt as _;
+        // The degraded path: no bwrap, so Landlock is the only wall, built and armed the way
+        // `tied::restrict` arms it. The ruleset grants /tmp, so the secret goes under $HOME — the
+        // credential tree Landlock exists to close — proved unreadable while the cwd stays writable.
+        let Some(home) = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|h| !h.as_os_str().is_empty())
+        else {
+            eprintln!("skipping: no HOME to hide a secret under");
+            return;
+        };
+        struct Hidden(PathBuf);
+        impl Drop for Hidden {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let outside = home.join(format!(".casper-lltest-{}", std::process::id()));
+        std::fs::create_dir_all(&outside).expect("mkdir");
+        let _hidden = Hidden(outside.clone());
+        let secret = outside.join("secret");
+        std::fs::write(&secret, "THE-SECRET-KEY").expect("write");
+
         let dir = Scratch::new("jail", "landlock");
         let work = dir.join("work");
-        let secret = dir.join("secret");
         std::fs::create_dir_all(&work).expect("mkdir");
-        std::fs::write(&secret, "THE-SECRET-KEY").expect("write");
         let Some(ruleset) = ruleset(&work, &Grants::default()) else {
             eprintln!("skipping: no Landlock here");
             return;
@@ -383,18 +360,7 @@ mod tests {
         );
         let mut command = std::process::Command::new("sh");
         command.arg("-c").arg(&script);
-        // SAFETY: as in `restrict` — clone the descriptor and `restrict_self`, syscalls only.
-        #[allow(unsafe_code)]
-        unsafe {
-            command.pre_exec(move || {
-                ruleset
-                    .try_clone()
-                    .map_err(|why| std::io::Error::other(format!("landlock: {why}")))?
-                    .restrict_self()
-                    .map_err(|why| std::io::Error::other(format!("landlock: {why}")))?;
-                Ok(())
-            });
-        }
+        crate::tied::restrict(&mut command, ruleset);
         let out = command.output().expect("sh runs");
         let said = String::from_utf8_lossy(&out.stdout);
         assert!(

@@ -152,7 +152,7 @@ impl Screen {
         })
     }
 
-    /// Take what the program has written since the last frame, up to [`AHEAD`] reads of it.
+    /// Take what the program has written since the last frame, up to `AHEAD` reads of it.
     ///
     /// `false` once it is gone — its output is closed and nothing more will be painted. Past the
     /// cap the rest waits for the next frame, so a program still writing cannot hold this here.
