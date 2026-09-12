@@ -231,6 +231,12 @@ do -- shell
   -- (an exported variable does not survive, nor a shell function) and it is the part that
   -- actually gets used.
   local function remembered()
+    -- Under the jail `$XDG_RUNTIME_DIR` is read-only, so the directory is kept in `/tmp` instead,
+    -- which the jail makes a writable, per-project dir that persists across calls. Off the jail,
+    -- `$XDG_RUNTIME_DIR` is per-user and writable.
+    if (os.getenv("CASPER_JAIL") or "") ~= "" then
+      return "/tmp/casper/cwd"
+    end
     local runtime = os.getenv("XDG_RUNTIME_DIR") or "/tmp"
     return runtime .. "/casper/cwd"
   end
@@ -303,8 +309,10 @@ do -- pwd
     parameters = { type = "object" },
 
     run = function()
-      local runtime = os.getenv("XDG_RUNTIME_DIR") or "/tmp"
-      local done = casper.exec("cat", { runtime .. "/casper/cwd" })
+      -- The same file `shell` keeps its directory in, jail or no jail.
+      local kept = ((os.getenv("CASPER_JAIL") or "") ~= "" and "/tmp/casper/cwd")
+        or ((os.getenv("XDG_RUNTIME_DIR") or "/tmp") .. "/casper/cwd")
+      local done = casper.exec("cat", { kept })
       if done.code ~= 0 then
         return { said = "nothing has run yet, so it is wherever the session is rooted" }
       end
