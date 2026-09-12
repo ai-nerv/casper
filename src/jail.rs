@@ -6,12 +6,12 @@
 //! processes. It is inherited by everything the command starts, so a script that runs a program
 //! that runs a program is as bounded as the first.
 //!
-//! Beside bubblewrap's world, a seccomp filter ([`seccomp`]) denies the syscalls no command needs
-//! and a hostile one wants — reading another process's memory, `io_uring` — and it holds even where
-//! there is no bubblewrap. Where there is none, [`landlock()`] adds Landlock's filesystem, network and
-//! signal walls in-process, the one containment that stands without a namespace. Both are built here
-//! as data and armed in [`crate::tied`], the crate's one fork/exec window. Off unless [`WANTED`] is
-//! set, so nothing changes for a session until a coordinator turns it on.
+//! Beside bubblewrap's world, a seccomp filter ([`Jail::seccomp`]) denies the syscalls no command
+//! needs and a hostile one wants — reading another process's memory, `io_uring` — and it holds even
+//! where there is no bubblewrap. Where there is none, [`Jail::landlock`] adds Landlock's filesystem,
+//! network and signal walls in-process, the one containment that stands without a namespace. Both
+//! are built here as data and armed in [`crate::tied`], the crate's one fork/exec window. Off unless
+//! [`WANTED`] is set, so nothing changes for a session until a coordinator turns it on.
 
 use std::path::{Path, PathBuf};
 
@@ -47,34 +47,55 @@ impl Grants {
     }
 }
 
-/// The command as it should actually be started: `bwrap` and its arguments wrapping the program,
-/// or the program unchanged when the jail is off or unavailable.
-#[must_use]
-pub fn wrap(program: &str, args: &[String]) -> (String, Vec<String>) {
-    let Some(grants) = Grants::read() else {
-        return (program.to_owned(), args.to_vec());
-    };
-    let Some(bwrap) = which("bwrap") else {
-        crate::noted!("jail: bwrap is not installed; {program} runs unsandboxed");
-        return (program.to_owned(), args.to_vec());
-    };
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    let mut argv = profile(&cwd, &home, &grants);
-    // Cleared, then the few a command needs — never this process's own credentials, which is what
-    // masking the stores on disk would miss.
-    argv.push("--clearenv".to_owned());
-    for keep in ["PATH", "HOME", "TERM", "LANG", "LC_ALL", "USER"] {
-        if let Some(value) = std::env::var_os(keep).and_then(|v| v.into_string().ok()) {
-            argv.extend(["--setenv".to_owned(), keep.to_owned(), value]);
+/// The jail one command runs inside: whether it is on, and the paths it is built around. Read from
+/// this process's environment for the command door ([`Jail::from_env`]); a socket door reads the
+/// same from the connecting peer instead, so the walls are the coordinator's either way and never
+/// the call's.
+pub struct Jail {
+    grants: Option<Grants>,
+    cwd: PathBuf,
+    home: PathBuf,
+}
+
+impl Jail {
+    /// The jail this process was spawned with — the command door: profile off [`WANTED`], the cwd
+    /// it inherited, the home it carries.
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self {
+            grants: Grants::read(),
+            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+            home: std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default(),
         }
     }
-    argv.push("--".to_owned());
-    argv.push(program.to_owned());
-    argv.extend(args.iter().cloned());
-    (bwrap, argv)
+
+    /// The command as it should actually be started: `bwrap` and its arguments wrapping the
+    /// program, or the program unchanged when the jail is off or unavailable.
+    #[must_use]
+    pub fn wrap(&self, program: &str, args: &[String]) -> (String, Vec<String>) {
+        let Some(grants) = self.grants.as_ref() else {
+            return (program.to_owned(), args.to_vec());
+        };
+        let Some(bwrap) = which("bwrap") else {
+            crate::noted!("jail: bwrap is not installed; {program} runs unsandboxed");
+            return (program.to_owned(), args.to_vec());
+        };
+        let mut argv = profile(&self.cwd, &self.home, grants);
+        // Cleared, then the few a command needs — never this process's own credentials, which is
+        // what masking the stores on disk would miss.
+        argv.push("--clearenv".to_owned());
+        for keep in ["PATH", "HOME", "TERM", "LANG", "LC_ALL", "USER"] {
+            if let Some(value) = std::env::var_os(keep).and_then(|v| v.into_string().ok()) {
+                argv.extend(["--setenv".to_owned(), keep.to_owned(), value]);
+            }
+        }
+        argv.push("--".to_owned());
+        argv.push(program.to_owned());
+        argv.extend(args.iter().cloned());
+        (bwrap, argv)
+    }
 }
 
 /// The bubblewrap arguments: the conservative floor, widened by whatever the session's [`Grants`]
@@ -133,16 +154,16 @@ fn mandatory_deny(home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The seccomp filter for a jailed command, or `None` with the jail off. Built here; armed in
-/// [`crate::tied::confine`] as a `pre_exec` step, inherited across `exec`, so it holds for the
-/// command bubblewrap goes on to run — and even where there is no bubblewrap, the one wall that
-/// stands without namespaces.
-#[must_use]
-pub fn seccomp() -> Option<seccompiler::BpfProgram> {
-    std::env::var(WANTED)
-        .ok()
-        .filter(|v| !v.trim().is_empty())?;
-    Some(deny(FORBIDDEN))
+impl Jail {
+    /// The seccomp filter for a jailed command, or `None` with the jail off. Built here; armed in
+    /// [`crate::tied::confine`] as a `pre_exec` step, inherited across `exec`, so it holds for the
+    /// command bubblewrap goes on to run — and even where there is no bubblewrap, the one wall that
+    /// stands without namespaces.
+    #[must_use]
+    pub fn seccomp(&self) -> Option<seccompiler::BpfProgram> {
+        self.grants.as_ref()?;
+        Some(deny(FORBIDDEN))
+    }
 }
 
 /// The syscalls no jailed command ever needs and that a hostile one would reach for: reading
@@ -176,18 +197,19 @@ fn deny(forbid: &[i64]) -> seccompiler::BpfProgram {
     .unwrap_or_default()
 }
 
-/// The Landlock ruleset for a jailed command when bubblewrap will not build the world — the one
-/// path where the filesystem, network and signal walls must stand without a mount namespace. `None`
-/// when bwrap is present (it contains the command instead), when the jail is off, or on a kernel
-/// without Landlock. Built here; armed in [`crate::tied::restrict`].
-#[must_use]
-pub fn landlock() -> Option<landlock::RulesetCreated> {
-    let grants = Grants::read()?;
-    if which("bwrap").is_some() {
-        return None;
+impl Jail {
+    /// The Landlock ruleset for a jailed command when bubblewrap will not build the world — the one
+    /// path where the filesystem, network and signal walls must stand without a mount namespace.
+    /// `None` when bwrap is present (it contains the command instead), when the jail is off, or on a
+    /// kernel without Landlock. Built here; armed in [`crate::tied::restrict`].
+    #[must_use]
+    pub fn landlock(&self) -> Option<landlock::RulesetCreated> {
+        let grants = self.grants.as_ref()?;
+        if which("bwrap").is_some() {
+            return None;
+        }
+        ruleset(&self.cwd, grants)
     }
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-    ruleset(&cwd, &grants)
 }
 
 /// The system directories a command reads to run at all — never `$HOME`, so the credential stores
@@ -293,7 +315,7 @@ mod tests {
             None,
             "the suite must not set {WANTED}"
         );
-        let (program, args) = wrap("sh", &["-c".to_owned(), "echo hi".to_owned()]);
+        let (program, args) = Jail::from_env().wrap("sh", &["-c".to_owned(), "echo hi".to_owned()]);
         assert_eq!(program, "sh");
         assert_eq!(args, ["-c", "echo hi"]);
     }

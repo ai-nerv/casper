@@ -82,7 +82,8 @@ const CHUNK: usize = 8 * 1024;
 pub fn run(program: &str, args: &[String]) -> Done {
     // Wrapped in a kernel jail when a coordinator asked for one; unchanged otherwise. This is the
     // one place a declaration's command becomes a process, so it is the one place to contain it.
-    let (program, args) = crate::jail::wrap(program, args);
+    let jail = crate::jail::Jail::from_env();
+    let (program, args) = jail.wrap(program, args);
     let (program, args) = (program.as_str(), args.as_slice());
     let mut command = std::process::Command::new(program);
     command
@@ -92,12 +93,12 @@ pub fn run(program: &str, args: &[String]) -> Done {
         .stderr(std::process::Stdio::piped());
     // The seccomp half of the jail, on the command bwrap goes on to run — and on the program
     // itself when there is no bwrap. Built by jail, armed in the one fork/exec window. Off with it.
-    if let Some(filter) = crate::jail::seccomp() {
+    if let Some(filter) = jail.seccomp() {
         crate::tied::confine(&mut command, filter);
     }
     // Landlock's filesystem, network and signal walls, in-process only where there is no bwrap to
     // build the world — the one containment that stands without a namespace.
-    if let Some(ruleset) = crate::jail::landlock() {
+    if let Some(ruleset) = jail.landlock() {
         crate::tied::restrict(&mut command, ruleset);
     }
     // Without this the program is reparented to init the moment a magi is killed.
