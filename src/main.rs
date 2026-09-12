@@ -6,16 +6,16 @@
 //! casper verbs          what it answers, and on which door
 //! ```
 //!
-//! casper binds no socket, and that is the design: a socket that runs commands is a remote shell,
-//! and running commands is casper's whole job. The spawn link carries the trust instead — a parent
-//! that can spawn casper could have run the command itself. See [`casper::wire`].
+//! casper answers on two doors: the command line, and a socket a coordinator binds with `serve`
+//! and holds open across a session. The socket is not a remote shell — what `run` runs, it runs
+//! inside the jail `serve` was spawned with, never one a call named. See [`casper::serving`].
 //!
 //! Every verb prints the wire shape, and a refusal is `{"ok":false,…}` with a zero exit. JSON by
 //! default, CBOR with `--cbor`: one shape, two encodings.
 
 use casper::lua::engine::Engine;
 use casper::tools::{Call, Ran};
-use casper::wire::{Reply, VERBS};
+use casper::wire::{CLI_VERBS, Reply, SOCKET_VERBS};
 
 /// Ask the kernel to end this process when whoever started it ends.
 ///
@@ -53,6 +53,7 @@ fn main() -> std::process::ExitCode {
         }
         "tools" => say(how, &tools()),
         "run" => say(how, &ran()),
+        "serve" => serve(how, &args),
         "needs" => say(how, &listing(needs())),
         // A package under `site/pack/` runs once you have said it may, and stops the moment it
         // changes. Your own files run on sight.
@@ -61,8 +62,8 @@ fn main() -> std::process::ExitCode {
         "client" | "lua-api" => say(
             how,
             &Reply::refused(
-                "casper has no client library: its surface is reached by spawning it with a call \
-                 on stdin, not from a Lua VM"
+                "casper has no Lua client library: its surface is reached by spawning it with a \
+                 call on stdin, or over its socket with the family's length-prefixed framing"
                     .to_owned(),
             ),
         ),
@@ -198,16 +199,16 @@ fn configure() -> Reply {
     }
 }
 
-/// Every verb, as name, description and the door it is on.
+/// Every verb, as name, description and the door it is on. A verb on both doors is one row per
+/// door, the way the family lists it.
 fn described() -> serde_json::Value {
-    serde_json::Value::Array(
-        VERBS
-            .iter()
-            .map(|(name, about)| {
-                serde_json::json!({"verb": name, "about": about, "door": casper::wire::DOOR})
-            })
-            .collect(),
-    )
+    let cli = CLI_VERBS
+        .iter()
+        .map(|(name, about)| serde_json::json!({"verb": name, "about": about, "door": "cli"}));
+    let socket = SOCKET_VERBS
+        .iter()
+        .map(|(name, about)| serde_json::json!({"verb": name, "about": about, "door": "socket"}));
+    serde_json::Value::Array(cli.chain(socket).collect())
 }
 
 /// Every tool, as a card.
@@ -233,10 +234,16 @@ fn ran() -> Reply {
     if let Err(why) = std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut source) {
         return Reply::refused(format!("nothing to read: {why}"));
     }
-    let call: Call = match serde_json::from_str(&source) {
-        Ok(call) => call,
-        Err(why) => return Reply::refused(format!("that is not a call: {why}")),
-    };
+    match serde_json::from_str::<Call>(&source) {
+        Ok(call) => run_call(&call),
+        Err(why) => Reply::refused(format!("that is not a call: {why}")),
+    }
+}
+
+/// Run one tool call, wherever it arrived from — stdin on the command line, or a frame on the
+/// socket. The jail it runs in is this process's, so a socket call runs inside the walls `serve`
+/// was spawned with, never ones the call named.
+fn run_call(call: &Call) -> Reply {
     let mut engine = match loaded() {
         Ok(engine) => engine,
         Err(why) => return Reply::refused(why),
@@ -246,12 +253,81 @@ fn ran() -> Reply {
     if casper::setup::is_off(&call.tool) {
         return Reply::refused(format!("no such tool: {}", call.tool));
     }
-    let Some(mut ran) = engine.call(&call.tool, &given(&call)) else {
+    let Some(mut ran) = engine.call(&call.tool, &given(call)) else {
         return Reply::refused(format!("no such tool: {}", call.tool));
     };
     // What the model reads is capped; what the person is shown is not.
     ran.said = casper::setup::bounded(ran.said);
     answer(&ran)
+}
+
+/// Bind a session's socket and answer `tools` and `run` on it until it closes. The jail every call
+/// runs in is this process's own — the one a coordinator gave `serve` at spawn — so the socket runs
+/// only what that jail allows, which is why it is a tool surface and not a remote shell.
+fn serve(how: As, args: &[String]) -> bool {
+    let Some(at) = flag(args, "--at") else {
+        return say(
+            how,
+            &Reply::refused("serve needs --at <path>, under the runtime directory".to_owned()),
+        );
+    };
+    let path = std::path::PathBuf::from(&at);
+    let listener = match casper::serving::listening_on(&path) {
+        Ok(listener) => listener,
+        Err(why) => {
+            return say(
+                how,
+                &Reply::refused(format!("serve could not bind {at}: {why}")),
+            );
+        }
+    };
+    // Ready before it is used: the coordinator connects once it has read this off stdout.
+    listening(&at);
+    if let Err(why) = casper::serving::accept(&listener, answer_socket) {
+        casper::noted!("serve: {why}");
+    }
+    true
+}
+
+/// One socket call: the tool surface, and a refusal for anything else. `run`'s tool call rides in
+/// the first argument, the way the family wraps a verb's payload.
+fn answer_socket(call: &casper::wire::Call) -> Reply {
+    match call.call.as_str() {
+        "tools" => tools(),
+        "run" => match call.args.first() {
+            Some(value) => match serde_json::from_value::<Call>(value.clone()) {
+                Ok(one) => run_call(&one),
+                Err(why) => Reply::refused(format!("that is not a call: {why}")),
+            },
+            None => Reply::refused("run takes one call as its argument".to_owned()),
+        },
+        other => Reply::refused(format!("no such call on the socket: {other}")),
+    }
+}
+
+/// Tell the coordinator, on stdout, that the socket is bound and ready to be connected to.
+fn listening(at: &str) {
+    use std::io::Write;
+    let line = format!(
+        "{{\"event\":\"listening\",\"at\":{}}}\n",
+        serde_json::Value::from(at)
+    );
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(line.as_bytes()).and_then(|()| out.flush());
+}
+
+/// One flag's value, as `--name value` or `--name=value`.
+fn flag(args: &[String], name: &str) -> Option<String> {
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        if arg == name {
+            return rest.next().cloned();
+        }
+        if let Some(value) = arg.strip_prefix(&format!("{name}=")) {
+            return Some(value.to_owned());
+        }
+    }
+    None
 }
 
 /// What the declaration is handed: the model's arguments, and what the person answered.
@@ -341,12 +417,13 @@ fn usage() -> bool {
          \n\
          \x20 casper tools        every tool it offers, with schemas\n\
          \x20 casper run          one call on stdin, one result on stdout\n\
+         \x20 casper serve        bind a session's socket and answer on it\n\
          \x20 casper verbs        what it answers, and on which door\n\
          \n\
          \x20 --json | --cbor   which encoding a reply comes back in\n\
          \n\
-         Every verb prints the family's reply shape. casper binds no socket:\n\
-         it is spawned per call. See DESIGN.md.\n"
+         Every verb prints the family's reply shape. casper answers on the\n\
+         command line and on a socket it binds with serve. See DESIGN.md.\n"
         )
         .as_bytes(),
     )
@@ -413,19 +490,37 @@ mod tests {
         assert!(reply.result[0].is_object(), "a row is not a list");
     }
 
-    /// A door casper cannot open must not be advertised, and no verb twice on the one it can.
+    /// Every verb is on a door casper can open, and no verb twice on one door. A verb may be on
+    /// both — `tools` and `run` are.
     #[test]
-    fn every_verb_is_advertised_once_on_a_door_casper_opens() {
+    fn every_verb_is_advertised_on_a_door_casper_opens() {
         let rows = listing(described()).result;
-        let mut seen: Vec<String> = Vec::new();
+        let mut seen: Vec<(String, String)> = Vec::new();
         for row in &rows {
-            let door = row["door"].as_str().unwrap_or_default();
-            assert_eq!(door, "cli", "casper binds no socket: {row}");
+            let door = row["door"].as_str().unwrap_or_default().to_owned();
+            assert!(
+                door == "cli" || door == "socket",
+                "casper opens only these doors: {row}"
+            );
             let verb = row["verb"].as_str().unwrap_or_default().to_owned();
-            assert!(!seen.contains(&verb), "`{verb}` is advertised twice");
-            seen.push(verb);
+            let pair = (verb, door);
+            assert!(
+                !seen.contains(&pair),
+                "`{pair:?}` is advertised twice on its door"
+            );
+            seen.push(pair);
         }
-        assert!(seen.iter().any(|verb| verb == "tools"), "{rows:?}");
+        // A socket door with no `serve` on the command line is one nothing can open.
+        assert!(
+            rows.iter()
+                .any(|row| row["door"] == "socket" && row["verb"] == "run"),
+            "the socket carries the tool surface: {rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row["door"] == "cli" && row["verb"] == "serve"),
+            "a socket door needs serve to open it: {rows:?}"
+        );
     }
 
     #[test]

@@ -33,7 +33,7 @@ thiserror = "2.0"
 # The kernel's half of "casper belongs to the magi that started it": `PR_SET_PDEATHSIG`, and
 # nothing else from it. Already in the lockfile underneath pty-process, so this is a feature
 # and not a package.
-rustix = { version = "1", features = ["process"] }
+rustix = { version = "1", features = ["process", "net"] }
 seccompiler = "0.5"
 libc = "0.2.189"
 landlock = "0.4.4"

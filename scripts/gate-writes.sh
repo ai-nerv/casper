@@ -24,9 +24,12 @@
 #   src/noted.rs          `$CASPER_DEBUG_LOG`, appended to only when somebody set the variable.
 #   src/scratch.rs        the test helper. In the library rather than a testkit because casper is
 #                         one crate; it creates and removes its own directory and nothing else.
+#   src/serving.rs        the socket door. Binding a session's socket creates its directory under
+#                         the runtime and clears a dead daemon's leftover socket file — the only
+#                         filesystem the casper process touches beyond the manifest and the log.
 #
-# And removal is narrower than writing: only the scratch helper may unlink, so a delete added to
-# one of the other two is a finding even though that file may write.
+# And removal is narrower than writing: only the scratch helper and the socket door may unlink, so
+# a delete added elsewhere is a finding even in a file that may write.
 #
 # POSIX for the same reason the others are: /bin/sh on the runner is dash.
 set -eu
@@ -34,10 +37,10 @@ ROOT="${GATE_ROOT:-src}"
 
 # May write. Adding to this list is a deliberate act; the point is that it cannot happen by
 # accident.
-WRITERS='src/acknowledged.rs src/noted.rs src/scratch.rs'
+WRITERS='src/acknowledged.rs src/noted.rs src/scratch.rs src/serving.rs'
 
-# May remove. One file, and it is the one that owns what it removes.
-REMOVERS='src/scratch.rs'
+# May remove. The scratch helper owns what it removes; the socket door clears a dead daemon's file.
+REMOVERS='src/scratch.rs src/serving.rs'
 
 # What counts as reaching for the filesystem to change it. `File::create` and `OpenOptions` are
 # here because both truncate or create without the word `write` appearing anywhere.

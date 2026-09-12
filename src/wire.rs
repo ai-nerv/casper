@@ -8,9 +8,9 @@
 //! Newline-delimited JSON on a pipe, one object on stdout for argv. `result` is always a list and
 //! `n` its length; a sibling that unpacks a list reads a bare value as nothing at all. A refusal
 //! is a reply, not a dropped connection. An event's tag key is `event` in both directions, and
-//! `scripts/gate-wire.sh` refuses any other. casper binds no socket, so [`VERBS`] is one list on
-//! one door: `run` arrives over the spawn link, where the parent could have run the command
-//! itself.
+//! `scripts/gate-wire.sh` refuses any other. Two doors: [`CLI_VERBS`] on the command line, and
+//! [`SOCKET_VERBS`] on a bound socket. `run` is on both — over the socket it is no remote shell,
+//! because the jail is the coordinator's, set on `serve`'s spawn, never the call's.
 
 use serde::{Deserialize, Serialize};
 
@@ -119,9 +119,8 @@ impl Reply {
     }
 }
 
-/// Every verb casper answers. One list because there is one door: casper binds no socket, so a
-/// second list would name a door nothing can open.
-pub const VERBS: &[(&str, &str)] = &[
+/// Every verb casper answers on its command line, and what each does.
+pub const CLI_VERBS: &[(&str, &str)] = &[
     ("verbs", "what this program answers, and on which door"),
     (
         "tools",
@@ -142,14 +141,29 @@ pub const VERBS: &[(&str, &str)] = &[
         "acknowledge",
         "clear the installed packages, so their declarations may run",
     ),
+    (
+        "serve",
+        "bind a session's socket and answer tools and run on it",
+    ),
 ];
 
-/// The door every verb above is on.
-pub const DOOR: &str = "cli";
+/// Every verb casper answers on its socket: the tool surface, kept open across a session's calls.
+/// `run` is no remote shell here — the jail is `serve`'s spawn, not the call's. See [`crate::serving`].
+pub const SOCKET_VERBS: &[(&str, &str)] = &[
+    (
+        "tools",
+        "every tool it offers, with schemas and what each needs",
+    ),
+    (
+        "run",
+        "run one; the call arrives as a framed JSON or CBOR body",
+    ),
+];
 
+/// Whether `verb` is answered on the command line.
 #[must_use]
 pub fn known(verb: &str) -> bool {
-    VERBS.iter().any(|(name, _)| *name == verb)
+    CLI_VERBS.iter().any(|(name, _)| *name == verb)
 }
 #[cfg(test)]
 mod tests {
@@ -180,10 +194,13 @@ mod tests {
     }
 
     #[test]
-    fn no_verb_is_listed_twice() {
-        for (verb, _) in VERBS {
-            let listed = VERBS.iter().filter(|(name, _)| name == verb).count();
-            assert_eq!(listed, 1, "`{verb}` is advertised {listed} times on {DOOR}");
+    fn no_verb_is_listed_twice_on_one_door() {
+        // A verb may be on both doors — `tools` and `run` are — but never twice on the same one.
+        for (door, table) in [("cli", CLI_VERBS), ("socket", SOCKET_VERBS)] {
+            for (verb, _) in table {
+                let listed = table.iter().filter(|(name, _)| name == verb).count();
+                assert_eq!(listed, 1, "`{verb}` is advertised {listed} times on {door}");
+            }
         }
     }
 
@@ -204,12 +221,18 @@ mod tests {
     }
 
     #[test]
-    fn no_verb_here_opens_a_door_casper_does_not_have() {
+    fn every_socket_verb_has_serve_on_the_command_line_to_open_it() {
+        // A socket verb no one can reach is worse than none: a program advertising a `socket` door
+        // must answer `serve` on the command line to open it (FAMILY.md, and gate-family probes it).
         assert!(
-            !known("serve"),
-            "`serve` is how this family opens a socket, and `{DOOR}` is stamped on every verb \
-             without asking which door it is on — so a socket added here would be advertised as \
-             the command line, and the checks that hold casper to one door would all stay green"
+            known("serve"),
+            "casper advertises socket verbs, so it must answer `serve` to bind one"
+        );
+        // The socket is not a remote shell: `run` on it is safe because the jail is the coordinator's,
+        // set on `serve`'s spawn, never the call's. This is the invariant `serving` rests on.
+        assert!(
+            SOCKET_VERBS.iter().any(|(name, _)| *name == "run"),
+            "the tool surface is what the socket is for"
         );
     }
 
