@@ -27,7 +27,7 @@ fn layered(name: &str) -> Engine {
 
 #[test]
 fn an_example_adds_tools_without_taking_the_shipped_ones_with_it() {
-    // The registry replaces by name, so a file declaring `cat` would replace the shipped one.
+    // The registry replaces by name, so a file declaring `read` would replace the shipped one.
     let engine = layered("jq.lua");
     let cards = engine.tools();
     let named: Vec<&str> = cards.iter().map(|card| card.name.as_str()).collect();
@@ -35,7 +35,7 @@ fn an_example_adds_tools_without_taking_the_shipped_ones_with_it() {
     assert!(named.contains(&"jq"), "{named:?}");
     assert!(named.contains(&"json-keys"), "{named:?}");
     assert!(
-        named.contains(&"cat"),
+        named.contains(&"read"),
         "and the shipped tools are untouched, which is the whole point: {named:?}"
     );
 }

@@ -15,6 +15,9 @@ pub struct Card {
     /// `reach`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub needs: Option<String>,
+    /// Kept out of the model's list until a `tools` lookup unlocks it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deferred: bool,
 }
 
 /// One call, as it arrives.
@@ -41,6 +44,9 @@ pub struct Ran {
     pub failed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shown: Option<Shown>,
+    /// Deferred tools this call made available, for the harness to add to the model's list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unlocks: Vec<String>,
 }
 
 impl Ran {
@@ -181,6 +187,7 @@ mod tests {
             description: "Run a command.".to_owned(),
             parameters: serde_json::json!({"type": "object"}),
             needs: Some("run".to_owned()),
+            deferred: false,
         };
         let wire = serde_json::to_string(&card).expect("encodes");
         assert!(!wire.contains("allow") && !wire.contains("grant"), "{wire}");

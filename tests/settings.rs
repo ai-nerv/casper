@@ -79,13 +79,13 @@ fn off_means_gone_rather_than_unlisted() {
 
 #[test]
 fn hidden_takes_a_tool_out_of_the_listing_and_leaves_it_runnable() {
-    let listed = with(r#"{"tools":{"pwd":{"hidden":true}}}"#, &["tools"], None);
-    assert!(!listed.contains(r#""name":"pwd""#), "{listed}");
+    let listed = with(r#"{"tools":{"tools":{"hidden":true}}}"#, &["tools"], None);
+    assert!(!listed.contains(r#""name":"tools""#), "{listed}");
 
     let ran = with(
-        r#"{"tools":{"pwd":{"hidden":true}}}"#,
+        r#"{"tools":{"tools":{"hidden":true}}}"#,
         &["run"],
-        Some(r#"{"tool":"pwd","args":{}}"#),
+        Some(r#"{"tool":"tools","args":{}}"#),
     );
     assert!(ran.contains(r#""ok":true"#), "still runs: {ran}");
 }
@@ -95,7 +95,7 @@ fn output_bytes_caps_what_the_model_reads() {
     let ran = with(
         r#"{"output_bytes":200}"#,
         &["run"],
-        Some(r#"{"tool":"cat","args":{"path":"config/tools.lua"}}"#),
+        Some(r#"{"tool":"read","args":{"path":"config/tools.lua"}}"#),
     );
     let reply: serde_json::Value = serde_json::from_str(&ran).unwrap_or_else(|_| panic!("{ran}"));
     let said = reply["result"][0]["said"].as_str().expect("said");

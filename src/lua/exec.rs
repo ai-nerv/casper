@@ -6,6 +6,9 @@
 //! local done = casper.exec("bat", { "--color=always", path })
 //! if done.code ~= 0 then return { said = done.err, failed = true } end
 //! return { said = done.out }
+//!
+//! -- A third argument is fed to the program's standard input.
+//! casper.exec("sh", { "-c", 'cat > "$1"', "sh", path }, contents)
 //! ```
 //!
 //! Reachable only from a declaration, which runs only on the spawn link and never on a socket.
@@ -21,7 +24,11 @@ pub const MOST: usize = 256 * 1024;
 #[must_use]
 pub fn table(ctx: luna::Context<'_>) -> Callback<'_> {
     Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
-        let (program, args): (Value, Value) = stack.consume(ctx)?;
+        let (program, args, input): (Value, Value, Value) = stack.consume(ctx)?;
+        let input = match input {
+            Value::String(fed) => Some(fed.as_bytes().to_vec()),
+            _ => None,
+        };
         let Value::String(program) = program else {
             return Err(raise(
                 ctx,
@@ -43,7 +50,7 @@ pub fn table(ctx: luna::Context<'_>) -> Callback<'_> {
             }
         }
 
-        let done = run(&program, &argv);
+        let done = fed(&program, &argv, input);
         let out = Table::new(&ctx);
         out.set(
             ctx,
@@ -80,15 +87,27 @@ const CHUNK: usize = 8 * 1024;
 /// Run one program to completion.
 #[must_use]
 pub fn run(program: &str, args: &[String]) -> Done {
+    fed(program, args, None)
+}
+
+/// Run one program to completion with `input` on its standard input: how a declaration writes a
+/// file, through a program inside the jail rather than by a hand that stands outside it.
+#[must_use]
+pub fn fed(program: &str, args: &[String], input: Option<Vec<u8>>) -> Done {
     // Wrapped in a kernel jail when a coordinator asked for one; unchanged otherwise. This is the
     // one place a declaration's command becomes a process, so it is the one place to contain it.
     let jail = crate::jail::Jail::from_env();
     let (program, args) = jail.wrap(program, args);
     let (program, args) = (program.as_str(), args.as_slice());
     let mut command = std::process::Command::new(program);
+    let stdin = if input.is_some() {
+        std::process::Stdio::piped()
+    } else {
+        std::process::Stdio::null()
+    };
     command
         .args(args)
-        .stdin(std::process::Stdio::null())
+        .stdin(stdin)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     // The seccomp half of the jail, on the command bwrap goes on to run — and on the program
@@ -117,11 +136,21 @@ pub fn run(program: &str, args: &[String]) -> Done {
     // Both pipes are read as they fill and only [`MOST`] bytes are held: collecting each stream
     // whole first would let the program pick how much memory casper takes, and reading neither
     // would block it on a full pipe.
+    // Fed from its own thread, so a program writing while it reads cannot wedge on a full pipe.
+    let feeding = input.zip(child.stdin.take()).map(|(bytes, mut pipe)| {
+        std::thread::spawn(move || {
+            use std::io::Write as _;
+            let _ = pipe.write_all(&bytes);
+        })
+    });
     let piped = child.stdout.take();
     let reading = std::thread::spawn(move || kept(piped));
     let err = kept(child.stderr.take());
     let code = child.wait().ok().and_then(|it| it.code());
     let out = reading.join().unwrap_or_default();
+    if let Some(feeding) = feeding {
+        let _ = feeding.join();
+    }
     Done {
         out: said(&out.0, out.1),
         err: said(&err.0, err.1),
@@ -188,6 +217,14 @@ mod tests {
         let done = run("sh", &["-c".to_owned(), "echo oops >&2; exit 3".to_owned()]);
         assert_eq!(done.code, 3);
         assert_eq!(done.err.trim(), "oops");
+    }
+
+    #[test]
+    fn input_is_fed_to_the_program_and_closed() {
+        // `cat` ends only when its input does, so this also proves the pipe is closed.
+        let done = fed("cat", &[], Some(b"fed through\n".to_vec()));
+        assert_eq!(done.out, "fed through\n");
+        assert_eq!(done.code, 0);
     }
 
     #[test]

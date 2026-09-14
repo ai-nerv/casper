@@ -92,8 +92,4 @@ fn the_directory_a_command_ended_in_is_where_the_next_one_starts() {
         alone.shell("pwd")["said"],
         serde_json::json!("/usr/share\n")
     );
-    assert_eq!(
-        alone.asking(r#"{"tool":"pwd","args":{}}"#)["result"][0]["said"],
-        serde_json::json!("/usr/share")
-    );
 }

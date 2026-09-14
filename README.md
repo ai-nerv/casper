@@ -28,11 +28,16 @@ casper surface <tool>        # hold rows on the harness's screen and draw into t
 
 | | |
 |---|---|
-| `cat` `ls` `find` `grep` `patch` | read the tree |
-| `shell` `pwd` | run a command, and remember where it ran |
+| `read` `write` `edit` | read a file, write one, change one — a highlighted file or a coloured diff on screen |
+| `shell` | run a command, and remember where it ran |
+| `tools` | the manual for everything below: a tree the model walks, and a page unlocks its tool |
 | `screen` | an interactive program — a pager, an editor, `htop`, `git add -p` — in rows on the screen |
 | `hexe` `oslo` `session` | ask the multiplexer, the shell, or the harness about themselves |
 | `dino` `birdy` | two games, because a surface that can draw a game can draw anything |
+
+The first four are always in front of the model. The rest are *deferred*: listed in the manual,
+and sent to the model only once a `tools` lookup reaches them, because every card sent costs tokens
+on every request.
 
 Every one of them is declared in `config/tools.lua`, in Lua, and nothing about them is compiled
 in. A tool of your own goes in the same file.

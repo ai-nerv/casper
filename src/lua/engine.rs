@@ -411,6 +411,7 @@ fn card<'gc>(ctx: luna::Context<'gc>, name: &str, spec: Table<'gc>) -> Option<Ca
             .filter(|value| !value.is_null())
             .unwrap_or_else(|| serde_json::json!({"type": "object"})),
         needs: text("needs"),
+        deferred: matches!(spec.get_value(ctx, "deferred"), Value::Boolean(true)),
     })
 }
 
