@@ -29,21 +29,35 @@ fn key(engine: &mut Engine, name: &str, state: &str) -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
-/// Which row a permission prompt is pointing at, by its label.
-fn pointing(drew: &serde_json::Value) -> String {
+/// Every row of a frame, each joined into one string.
+fn rows_of(drew: &serde_json::Value) -> Vec<String> {
     drew["lines"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|row| {
-            let text: String = row
-                .as_array()?
-                .iter()
-                .filter_map(|span| span["text"].as_str())
-                .collect();
-            text.trim_start().strip_prefix("> ").map(str::to_owned)
+            Some(
+                row.as_array()?
+                    .iter()
+                    .filter_map(|span| span["text"].as_str())
+                    .collect(),
+            )
         })
-        .next()
+        .collect()
+}
+
+/// Which row a permission prompt is pointing at, by its label: past the marker and the number.
+fn pointing(drew: &serde_json::Value) -> String {
+    rows_of(drew)
+        .iter()
+        .find_map(|text| {
+            let rest = text.trim_start().strip_prefix("❯ ")?;
+            Some(
+                rest.trim_start_matches(|c: char| c.is_ascii_digit())
+                    .trim()
+                    .to_owned(),
+            )
+        })
         .unwrap_or_default()
 }
 
@@ -105,6 +119,62 @@ fn escape_denies_rather_than_choosing_whatever_is_under_the_cursor() {
     let mut engine = opened("permission", &a_question(), 9, 60);
     key(&mut engine, "down", "down");
     assert_eq!(key(&mut engine, "esc", "down")["answered"], "no");
+}
+
+#[test]
+fn a_number_takes_that_row_outright() {
+    let mut engine = opened("permission", &a_question(), 9, 60);
+    assert_eq!(key(&mut engine, "3", "down")["answered"], "2");
+    let mut engine = opened("permission", &a_question(), 9, 60);
+    assert_eq!(key(&mut engine, "4", "down")["answered"], "no");
+}
+
+#[test]
+fn what_the_chosen_row_means_is_said_on_a_line_of_its_own() {
+    // It used to ride the end of the row it described, so a label and its meaning ran together.
+    let mut question = a_question();
+    question["offers"][1]["about"] = "for the rest of this session".into();
+    let mut engine = opened("permission", &question, 12, 60);
+    let drew = key(&mut engine, "down", "down");
+    let rows = rows_of(&drew);
+    let row = rows
+        .iter()
+        .find(|row| row.contains("Anything under /etc"))
+        .expect("the row");
+    assert!(!row.contains("for the rest"), "not on the row: {row:?}");
+    assert!(
+        rows.iter().any(|row| row
+            .trim_start()
+            .starts_with("↳ for the rest of this session")),
+        "{rows:#?}"
+    );
+}
+
+#[test]
+fn the_row_under_the_cursor_is_a_band_to_the_edge() {
+    let mut engine = opened("permission", &a_question(), 12, 60);
+    let drew = key(&mut engine, "down", "down");
+    let row = drew["lines"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|row| {
+            row.as_array()
+                .is_some_and(|spans| spans.iter().any(|s| s["text"] == "❯ "))
+                || row.to_string().contains("  ❯ ")
+        })
+        .expect("a lit row");
+    let spans = row.as_array().expect("spans");
+    assert!(
+        spans.iter().all(|span| !span["bg"].is_null()),
+        "every span wears the band: {row}"
+    );
+    let width: usize = spans
+        .iter()
+        .filter_map(|span| span["text"].as_str())
+        .map(|text| text.chars().count())
+        .sum();
+    assert_eq!(width, 58, "it reaches the edge: {row}");
 }
 
 /// The games read the same keyboard two ways, and both readings have to keep working.

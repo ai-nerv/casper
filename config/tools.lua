@@ -662,15 +662,21 @@ do -- permission
       -- The question, and nothing that can be chosen. Split out because the pointer has to know
       -- how many rows stand between the top and the first offer, and counting them in two places
       -- is how a click lands one row off the thing it was aimed at.
+      local width = math.max(20, (size.cols or 80) - 2)
+      -- What each verb looks like, so the kind of thing being asked reads before the words do.
+      local ICON = { run = "❯_", write = "✎ ", read = "◉ ", reach = "⇄ " }
+
       local function head()
-        local width = math.max(20, (size.cols or 80) - 4)
         local rows = {
-          { { role = "warn", text = "  " .. (args.tool or "a tool") },
+          { { role = "warn", text = "  " .. (ICON[args.verb] or "◆ ") .. " " },
+            { role = "title", text = args.tool or "a tool" },
             { role = "muted", text = " wants to " },
-            { role = "title", text = args.verb or "act" } },
+            { role = "warn", text = args.verb or "act" } },
+          { { role = "text", text = "" } },
         }
-        for _, line in ipairs(wrapped(args.subject, width - 4)) do
-          rows[#rows + 1] = { { role = "path", text = "    " .. line } }
+        -- The call on its own lines behind a bar, in full: it is what is being decided about.
+        for _, line in ipairs(wrapped(args.subject, width - 6)) do
+          rows[#rows + 1] = { { role = "title", text = "  ┃ " }, { role = "path", text = line } }
         end
         rows[#rows + 1] = { { role = "text", text = "" } }
         return rows
@@ -685,17 +691,43 @@ do -- permission
         return offers[n] and n or nil
       end
 
+      -- Behind the row the cursor is on, reaching the edge, so the choice reads as one lit bar.
+      local BAND = { 58, 58, 58 }
+
+      -- First letter up: these arrive as phrases, and a list of them reads as a menu.
+      local function titled(text)
+        return (tostring(text):gsub("^%l", string.upper))
+      end
+
       local function draw()
         local rows = head()
         for n, offer in ipairs(offers) do
-          local here = n == at
-          rows[#rows + 1] = {
-            { role = here and "ok" or "dim", text = here and "  > " or "    " },
-            { role = here and "title" or "text", text = offer.label or offer.id },
-            { role = "dim", text = offer.about and offer.about ~= "" and ("  " .. offer.about) or "" },
-          }
+          local refusal = offer.id == "no"
+          local label = titled(offer.label or offer.id)
+          if n == at then
+            -- Counted in columns: the marker is one cell, however many bytes it takes.
+            local used = 7 + #label
+            local ink = refusal and "error" or "ok"
+            rows[#rows + 1] = {
+              { role = ink, text = "  ❯ ", bg = BAND },
+              { role = "dim", text = n .. "  ", bg = BAND },
+              { role = ink, text = label, bg = BAND },
+              { role = "text", text = string.rep(" ", math.max(0, width - used)), bg = BAND },
+            }
+          else
+            rows[#rows + 1] = {
+              { role = "dim", text = "    " .. n .. "  " },
+              { role = refusal and "error" or "muted", text = label },
+            }
+          end
         end
-        rows[#rows + 1] = { { role = "dim", text = "  ↑↓ or the pointer · enter to answer · esc denies" } }
+        -- What the choice under the cursor means, on a line of its own.
+        local chosen = offers[at] or {}
+        rows[#rows + 1] = { { role = "dim", text = "       ↳ " .. (chosen.about or "") } }
+        rows[#rows + 1] = { { role = "text", text = "" } }
+        rows[#rows + 1] = {
+          { role = "dim", text = ("  ↑↓ move · 1–%d pick · enter choose · esc deny"):format(#offers) },
+        }
         return { lines = rows }
       end
 
@@ -716,6 +748,9 @@ do -- permission
             return { answered = (offers[at] or {}).id or "no" }
           elseif key == "esc" or key == "q" then
             return { answered = "no" }
+          elseif key:match("^%d$") and offers[tonumber(key)] then
+            -- A number takes that row outright, the way the list numbers it.
+            return { answered = offers[tonumber(key)].id }
           end
         elseif event.kind == "mouse" then
           -- Hovering moves the selection and clicking takes it, which is what every list on a
