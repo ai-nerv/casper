@@ -68,6 +68,7 @@ fn paint(cell: &vt100::Cell) -> Span {
                 text: String::new(),
                 rgb: None,
                 bg: None,
+                back: None,
             };
         }
     }
@@ -77,6 +78,7 @@ fn paint(cell: &vt100::Cell) -> Span {
         text: String::new(),
         rgb: fg,
         bg,
+        back: None,
     }
 }
 

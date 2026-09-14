@@ -28,6 +28,8 @@ pub enum Role {
     Marker,
     /// A line a patch leaves alone.
     Context,
+    /// The new side of a change: added straight after lines that were removed.
+    Changed,
     Keyword,
     String,
     Number,
@@ -52,6 +54,10 @@ pub struct Span {
     /// read as inverted rather than merely coloured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bg: Option<[u8; 3]>,
+    /// The ground a changed line sits on — `added`, `removed` or `changed` — named as a role so the
+    /// reader's own palette decides it, while the text keeps the colour of its code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub back: Option<Role>,
 }
 
 impl Span {
@@ -63,6 +69,7 @@ impl Span {
             text: text.into(),
             rgb: None,
             bg: None,
+            back: None,
         }
     }
 }

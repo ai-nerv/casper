@@ -37,6 +37,9 @@ rustix = { version = "1", features = ["process", "net"] }
 seccompiler = "0.5"
 libc = "0.2.189"
 landlock = "0.4.4"
+# What `read`, `write` and `edit` show, in the file's own language: Sublime's grammars, read as
+# regexes, so no language is compiled in and none needs a program on the machine.
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
 
 [dev-dependencies]
 

@@ -14,14 +14,29 @@ use luna::{Callback, CallbackReturn, Table, Value};
 pub fn table(ctx: luna::Context<'_>) -> Table<'_> {
     let paint = Table::new(&ctx);
 
-    // A unified diff, read the way every diff reader reads one: from the first character.
+    // A unified diff, read the way every diff reader reads one: from the first character. Given the
+    // file it changed, its code is highlighted too, each change on the ground of what happened.
     let diff = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
-        let text: Value = stack.consume(ctx)?;
-        let painted = crate::paint::diff(&text_of(text));
+        let (text, file): (Value, Value) = stack.consume(ctx)?;
+        let (text, file) = (text_of(text), text_of(file));
+        let painted = if file.is_empty() {
+            crate::paint::diff(&text)
+        } else {
+            crate::highlight::diff(&text, &file)
+        };
         stack.replace(ctx, lines(ctx, &painted));
         Ok(CallbackReturn::Return)
     });
     paint.set(ctx, "diff", diff).ok();
+
+    // A file's text, in the language its name says.
+    let code = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
+        let (text, file): (Value, Value) = stack.consume(ctx)?;
+        let painted = crate::highlight::code(&text_of(text), &text_of(file));
+        stack.replace(ctx, lines(ctx, &painted));
+        Ok(CallbackReturn::Return)
+    });
+    paint.set(ctx, "code", code).ok();
 
     // ANSI, against whatever theme is in force. The escapes always go; a colour the theme does
     // not name becomes ordinary text.
@@ -121,6 +136,14 @@ fn lines<'gc>(ctx: luna::Context<'gc>, painted: &[crate::paint::Line]) -> Table<
                 luna::String::from_slice(&ctx, span.text.as_bytes()),
             )
             .ok();
+            if let Some(back) = span
+                .back
+                .and_then(|role| serde_json::to_value(role).ok())
+                .and_then(|value| value.as_str().map(ToOwned::to_owned))
+            {
+                held.set(ctx, "back", luna::String::from_slice(&ctx, back.as_bytes()))
+                    .ok();
+            }
             row.set(ctx, i64::try_from(at + 1).unwrap_or(1), held).ok();
         }
         out.set(ctx, i64::try_from(nth + 1).unwrap_or(1), row).ok();

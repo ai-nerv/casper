@@ -179,8 +179,8 @@ local function put(path, contents)
 end
 
 do -- read
-  -- `bat` for the person where the machine has it, the plain text for the model always: escapes
-  -- would spend the model's context on terminal control codes.
+  -- Highlighted for the person in the file's own language, the plain text for the model always:
+  -- colour would spend the model's context on nothing it can use.
   casper.tool("read", {
     description = [[
   Read a file. For a large one, `offset` and `limit` pick a range of lines, and a closing line says
@@ -213,13 +213,7 @@ do -- read
       if first > 1 or last < #all then
         said = said .. ("\n(lines %d-%d of %d)"):format(first, last, #all)
       end
-      local pretty = casper.exec("bat", {
-        "--color=always", "--style=plain", "--paging=never",
-        "--line-range=" .. first .. ":" .. last, args.path,
-      })
-      -- Painted either way, so no line of code is ever mistaken for a diff and coloured as one.
-      local shown = pretty.code == 0 and casper.paint.ansi(pretty.out, casper.theme)
-        or casper.paint.plain(table.concat(kept, "\n"))
+      local shown = casper.paint.code(table.concat(kept, "\n"), args.path)
       return { said = said, shown = shown }
     end,
   })
@@ -252,11 +246,7 @@ do -- write
       -- The model is told what happened in a line; the person is shown what was written.
       local said = ("wrote %s: %d lines, %d bytes, %s"):format(
         args.path, #lines_of(args.contents), #args.contents, existed and "replaced" or "new file")
-      local pretty = casper.exec("bat", {
-        "--color=always", "--style=plain", "--paging=never", args.path,
-      })
-      local shown = pretty.code == 0 and casper.paint.ansi(pretty.out, casper.theme)
-        or casper.paint.plain(args.contents)
+      local shown = casper.paint.code(args.contents, args.path)
       -- Headed with where it went and what it was, above the file itself.
       table.insert(shown.lines, 1, {
         { role = "path", text = args.path },
@@ -382,7 +372,7 @@ do -- edit
 
       local diff = ("--- %s\n+++ %s\n@@ -%d,%d +%d,%d @@\n"):format(
         args.path, args.path, start, olds, start, news) .. table.concat(hunk, "\n")
-      return { said = diff, shown = casper.paint.diff(diff) }
+      return { said = diff, shown = casper.paint.diff(diff, args.path) }
     end,
   })
 end
