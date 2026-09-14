@@ -29,9 +29,10 @@ const KINDS: [(&str, Role); 6] = [
     ),
 ];
 
+/// bat's grammars: syntect's own lack TOML, Nix and TypeScript, which is most of a project.
 fn syntaxes() -> &'static SyntaxSet {
     static SET: OnceLock<SyntaxSet> = OnceLock::new();
-    SET.get_or_init(SyntaxSet::load_defaults_newlines)
+    SET.get_or_init(two_face::syntax::extra_newlines)
 }
 
 /// A theme whose every colour is a role in disguise: the red channel is the role's place in
@@ -186,6 +187,22 @@ mod tests {
             assert!(roles.contains(&wanted), "no {wanted:?} in {:?}", lines[0]);
         }
         assert_eq!(text(&lines[0]), "fn main() { let x = 1; } // done");
+    }
+
+    #[test]
+    fn the_files_a_project_is_made_of_are_highlighted_too() {
+        for (file, text) in [
+            ("pyproject.toml", "name = \"x\" # the name"),
+            ("flake.nix", "{ pkgs, ... }: let x = 1; in x # one"),
+            ("app.ts", "const x: number = 1; // one"),
+        ] {
+            let lines = code(text, file);
+            assert!(
+                lines[0].iter().any(|span| span.role == Role::Comment),
+                "{file} came out plain: {:?}",
+                lines[0]
+            );
+        }
     }
 
     #[test]
