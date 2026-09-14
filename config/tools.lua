@@ -75,6 +75,12 @@ up jumps (hold for higher), down ducks, q quits. Takes no arguments.]] },
     { name = "birdy", deferred = true, page = [[
 birdy() -- flappy bird, drawn in braille on the person's screen. Space, up or a click flaps once;
 down dives; q quits. Takes no arguments.]] },
+    { name = "doom", deferred = true, page = [[
+doom() -- DOOM (Freedoom) in the float over the conversation, as big as the terminal allows.
+Arrows move and turn, space fires, e opens doors, esc brings up its menu. Needs `doom-ascii`.]] },
+    { name = "games", deferred = true, page = [[
+games() -- a list of every game here, for when somebody asks to play without naming one: they
+pick, and it opens in the prompt or, for doom, in the float.]] },
   } },
 }
 
@@ -1417,6 +1423,144 @@ do -- birdy
             { role = "text", rgb = WING, text = "   space flaps · ↓ dives" },
           }
         return { lines = rows }
+      end
+    end,
+  })
+end
+
+do -- doom
+  -- **DOOM, in the float.** doom-ascii on a pty, Freedoom for its data, as big as the float holds.
+  -- It draws a fixed 640/s by 200/s cells and never asks the terminal how big it is, so the scale
+  -- is the smallest whole `s` whose frame fits. Installed by hand, not shipped: `doom-ascii` on the
+  -- PATH is expected to find its own data.
+  local function scale(size)
+    for s = 2, 12 do
+      if 640 / s <= (size.cols or 80) and 200 / s <= (size.rows or 24) then return s end
+    end
+    return 12
+  end
+
+  casper.tool("doom", {
+    description = [[
+  Play DOOM (Freedoom) in the float over the conversation, as big as the terminal allows. Arrows
+  move and turn, space fires, e opens doors, esc brings up its menu. Needs `doom-ascii`.]],
+    parameters = { type = "object", properties = {} },
+
+    run = function(args)
+      if args.answered then return { said = "DOOM ended." } end
+      return casper.surface{
+        place = "float",
+        about = "DOOM — arrows move, space fires, e opens, esc for the menu",
+        tick = 33,
+      }
+    end,
+
+    -- Held keys stutter on a terminal that sends no releases, so the game is told to wait a little
+    -- longer for the next repeat before it lets a key go.
+    screen = function(_, size)
+      return {
+        command = "doom-ascii",
+        -- Solid blocks only: the ░▒▓ gradient lets the terminal's background bleed through.
+        args = { "-scaling", tostring(scale(size)), "-chars", "block", "-nograd", "-kpsmooth", "90" },
+      }
+    end,
+  })
+end
+
+do -- games
+  -- **Every game here, from one list.** The pick hands the screen over: the list answers
+  -- `play:<name>`, the call runs again and asks for that game's own surface -- in the prompt, or
+  -- for doom the whole float -- and what the game answers is what the call answers.
+  local GAMES = {
+    { name = "dino", title = "Dinosaur", about = "the no-internet dinosaur, in the prompt",
+      place = "prompt", rows = 8, tick = 16 },
+    { name = "birdy", title = "Birdy", about = "flappy bird, in the prompt",
+      place = "prompt", rows = 16, tick = 16 },
+    { name = "doom", title = "DOOM", about = "Freedoom, filling the float",
+      place = "float", rows = 1, tick = 33 },
+  }
+  local BAND = { 58, 58, 58 }
+
+  casper.tool("games", {
+    description = [[
+  Offer every terminal game here and play the one the person picks: the dinosaur and flappy bird
+  in the prompt, DOOM in the float. Call it when somebody asks to play without naming a game.]],
+    parameters = { type = "object", properties = {} },
+
+    run = function(args)
+      local said = type(args.answered) == "string" and args.answered or nil
+      local picked = said and said:match("^play:(.+)$")
+      for _, game in ipairs(GAMES) do
+        if game.name == picked then
+          return casper.surface{
+            rows = game.rows, about = game.about, tick = game.tick,
+            place = game.place, tenant = game.name,
+          }
+        end
+      end
+      if said == "no" then return { said = "nothing was picked" } end
+      if said then return { said = "the game ended: " .. said } end
+      return casper.surface{ rows = #GAMES + 5, about = "pick a game to play" }
+    end,
+
+    surface = function(_, size)
+      local at = 1
+      local width = math.max(20, (size.cols or 80) - 2)
+
+      local function draw()
+        local rows = {
+          { { role = "warn", text = "  ▶ " }, { role = "title", text = "Games" },
+            { role = "muted", text = "  pick one to play" } },
+          { { role = "text", text = "" } },
+        }
+        for n, game in ipairs(GAMES) do
+          if n == at then
+            local used = 4 + #tostring(n) + 2 + #game.title + 2 + #game.about
+            rows[#rows + 1] = {
+              { role = "ok", text = "  ❯ ", bg = BAND },
+              { role = "dim", text = n .. "  ", bg = BAND },
+              { role = "title", text = game.title, bg = BAND },
+              { role = "dim", text = "  " .. game.about, bg = BAND },
+              { role = "text", text = string.rep(" ", math.max(0, width - used)), bg = BAND },
+            }
+          else
+            rows[#rows + 1] = {
+              { role = "dim", text = "    " .. n .. "  " },
+              { role = "text", text = game.title },
+              { role = "dim", text = "  " .. game.about },
+            }
+          end
+        end
+        rows[#rows + 1] = { { role = "text", text = "" } }
+        rows[#rows + 1] = {
+          { role = "dim", text = ("  ↑↓ move · 1–%d pick · enter play · esc cancel"):format(#GAMES) },
+        }
+        return { lines = rows }
+      end
+
+      return function(event)
+        local key = casper.tapped(event)
+        if key then
+          if key == "up" or key == "k" then
+            at = at > 1 and at - 1 or #GAMES
+          elseif key == "down" or key == "j" then
+            at = at < #GAMES and at + 1 or 1
+          elseif key == "enter" or key == "space" then
+            return { answered = "play:" .. GAMES[at].name }
+          elseif key == "esc" or key == "q" then
+            return { answered = "no" }
+          elseif key:match("^%d$") and GAMES[tonumber(key)] then
+            return { answered = "play:" .. GAMES[tonumber(key)].name }
+          end
+        elseif event.kind == "mouse" then
+          -- The heading and the blank under it are rows 0 and 1; the games start at 2.
+          local n = (event.row or 0) - 1
+          if GAMES[n] then
+            at = n
+            if event.what == "release" then return { answered = "play:" .. GAMES[n].name } end
+          end
+        end
+        return draw()
       end
     end,
   })

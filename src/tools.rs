@@ -111,6 +111,28 @@ pub struct Surface {
     /// Milliseconds between ticks. `None` for a surface that only redraws when input arrives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tick: Option<u16>,
+    /// Where it is drawn: `prompt` rows, or the whole `float`, sized by the terminal.
+    #[serde(default, skip_serializing_if = "Place::is_prompt")]
+    pub place: Place,
+    /// The tool whose surface fills it, when not the one asking: a picker handing over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+}
+
+/// Where a surface is drawn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Place {
+    #[default]
+    Prompt,
+    Float,
+}
+
+impl Place {
+    #[must_use]
+    pub fn is_prompt(&self) -> bool {
+        *self == Self::Prompt
+    }
 }
 
 /// A question a tool is putting to the person.

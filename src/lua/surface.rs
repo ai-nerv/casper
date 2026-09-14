@@ -26,8 +26,14 @@ pub fn table(ctx: luna::Context<'_>) -> Callback<'_> {
             return Err(raise(ctx, "casper.surface{ rows = …, about = … }: a table"));
         };
 
+        // A surface asking for the float is given the whole of it, so it need not say how many rows.
+        let float = matches!(
+            asked.get_value(ctx, "place"),
+            Value::String(place) if place.as_bytes() == b"float"
+        );
         let rows = match asked.get_value(ctx, "rows") {
             Value::Integer(rows) if rows > 0 => rows,
+            _ if float => 1,
             _ => {
                 return Err(raise(
                     ctx,
@@ -51,6 +57,15 @@ pub fn table(ctx: luna::Context<'_>) -> Callback<'_> {
             && tick > 0
         {
             surface.set(ctx, "tick", tick).ok();
+        }
+        if float {
+            surface
+                .set(ctx, "place", luna::String::from_slice(&ctx, b"float"))
+                .ok();
+        }
+        // Another tool's surface to open in these rows: a picker handing over to what was picked.
+        if let Value::String(tenant) = asked.get_value(ctx, "tenant") {
+            surface.set(ctx, "tenant", tenant).ok();
         }
 
         let out = Table::new(&ctx);
@@ -129,6 +144,17 @@ mod tests {
                  surface = function() return function() return {} end end })"#,
         );
         assert!(out["shown"].get("tick").is_none(), "{out}");
+    }
+
+    #[test]
+    fn a_float_surface_needs_no_rows_and_can_hand_over() {
+        let out = asked(
+            r#"casper.tool("t", { description = "d", parameters = {},
+                 run = function() return casper.surface{ place = "float", about = "doom", tenant = "doom" } end })"#,
+        );
+        assert_eq!(out["shown"]["place"], "float", "{out}");
+        assert_eq!(out["shown"]["rows"], 1, "{out}");
+        assert_eq!(out["shown"]["tenant"], "doom", "{out}");
     }
 
     #[test]
