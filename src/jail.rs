@@ -76,6 +76,12 @@ impl Jail {
         }
     }
 
+    /// Whether a coordinator asked for a jail at all.
+    #[must_use]
+    pub const fn on(&self) -> bool {
+        self.grants.is_some()
+    }
+
     /// The command as it should actually be started: `bwrap` and its arguments wrapping the
     /// program, or the program unchanged when the jail is off or unavailable.
     #[must_use]
@@ -208,7 +214,10 @@ fn deny(forbid: &[i64]) -> seccompiler::BpfProgram {
         arch,
     )
     .and_then(std::convert::TryInto::try_into)
-    .unwrap_or_default()
+    .unwrap_or_else(|why| {
+        crate::noted!("jail: the seccomp filter could not be built ({why}); none is armed");
+        seccompiler::BpfProgram::default()
+    })
 }
 
 impl Jail {
@@ -222,7 +231,11 @@ impl Jail {
         if which("bwrap").is_some() {
             return None;
         }
-        ruleset(&self.cwd, grants)
+        let built = ruleset(&self.cwd, grants);
+        if built.is_none() {
+            crate::noted!("jail: no Landlock ruleset could be built; the command runs without one");
+        }
+        built
     }
 }
 

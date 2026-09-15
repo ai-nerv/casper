@@ -96,7 +96,9 @@ pub fn run(program: &str, args: &[String]) -> Done {
 pub fn fed(program: &str, args: &[String], input: Option<Vec<u8>>) -> Done {
     // Wrapped in a kernel jail when a coordinator asked for one; unchanged otherwise. This is the
     // one place a declaration's command becomes a process, so it is the one place to contain it.
+    let began = std::time::Instant::now();
     let jail = crate::jail::Jail::from_env();
+    let asked = crate::noted::short(&format!("{program} {}", args.join(" ")));
     let (program, args) = jail.wrap(program, args);
     let (program, args) = (program.as_str(), args.as_slice());
     let mut command = std::process::Command::new(program);
@@ -151,6 +153,14 @@ pub fn fed(program: &str, args: &[String], input: Option<Vec<u8>>) -> Done {
     if let Some(feeding) = feeding {
         let _ = feeding.join();
     }
+    crate::noted!(
+        "exec: {asked} jailed={} → exit {} in {}ms, {} bytes out, {} err",
+        jail.on(),
+        code.map_or_else(|| "killed".to_owned(), |c| c.to_string()),
+        began.elapsed().as_millis(),
+        out.0.len() + out.1,
+        err.0.len() + err.1
+    );
     Done {
         out: said(&out.0, out.1),
         err: said(&err.0, err.1),
