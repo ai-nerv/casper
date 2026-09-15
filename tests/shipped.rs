@@ -1,8 +1,7 @@
 //! The declarations casper actually ships, driven the way the harness drives them.
 //!
-//! Everything else tests a tenant written for the test. These load `config/tools.lua` — the same
-//! text `main.rs` embeds — because the bugs that reach a person are in the thing that ships, and a
-//! toy tenant written beside the assertion agrees with it by construction.
+//! These load `config/tools.lua`, the same text `main.rs` embeds, rather than a tenant written
+//! beside the assertion.
 
 use casper::lua::engine::Engine;
 
@@ -30,21 +29,35 @@ fn key(engine: &mut Engine, name: &str, state: &str) -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
-/// Which row a permission prompt is pointing at, by its label.
-fn pointing(drew: &serde_json::Value) -> String {
+/// Every row of a frame, each joined into one string.
+fn rows_of(drew: &serde_json::Value) -> Vec<String> {
     drew["lines"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|row| {
-            let text: String = row
-                .as_array()?
-                .iter()
-                .filter_map(|span| span["text"].as_str())
-                .collect();
-            text.trim_start().strip_prefix("> ").map(str::to_owned)
+            Some(
+                row.as_array()?
+                    .iter()
+                    .filter_map(|span| span["text"].as_str())
+                    .collect(),
+            )
         })
-        .next()
+        .collect()
+}
+
+/// Which row a permission prompt is pointing at, by its label: past the marker and the number.
+fn pointing(drew: &serde_json::Value) -> String {
+    rows_of(drew)
+        .iter()
+        .find_map(|text| {
+            let rest = text.trim_start().strip_prefix("❯ ")?;
+            Some(
+                rest.trim_start_matches(|c: char| c.is_ascii_digit())
+                    .trim()
+                    .to_owned(),
+            )
+        })
         .unwrap_or_default()
 }
 
@@ -62,9 +75,8 @@ fn a_question() -> serde_json::Value {
 
 #[test]
 fn one_press_of_an_arrow_moves_the_permission_prompt_one_row() {
-    // **The release is not a second press.** Where the Kitty protocol is live every keystroke
-    // arrives twice, and a list that acted on both moved two rows for one press — which is a
-    // person selecting the wrong permission and not knowing why.
+    // Where the Kitty protocol is live every keystroke arrives twice, so a list that acts on the
+    // release as well as the press moves two rows for one press.
     let mut engine = opened("permission", &a_question(), 9, 60);
     let down = key(&mut engine, "down", "down");
     assert_eq!(pointing(&down), "Anything under /etc");
@@ -74,8 +86,7 @@ fn one_press_of_an_arrow_moves_the_permission_prompt_one_row() {
 
 #[test]
 fn holding_an_arrow_still_scrolls_the_list() {
-    // The other half, and why the fix is not "ignore everything but a press": a repeat says the
-    // key is still down, and a list that dropped those would need a tap per row.
+    // A repeat says the key is still down; a list that dropped those would need a tap per row.
     let mut engine = opened("permission", &a_question(), 9, 60);
     key(&mut engine, "down", "down");
     let held = key(&mut engine, "down", "repeat");
@@ -84,8 +95,7 @@ fn holding_an_arrow_still_scrolls_the_list() {
 
 #[test]
 fn a_terminal_that_says_nothing_about_holding_still_moves_one_row() {
-    // Every terminal without the protocol, where a key is one bare press and there is no state on
-    // the frame at all. The guard must not have turned those into nothing.
+    // Every terminal without the protocol sends one bare press with no state on the frame.
     let mut engine = opened("permission", &a_question(), 9, 60);
     let drew = engine
         .frame(&serde_json::json!({"kind": "key", "key": "down"}))
@@ -109,6 +119,62 @@ fn escape_denies_rather_than_choosing_whatever_is_under_the_cursor() {
     let mut engine = opened("permission", &a_question(), 9, 60);
     key(&mut engine, "down", "down");
     assert_eq!(key(&mut engine, "esc", "down")["answered"], "no");
+}
+
+#[test]
+fn a_number_takes_that_row_outright() {
+    let mut engine = opened("permission", &a_question(), 9, 60);
+    assert_eq!(key(&mut engine, "3", "down")["answered"], "2");
+    let mut engine = opened("permission", &a_question(), 9, 60);
+    assert_eq!(key(&mut engine, "4", "down")["answered"], "no");
+}
+
+#[test]
+fn what_the_chosen_row_means_is_said_on_a_line_of_its_own() {
+    // It used to ride the end of the row it described, so a label and its meaning ran together.
+    let mut question = a_question();
+    question["offers"][1]["about"] = "for the rest of this session".into();
+    let mut engine = opened("permission", &question, 12, 60);
+    let drew = key(&mut engine, "down", "down");
+    let rows = rows_of(&drew);
+    let row = rows
+        .iter()
+        .find(|row| row.contains("Anything under /etc"))
+        .expect("the row");
+    assert!(!row.contains("for the rest"), "not on the row: {row:?}");
+    assert!(
+        rows.iter().any(|row| row
+            .trim_start()
+            .starts_with("↳ for the rest of this session")),
+        "{rows:#?}"
+    );
+}
+
+#[test]
+fn the_row_under_the_cursor_is_a_band_to_the_edge() {
+    let mut engine = opened("permission", &a_question(), 12, 60);
+    let drew = key(&mut engine, "down", "down");
+    let row = drew["lines"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|row| {
+            row.as_array()
+                .is_some_and(|spans| spans.iter().any(|s| s["text"] == "❯ "))
+                || row.to_string().contains("  ❯ ")
+        })
+        .expect("a lit row");
+    let spans = row.as_array().expect("spans");
+    assert!(
+        spans.iter().all(|span| !span["bg"].is_null()),
+        "every span wears the band: {row}"
+    );
+    let width: usize = spans
+        .iter()
+        .filter_map(|span| span["text"].as_str())
+        .map(|text| text.chars().count())
+        .sum();
+    assert_eq!(width, 58, "it reaches the edge: {row}");
 }
 
 /// The games read the same keyboard two ways, and both readings have to keep working.
@@ -135,8 +201,6 @@ mod games {
 
     #[test]
     fn a_release_of_the_quit_key_does_not_end_a_game() {
-        // It used to. `q` was matched without looking at the state, so letting the key up ended
-        // the game a second time — harmless only because there was nothing left to end.
         for game in ["dino", "birdy"] {
             let mut engine = opened(game, &serde_json::json!({}), 8, 60);
             let after = key(&mut engine, "q", "up");
@@ -179,20 +243,28 @@ mod games {
     }
 }
 
-/// What the emulator behind a `screen` tool cannot read.
-///
-/// The canary, pointed at real programs. A gap here is a screen that renders subtly wrong with
-/// nothing on it to say why — which cost a pty-sniffing expedition and three wrong theories the
-/// one time it happened. Now it is a failing test.
+/// What the emulator behind a `screen` tool cannot read, against real programs. A gap here is a
+/// screen that renders subtly wrong with nothing on it to say why.
 mod conformance {
     use casper::pty::{Screen, Spec};
     use std::time::{Duration, Instant};
 
     /// Run `command` for long enough to draw, and report what the emulator threw away.
     fn dropped_by(command: &str, rows: u16, cols: u16) -> Vec<(String, usize)> {
+        // A home of this test's own: `btop` writes `$XDG_CONFIG_HOME/btop` and `top` writes
+        // `$XDG_CONFIG_HOME/procps` on the way out, neither of which `gate-hermetic` watches.
+        let home = casper::scratch::Scratch::new("casper-conformance", "home");
+        let at = |name: &str| home.join(name).display().to_string();
         let spec = Spec {
             command: "sh".to_owned(),
             args: vec!["-c".to_owned(), command.to_owned()],
+            env: vec![
+                ("HOME".to_owned(), home.display().to_string()),
+                ("XDG_CONFIG_HOME".to_owned(), at("config")),
+                ("XDG_DATA_HOME".to_owned(), at("data")),
+                ("XDG_STATE_HOME".to_owned(), at("state")),
+                ("XDG_CACHE_HOME".to_owned(), at("cache")),
+            ],
             ..Spec::default()
         };
         let Ok(mut screen) = Screen::open(&spec, rows, cols) else {
@@ -216,12 +288,8 @@ mod conformance {
             .is_ok_and(|out| out.status.success())
     }
 
-    /// Sequences the emulator drops that change nothing about what is drawn.
-    ///
-    /// Each of these was looked at once and judged harmless, and the reason is written down beside
-    /// it — because the next person to see one in a log needs to know whether it explains their
-    /// problem. Anything *not* on this list is a gap nobody has looked at yet, which is exactly
-    /// what `CSI f` was.
+    /// Sequences the emulator drops that change nothing about what is drawn, each with the reason
+    /// beside it. Anything not on this list is a gap nobody has looked at yet.
     const HARMLESS: &[(&str, &str)] = &[
         (
             "CSI ?2026h",
@@ -244,10 +312,6 @@ mod conformance {
 
     #[test]
     fn the_programs_on_this_machine_are_understood_in_full() {
-        // `btop` is the one that found the gap: it positions with `ESC [ r ; c f`, which the
-        // emulator drops, so every one of its 452 position commands went nowhere. It passes now
-        // because the byte is rewritten on the way in — and a future gap is named here rather than
-        // read off a scrambled screen.
         let programs = [
             ("top -b -n 2", "top"),
             ("btop", "btop"),
@@ -271,9 +335,8 @@ mod conformance {
 
     #[test]
     fn the_canary_is_awake() {
-        // A test that only ever passes proves nothing. This is the sequence the emulator genuinely
-        // does not know and the rewriter deliberately leaves alone — a backward tab — so seeing it
-        // reported is what says the wiring works.
+        // A backward tab: the one sequence the emulator does not know and the rewriter leaves
+        // alone, so seeing it reported is what says the wiring works.
         let dropped = dropped_by(r"printf '\033[4Z'; sleep 1", 5, 20);
         assert_eq!(
             dropped,

@@ -4,8 +4,8 @@
 -- takes, and which permission verb it acts under; the function runs it and says what it produced.
 --
 -- **A tool never chooses a colour.** It says what its output *means* -- `added`, `keyword`, `path`
--- -- and the harness resolves that against its own palette. That is what makes a `patch` and a
--- highlighted `cat` agree on screen instead of being two programs' idea of green.
+-- -- and the harness resolves that against its own palette. That is what makes an `edit`'s diff
+-- and a highlighted `read` agree on screen instead of being two programs' idea of green.
 
 -- Which 256-colour index means what, for programs that speak ANSI.
 --
@@ -29,190 +29,350 @@ casper.theme = {
   [5] = "keyword", [6] = "type",  [9] = "removed", [10] = "added",
 }
 
-do -- cat
-  -- `bat` when it is installed, `cat` when it is not. The fallback is not a lesser tool: it is
-  -- the same file, unhighlighted, and a model reading it cannot tell the difference. Only the
-  -- person can, which is exactly the half `shown` is for.
-  casper.tool("cat", {
-    description = "Read a file. Shown with syntax highlighting where the machine has it.",
+-- ── the manual ────────────────────────────────────────────────────────────────────────
+--
+-- **Four tools are always in front of the model: `read`, `write`, `edit`, `shell`.** The rest are
+-- deferred: every card sent costs tokens on every request, and a game or a multiplexer probe is
+-- needed once a week. So they are listed here instead, as a tree `tools` walks one level at a time
+-- -- the groups, then a group, then a tool -- and reaching a deferred tool's page unlocks it.
+local MANUAL = {
+  { group = "files", about = "read, write and edit files; always available", tools = {
+    { name = "read", page = [[
+read(path, offset?, limit?) -- the file's text. For a large file, `offset` (first line, from 1) and
+`limit` (most lines) pick a range, and a closing line says which lines came back of how many.]] },
+    { name = "write", page = [[
+write(path, contents) -- replace the whole file with `contents`, creating the directories it needs.
+Prefer `edit` for a change to a file that exists: it cannot lose the parts you did not mean to touch.]] },
+    { name = "edit", page = [[
+edit(path, old, new) -- replace `old` with `new`. `old` must appear exactly once; include enough of
+the surrounding lines to make it unique. Answers with a unified diff of what changed.]] },
+  } },
+  { group = "shell", about = "commands, and programs that need a terminal", tools = {
+    { name = "shell", page = [[
+shell(command) -- run a command and read what it printed. The working directory is kept between
+calls, so `cd build` and then `make` works. Always available.]] },
+    { name = "screen", deferred = true, page = [[
+screen(command, rows?) -- run an interactive program in rows on the person's screen: a pager, an
+editor, `htop`, `git add -p`. They can type and click in it; it ends when the program does or on two
+presses of escape, and answers with what was left on screen. Use `shell` for anything that just
+prints and exits: a program run here holds the screen until somebody closes it.]] },
+  } },
+  { group = "session", about = "this session, and the multiplexer and shell it runs under", tools = {
+    { name = "session", deferred = true, page = [[
+session(query?) -- shows the person which session this is, which model is answering, and what the
+memory layer recalls about `query`. For when somebody asks what the session knows about itself.]] },
+    { name = "hexe", deferred = true, page = [[
+hexe(what?) -- ask the hexe terminal multiplexer about its `panes` (the default), `tabs`, `session`
+or `verbs`: what is open, what runs in each, where each is rooted. Reads; changes nothing.]] },
+    { name = "oslo", deferred = true, page = [[
+oslo(what?) -- ask the oslo shell about its own state: environment, working directory, what it can
+do. `what` is one of its verbs; `verbs` (the default) lists them. Reads; to run a command use `shell`.]] },
+  } },
+  { group = "games", about = "terminal games, for when somebody asks to play", tools = {
+    { name = "dino", deferred = true, page = [[
+dino() -- the Chromium no-internet dinosaur game, drawn in braille on the person's screen. Space or
+up jumps (hold for higher), down ducks, q quits. Takes no arguments.]] },
+    { name = "birdy", deferred = true, page = [[
+birdy() -- flappy bird, drawn in braille on the person's screen. Space, up or a click flaps once;
+down dives; q quits. Takes no arguments.]] },
+    { name = "doom", deferred = true, page = [[
+doom() -- DOOM (Freedoom) in the float over the conversation, as big as the terminal allows.
+Arrows move and turn, space fires, e opens doors, esc brings up its menu. Needs `doom-ascii`.]] },
+    { name = "games", deferred = true, page = [[
+games() -- a list of every game here, for when somebody asks to play without naming one: they
+pick, and it opens in the prompt or, for doom, in the float.]] },
+  } },
+}
+
+-- Which declarations are deferred, read off the manual so the two cannot disagree, and marked as
+-- each is declared: every `casper.tool` below passes through this one wrapper.
+do
+  local deferred = {}
+  for _, branch in ipairs(MANUAL) do
+    for _, entry in ipairs(branch.tools) do
+      if entry.deferred then deferred[entry.name] = true end
+    end
+  end
+  local declare = casper.tool
+  casper.tool = function(name, spec)
+    if deferred[name] then spec.deferred = true end
+    return declare(name, spec)
+  end
+end
+
+do -- tools
+  -- One level an answer, never the whole tree: the point is that the model reads only the branch
+  -- it needs. A page for a deferred tool carries `unlocks`, which the harness takes up.
+  local function page(entry)
+    return { said = entry.page, unlocks = entry.deferred and { entry.name } or nil }
+  end
+
+  casper.tool("tools", {
+    description = [[
+  The manual for tools you are not shown: terminal programs, this session, games. Call it with no
+  path for the groups, then with a group (`games`), then with a tool (`games/dino`) for its page,
+  which also makes that tool callable from your next step. Every answer costs tokens: ask only for
+  the branch the task needs, and only when it needs it.]],
+    parameters = {
+      type = "object",
+      properties = {
+        path = {
+          type = "string",
+          description = "Empty for the groups, a group for its tools, `group/tool` for a page.",
+        },
+      },
+    },
+
+    run = function(args)
+      local path = (args.path or ""):gsub("^%s+", ""):gsub("%s+$", "")
+      local group, tool = path:match("^([^/]+)/?(.*)$")
+      if not group then
+        local out = {}
+        for _, branch in ipairs(MANUAL) do
+          out[#out + 1] = branch.group .. " -- " .. branch.about
+        end
+        return { said = table.concat(out, "\n") }
+      end
+      for _, branch in ipairs(MANUAL) do
+        if branch.group == group then
+          if tool == "" then
+            local out = { branch.group .. " -- " .. branch.about }
+            for _, entry in ipairs(branch.tools) do
+              local note = entry.deferred and "" or "  (always available)"
+              out[#out + 1] = "  " .. group .. "/" .. entry.name .. note
+            end
+            return { said = table.concat(out, "\n") }
+          end
+          for _, entry in ipairs(branch.tools) do
+            if entry.name == tool then return page(entry) end
+          end
+          return { said = "no " .. tool .. " in " .. group .. "; `tools " .. group .. "` lists them",
+                   failed = true }
+        end
+      end
+      -- A bare tool name is a page too: the model knowing `dino` should not need its group.
+      for _, branch in ipairs(MANUAL) do
+        for _, entry in ipairs(branch.tools) do
+          if entry.name == group and tool == "" then return page(entry) end
+        end
+      end
+      return { said = "no group " .. group .. "; `tools` lists them", failed = true }
+    end,
+  })
+end
+
+-- ── files ─────────────────────────────────────────────────────────────────────────────
+
+-- A file's text as lines, and back. A missing final newline is not an extra empty line.
+local function lines_of(text)
+  local out = {}
+  if text == "" then return out end
+  if not text:find("\n$") then text = text .. "\n" end
+  for line in text:gmatch("(.-)\n") do out[#out + 1] = line end
+  return out
+end
+
+-- Written through a program inside the jail rather than by casper's own hand: the file lands
+-- only where the jail lets a command write, which is the session's directory and its grants.
+local function put(path, contents)
+  return casper.exec("sh", { "-c", 'cat > "$1"', "sh", path }, contents)
+end
+
+do -- read
+  -- Highlighted for the person in the file's own language, the plain text for the model always:
+  -- colour would spend the model's context on nothing it can use.
+  casper.tool("read", {
+    description = [[
+  Read a file. For a large one, `offset` and `limit` pick a range of lines, and a closing line says
+  which lines came back of how many.]],
     parameters = {
       type = "object",
       properties = {
         path = { type = "string", description = "The file to read." },
+        offset = { type = "integer", minimum = 1, description = "First line, from 1. Defaults to 1." },
+        limit = {
+          type = "integer", minimum = 1, maximum = 5000,
+          description = "Most lines to return. Defaults to 2000.",
+        },
       },
       required = { "path" },
     },
     needs = "read",
 
     run = function(args)
-      local pretty = casper.exec("bat", {
-        "--color=always", "--style=plain", "--paging=never", args.path,
-      })
-      if pretty.code == 0 then
-        -- What the model reads is the file, not the escapes: `said` is the plain text and
-        -- `shown` is the painted one. Handing the model ANSI would spend its context on
-        -- terminal control codes.
-        local plain = casper.exec("cat", { args.path })
-        return {
-          said = plain.code == 0 and plain.out or pretty.out,
-          shown = casper.paint.ansi(pretty.out, casper.theme),
-        }
-      end
-
       local plain = casper.exec("cat", { args.path })
       if plain.code ~= 0 then
         return { said = plain.err, failed = true }
       end
-      return { said = plain.out }
+      local all = lines_of(plain.out)
+      local first = math.max(1, math.floor(tonumber(args.offset) or 1))
+      local last = math.min(#all, first + math.max(1, math.floor(tonumber(args.limit) or 2000)) - 1)
+      local kept = {}
+      for at = first, last do kept[#kept + 1] = all[at] end
+      local said = table.concat(kept, "\n")
+      if first > 1 or last < #all then
+        said = said .. ("\n(lines %d-%d of %d)"):format(first, last, #all)
+      end
+      local shown = casper.paint.code(table.concat(kept, "\n"), args.path)
+      return { said = said, shown = shown }
     end,
   })
 end
 
-do -- patch
-  -- The tool the palette argument is really about. A diff has structure a reader knows by heart,
-  -- so it is read from the line's first character rather than from whatever colour some `diff`
-  -- implementation chose -- and it comes out in the same green and red an `edit` already draws.
-  casper.tool("patch", {
-    description = "Show the difference between two files, as a unified diff.",
-    parameters = {
-      type = "object",
-      properties = {
-        old = { type = "string", description = "The file as it stands." },
-        new = { type = "string", description = "The file to compare it with." },
-      },
-      required = { "old", "new" },
-    },
-    needs = "read",
-
-    run = function(args)
-      local done = casper.exec("diff", { "-u", args.old, args.new })
-      -- `diff` exits 1 when the files differ, which is the ordinary case and not a failure.
-      if done.code > 1 then
-        return { said = done.err, failed = true }
-      end
-      if done.out == "" then
-        return { said = "the two files are identical" }
-      end
-      return { said = done.out, shown = casper.paint.diff(done.out) }
-    end,
-  })
-end
-
-do -- ls
-  -- The flags magi's own declaration used, kept exactly: one entry a line, a trailing `/` on
-  -- directories, dotfiles included, no colour. A tool that moved here and quietly changed what
-  -- it returns would be a model reading different output for the same call.
-  casper.tool("ls", {
+do -- write
+  casper.tool("write", {
     description = [[
-  List a directory. Returns one entry a line, with a trailing `/` on directories.]],
+  Write a file, replacing it entirely and creating the directories it needs. Prefer `edit` for a
+  change to a file that already exists.]],
     parameters = {
       type = "object",
       properties = {
-        path = { type = "string", description = "The directory. Defaults to the current one." },
+        path = { type = "string", description = "The file to write." },
+        contents = { type = "string", description = "The whole new contents." },
       },
+      required = { "path", "contents" },
     },
-    needs = "read",
+    needs = "write",
 
     run = function(args)
-      local done = casper.exec("ls", { "-1", "-p", "-A", "--color=never", args.path or "." })
-      if done.code ~= 0 then
-        return { said = done.err, failed = true }
+      local existed = casper.exec("test", { "-e", args.path }).code == 0
+      local dir = args.path:match("^(.*)/[^/]*$")
+      if dir and dir ~= "" then
+        local made = casper.exec("mkdir", { "-p", dir })
+        if made.code ~= 0 then return { said = made.err, failed = true } end
       end
-      return { said = done.out }
+      local done = put(args.path, args.contents)
+      if done.code ~= 0 then return { said = done.err, failed = true } end
+      -- The model is told what happened in a line; the person is shown what was written.
+      local said = ("wrote %s: %d lines, %d bytes, %s"):format(
+        args.path, #lines_of(args.contents), #args.contents, existed and "replaced" or "new file")
+      local shown = casper.paint.code(args.contents, args.path)
+      -- Headed with where it went and what it was, above the file itself.
+      table.insert(shown.lines, 1, {
+        { role = "path", text = args.path },
+        { role = "dim", text = ("  %d lines · %s"):format(
+          #lines_of(args.contents), existed and "replaced" or "new file") },
+      })
+      return { said = said, shown = shown }
     end,
   })
 end
 
-do -- find
-  -- `fd` when it is there, `find` when it is not. The same shape `cat` uses for `bat`: the
-  -- better tool where the machine has it, and something that always works where it does not.
-  casper.tool("find", {
-    description = [[
-  Find files and directories by name. Returns one path a line.
+do -- edit
+  -- Lines kept either side of a change in its diff, so it reads as the file does.
+  local CONTEXT = 2
 
-  Honours .gitignore where `fd` is installed. Results are capped; narrow the glob or the path
-  rather than raising the limit.]],
+  -- A line diff of two short runs: the longest common subsequence, then walked out as ` `, `-` and
+  -- `+`. An edit's span is a few lines; past a size where the table would be large, it says the
+  -- change plainly as all removed and then all added rather than aligning it.
+  local function changes(a, b)
+    local n, m = #a, #b
+    local out = {}
+    if n * m > 250000 then
+      for _, line in ipairs(a) do out[#out + 1] = "-" .. line end
+      for _, line in ipairs(b) do out[#out + 1] = "+" .. line end
+      return out
+    end
+    local common = {}
+    for i = n + 1, 1, -1 do
+      common[i] = {}
+      for j = m + 1, 1, -1 do
+        if i > n or j > m then
+          common[i][j] = 0
+        elseif a[i] == b[j] then
+          common[i][j] = common[i + 1][j + 1] + 1
+        else
+          common[i][j] = math.max(common[i + 1][j], common[i][j + 1])
+        end
+      end
+    end
+    local i, j = 1, 1
+    while i <= n and j <= m do
+      if a[i] == b[j] then
+        out[#out + 1] = " " .. a[i]; i, j = i + 1, j + 1
+      elseif common[i + 1][j] >= common[i][j + 1] then
+        out[#out + 1] = "-" .. a[i]; i = i + 1
+      else
+        out[#out + 1] = "+" .. b[j]; j = j + 1
+      end
+    end
+    for k = i, n do out[#out + 1] = "-" .. a[k] end
+    for k = j, m do out[#out + 1] = "+" .. b[k] end
+    return out
+  end
+
+  casper.tool("edit", {
+    description = [[
+  Replace an exact piece of a file. `old` must appear exactly once -- include enough of the
+  surrounding lines to make it unique. Answers with a unified diff of the change.]],
     parameters = {
       type = "object",
       properties = {
-        glob = { type = "string", description = "Name pattern, e.g. `*.rs` or `Cargo.toml`." },
-        path = { type = "string", description = "Where to look. Defaults to the current directory." },
-        limit = {
-          type = "integer", minimum = 1, maximum = 5000, default = 1000,
-          description = "Most paths to return.",
-        },
+        path = { type = "string", description = "The file to change." },
+        old = { type = "string", description = "The exact text to replace." },
+        new = { type = "string", description = "What to put in its place." },
       },
+      required = { "path", "old", "new" },
     },
-    needs = "read",
+    needs = "write",
 
     run = function(args)
-      local where = args.path or "."
-      local limit = args.limit or 1000
-      local glob  = args.glob or "*"
-
-      local done = casper.exec("fd", {
-        "--color=never", "--glob", "--max-results=" .. tostring(limit),
-        glob, "--search-path=" .. where,
-      })
-      if done.code == 0 then return { said = done.out } end
-
-      -- `find` has no result cap of its own, so the limit is applied after it rather than not
-      -- at all: an uncapped listing of a large tree is a turn that cannot be sent.
-      local fell = casper.exec("find", { where, "-name", glob })
-      if fell.code ~= 0 then
-        return { said = fell.err ~= "" and fell.err or done.err, failed = true }
+      if args.old == "" then
+        return { said = "`old` is empty: say which text to replace", failed = true }
       end
-      local kept, n = {}, 0
-      for line in fell.out:gmatch("[^\n]+") do
-        n = n + 1
-        if n > limit then break end
-        kept[#kept + 1] = line
+      local read = casper.exec("cat", { args.path })
+      if read.code ~= 0 then return { said = read.err, failed = true } end
+      local text = read.out
+
+      -- Counted before anything is replaced: patching the wrong one of two matches silently is the
+      -- failure that costs an hour to find.
+      local s, e, count, from = nil, nil, 0, 1
+      while true do
+        local at, to = text:find(args.old, from, true)
+        if not at then break end
+        count = count + 1
+        if count == 1 then s, e = at, to end
+        from = to + 1
       end
-      return { said = table.concat(kept, "\n") }
-    end,
-  })
-end
+      if count == 0 then
+        return { said = "that exact text is not in " .. args.path .. ". Read it again -- it may "
+          .. "have changed, or the whitespace may differ.", failed = true }
+      end
+      if count > 1 then
+        return { said = ("that text appears %d times in %s. Include more of the surrounding lines "
+          .. "so it matches exactly once."):format(count, args.path), failed = true }
+      end
+      local done = put(args.path, text:sub(1, s - 1) .. args.new .. text:sub(e + 1))
+      if done.code ~= 0 then return { said = done.err, failed = true } end
 
-do -- grep
-  -- `rg` honours ignore files and is faster; `grep` is everywhere. Both go through the same
-  -- gate, because the gate is magi's and it is asked before either of them runs.
-  casper.tool("grep", {
-    description = [[
-  Search file contents, preferring ripgrep and falling back to grep.
+      -- The whole lines the change touched, before and after, then aligned.
+      local from_line, to_line = s, e
+      while from_line > 1 and text:sub(from_line - 1, from_line - 1) ~= "\n" do
+        from_line = from_line - 1
+      end
+      while to_line < #text and text:sub(to_line + 1, to_line + 1) ~= "\n" do
+        to_line = to_line + 1
+      end
+      local before = lines_of(text:sub(from_line, to_line))
+      local after = lines_of(text:sub(from_line, s - 1) .. args.new .. text:sub(e + 1, to_line))
+      local first = select(2, text:sub(1, from_line - 1):gsub("\n", "")) + 1
 
-  Honours .gitignore when ripgrep is available. Returns `path:line:text`, one match a line.]],
-    parameters = {
-      type = "object",
-      properties = {
-        pattern = { type = "string", description = "The pattern to search for." },
-        path = { type = "string", description = "Where to search. Defaults to the current directory." },
-        limit = {
-          type = "integer", minimum = 1, maximum = 1000, default = 200,
-          description = "Most matches to return per file.",
-        },
-      },
-      required = { "pattern" },
-    },
-    needs = "read",
+      local all, hunk = lines_of(text), {}
+      local start = math.max(1, first - CONTEXT)
+      for k = start, first - 1 do hunk[#hunk + 1] = " " .. all[k] end
+      for _, line in ipairs(changes(before, after)) do hunk[#hunk + 1] = line end
+      local last = first + #before - 1
+      for k = last + 1, math.min(#all, last + CONTEXT) do hunk[#hunk + 1] = " " .. all[k] end
+      local olds, news = 0, 0
+      for _, line in ipairs(hunk) do
+        local mark = line:sub(1, 1)
+        if mark ~= "+" then olds = olds + 1 end
+        if mark ~= "-" then news = news + 1 end
+      end
 
-    run = function(args)
-      local where = args.path or "."
-      local limit = tostring(args.limit or 200)
-
-      local done = casper.exec("rg", {
-        "--line-number", "--no-heading", "--color=never",
-        "--max-count=" .. limit, "--regexp=" .. args.pattern, where,
-      })
-      -- `rg` exits 1 when it matched nothing, which is an answer and not a failure.
-      if done.code == 0 then return { said = done.out } end
-      if done.code == 1 and done.err == "" then return { said = "no matches" } end
-
-      local fell = casper.exec("grep", {
-        "-rnI", "--exclude-dir=.git", "--max-count=" .. limit, "-e", args.pattern, where,
-      })
-      if fell.code == 0 then return { said = fell.out } end
-      if fell.code == 1 then return { said = "no matches" } end
-      return { said = fell.err ~= "" and fell.err or done.err, failed = true }
+      local diff = ("--- %s\n+++ %s\n@@ -%d,%d +%d,%d @@\n"):format(
+        args.path, args.path, start, olds, start, news) .. table.concat(hunk, "\n")
+      return { said = diff, shown = casper.paint.diff(diff, args.path) }
     end,
   })
 end
@@ -231,6 +391,12 @@ do -- shell
   -- (an exported variable does not survive, nor a shell function) and it is the part that
   -- actually gets used.
   local function remembered()
+    -- Under the jail `$XDG_RUNTIME_DIR` is read-only, so the directory is kept in `/tmp` instead,
+    -- which the jail makes a writable, per-project dir that persists across calls. Off the jail,
+    -- `$XDG_RUNTIME_DIR` is per-user and writable.
+    if (os.getenv("CASPER_JAIL") or "") ~= "" then
+      return "/tmp/casper/cwd"
+    end
     local runtime = os.getenv("XDG_RUNTIME_DIR") or "/tmp"
     return runtime .. "/casper/cwd"
   end
@@ -268,10 +434,20 @@ do -- shell
       -- nothing here can see -- a script, a `pushd`, a `cd` inside an `if`.
       local held = where() or args.cwd or "."
       local kept = remembered()
+      -- **Backgrounded so this shell can hear a signal, grouped so it can pass one on.** `pwd`
+      -- has to follow the command, so dash forks for it rather than exec'ing it, and
+      -- `PR_SET_PDEATHSIG` is cleared across every fork: killing a magi took casper and this
+      -- shell and left `sleep 300` under init. casper starts this shell leading a process group
+      -- of its own (`tied.rs`), so `-$$` is the command and what it started and can never be
+      -- casper. The `&` is what lets the trap run at all -- a shell waiting on a *foreground*
+      -- command handles the signal once that command returns, which here is never.
       local done = casper.exec("sh", {
         "-c",
-        ("mkdir -p \"$(dirname %q)\"; cd %q 2>/dev/null || cd .; { %s; }; code=$?; pwd > %q; exit $code")
-          :format(kept, held, args.command, kept),
+        ([[
+mkdir -p "$(dirname %q)"; cd %q 2>/dev/null || cd .
+trap 'trap "" TERM HUP; kill -TERM -$$ 2>/dev/null; exit 143' TERM HUP
+{ %s; code=$?; pwd > %q; exit $code; } &
+wait $!]]):format(kept, held, args.command, kept),
       })
 
       local out = done.out
@@ -282,23 +458,6 @@ do -- shell
         return { said = out .. "\n(exit " .. tostring(done.code) .. ")", failed = true }
       end
       return { said = out }
-    end,
-  })
-end
-
-do -- pwd
-  -- What `shell` is remembering, so a model can ask rather than run a command to find out.
-  casper.tool("pwd", {
-    description = "The directory `shell` will run its next command in.",
-    parameters = { type = "object" },
-
-    run = function()
-      local runtime = os.getenv("XDG_RUNTIME_DIR") or "/tmp"
-      local done = casper.exec("cat", { runtime .. "/casper/cwd" })
-      if done.code ~= 0 then
-        return { said = "nothing has run yet, so it is wherever the session is rooted" }
-      end
-      return { said = done.out:gsub("%s+$", "") }
     end,
   })
 end
@@ -499,15 +658,21 @@ do -- permission
       -- The question, and nothing that can be chosen. Split out because the pointer has to know
       -- how many rows stand between the top and the first offer, and counting them in two places
       -- is how a click lands one row off the thing it was aimed at.
+      local width = math.max(20, (size.cols or 80) - 2)
+      -- What each verb looks like, so the kind of thing being asked reads before the words do.
+      local ICON = { run = "❯_", write = "✎ ", read = "◉ ", reach = "⇄ " }
+
       local function head()
-        local width = math.max(20, (size.cols or 80) - 4)
         local rows = {
-          { { role = "warn", text = "  " .. (args.tool or "a tool") },
+          { { role = "warn", text = "  " .. (ICON[args.verb] or "◆ ") .. " " },
+            { role = "title", text = args.tool or "a tool" },
             { role = "muted", text = " wants to " },
-            { role = "title", text = args.verb or "act" } },
+            { role = "warn", text = args.verb or "act" } },
+          { { role = "text", text = "" } },
         }
-        for _, line in ipairs(wrapped(args.subject, width - 4)) do
-          rows[#rows + 1] = { { role = "path", text = "    " .. line } }
+        -- The call on its own lines behind a bar, in full: it is what is being decided about.
+        for _, line in ipairs(wrapped(args.subject, width - 6)) do
+          rows[#rows + 1] = { { role = "title", text = "  ┃ " }, { role = "path", text = line } }
         end
         rows[#rows + 1] = { { role = "text", text = "" } }
         return rows
@@ -522,17 +687,43 @@ do -- permission
         return offers[n] and n or nil
       end
 
+      -- Behind the row the cursor is on, reaching the edge, so the choice reads as one lit bar.
+      local BAND = { 58, 58, 58 }
+
+      -- First letter up: these arrive as phrases, and a list of them reads as a menu.
+      local function titled(text)
+        return (tostring(text):gsub("^%l", string.upper))
+      end
+
       local function draw()
         local rows = head()
         for n, offer in ipairs(offers) do
-          local here = n == at
-          rows[#rows + 1] = {
-            { role = here and "ok" or "dim", text = here and "  > " or "    " },
-            { role = here and "title" or "text", text = offer.label or offer.id },
-            { role = "dim", text = offer.about and offer.about ~= "" and ("  " .. offer.about) or "" },
-          }
+          local refusal = offer.id == "no"
+          local label = titled(offer.label or offer.id)
+          if n == at then
+            -- Counted in columns: the marker is one cell, however many bytes it takes.
+            local used = 7 + #label
+            local ink = refusal and "error" or "ok"
+            rows[#rows + 1] = {
+              { role = ink, text = "  ❯ ", bg = BAND },
+              { role = "dim", text = n .. "  ", bg = BAND },
+              { role = ink, text = label, bg = BAND },
+              { role = "text", text = string.rep(" ", math.max(0, width - used)), bg = BAND },
+            }
+          else
+            rows[#rows + 1] = {
+              { role = "dim", text = "    " .. n .. "  " },
+              { role = refusal and "error" or "muted", text = label },
+            }
+          end
         end
-        rows[#rows + 1] = { { role = "dim", text = "  ↑↓ or the pointer · enter to answer · esc denies" } }
+        -- What the choice under the cursor means, on a line of its own.
+        local chosen = offers[at] or {}
+        rows[#rows + 1] = { { role = "dim", text = "       ↳ " .. (chosen.about or "") } }
+        rows[#rows + 1] = { { role = "text", text = "" } }
+        rows[#rows + 1] = {
+          { role = "dim", text = ("  ↑↓ move · 1–%d pick · enter choose · esc deny"):format(#offers) },
+        }
         return { lines = rows }
       end
 
@@ -553,6 +744,9 @@ do -- permission
             return { answered = (offers[at] or {}).id or "no" }
           elseif key == "esc" or key == "q" then
             return { answered = "no" }
+          elseif key:match("^%d$") and offers[tonumber(key)] then
+            -- A number takes that row outright, the way the list numbers it.
+            return { answered = offers[tonumber(key)].id }
           end
         elseif event.kind == "mouse" then
           -- Hovering moves the selection and clicking takes it, which is what every list on a
@@ -1219,6 +1413,144 @@ do -- birdy
             { role = "text", rgb = WING, text = "   space flaps · ↓ dives" },
           }
         return { lines = rows }
+      end
+    end,
+  })
+end
+
+do -- doom
+  -- **DOOM, in the float.** doom-ascii on a pty, Freedoom for its data, as big as the float holds.
+  -- It draws a fixed 640/s by 200/s cells and never asks the terminal how big it is, so the scale
+  -- is the smallest whole `s` whose frame fits. Installed by hand, not shipped: `doom-ascii` on the
+  -- PATH is expected to find its own data.
+  local function scale(size)
+    for s = 2, 12 do
+      if 640 / s <= (size.cols or 80) and 200 / s <= (size.rows or 24) then return s end
+    end
+    return 12
+  end
+
+  casper.tool("doom", {
+    description = [[
+  Play DOOM (Freedoom) in the float over the conversation, as big as the terminal allows. Arrows
+  move and turn, space fires, e opens doors, esc brings up its menu. Needs `doom-ascii`.]],
+    parameters = { type = "object", properties = {} },
+
+    run = function(args)
+      if args.answered then return { said = "DOOM ended." } end
+      return casper.surface{
+        place = "float",
+        about = "DOOM — arrows move, space fires, e opens, esc for the menu",
+        tick = 33,
+      }
+    end,
+
+    -- Held keys stutter on a terminal that sends no releases, so the game is told to wait a little
+    -- longer for the next repeat before it lets a key go.
+    screen = function(_, size)
+      return {
+        command = "doom-ascii",
+        -- Solid blocks only: the ░▒▓ gradient lets the terminal's background bleed through.
+        args = { "-scaling", tostring(scale(size)), "-chars", "block", "-nograd", "-kpsmooth", "90" },
+      }
+    end,
+  })
+end
+
+do -- games
+  -- **Every game here, from one list.** The pick hands the screen over: the list answers
+  -- `play:<name>`, the call runs again and asks for that game's own surface -- in the prompt, or
+  -- for doom the whole float -- and what the game answers is what the call answers.
+  local GAMES = {
+    { name = "dino", title = "Dinosaur", about = "the no-internet dinosaur, in the prompt",
+      place = "prompt", rows = 8, tick = 16 },
+    { name = "birdy", title = "Birdy", about = "flappy bird, in the prompt",
+      place = "prompt", rows = 16, tick = 16 },
+    { name = "doom", title = "DOOM", about = "Freedoom, filling the float",
+      place = "float", rows = 1, tick = 33 },
+  }
+  local BAND = { 58, 58, 58 }
+
+  casper.tool("games", {
+    description = [[
+  Offer every terminal game here and play the one the person picks: the dinosaur and flappy bird
+  in the prompt, DOOM in the float. Call it when somebody asks to play without naming a game.]],
+    parameters = { type = "object", properties = {} },
+
+    run = function(args)
+      local said = type(args.answered) == "string" and args.answered or nil
+      local picked = said and said:match("^play:(.+)$")
+      for _, game in ipairs(GAMES) do
+        if game.name == picked then
+          return casper.surface{
+            rows = game.rows, about = game.about, tick = game.tick,
+            place = game.place, tenant = game.name,
+          }
+        end
+      end
+      if said == "no" then return { said = "nothing was picked" } end
+      if said then return { said = "the game ended: " .. said } end
+      return casper.surface{ rows = #GAMES + 5, about = "pick a game to play" }
+    end,
+
+    surface = function(_, size)
+      local at = 1
+      local width = math.max(20, (size.cols or 80) - 2)
+
+      local function draw()
+        local rows = {
+          { { role = "warn", text = "  ▶ " }, { role = "title", text = "Games" },
+            { role = "muted", text = "  pick one to play" } },
+          { { role = "text", text = "" } },
+        }
+        for n, game in ipairs(GAMES) do
+          if n == at then
+            local used = 4 + #tostring(n) + 2 + #game.title + 2 + #game.about
+            rows[#rows + 1] = {
+              { role = "ok", text = "  ❯ ", bg = BAND },
+              { role = "dim", text = n .. "  ", bg = BAND },
+              { role = "title", text = game.title, bg = BAND },
+              { role = "dim", text = "  " .. game.about, bg = BAND },
+              { role = "text", text = string.rep(" ", math.max(0, width - used)), bg = BAND },
+            }
+          else
+            rows[#rows + 1] = {
+              { role = "dim", text = "    " .. n .. "  " },
+              { role = "text", text = game.title },
+              { role = "dim", text = "  " .. game.about },
+            }
+          end
+        end
+        rows[#rows + 1] = { { role = "text", text = "" } }
+        rows[#rows + 1] = {
+          { role = "dim", text = ("  ↑↓ move · 1–%d pick · enter play · esc cancel"):format(#GAMES) },
+        }
+        return { lines = rows }
+      end
+
+      return function(event)
+        local key = casper.tapped(event)
+        if key then
+          if key == "up" or key == "k" then
+            at = at > 1 and at - 1 or #GAMES
+          elseif key == "down" or key == "j" then
+            at = at < #GAMES and at + 1 or 1
+          elseif key == "enter" or key == "space" then
+            return { answered = "play:" .. GAMES[at].name }
+          elseif key == "esc" or key == "q" then
+            return { answered = "no" }
+          elseif key:match("^%d$") and GAMES[tonumber(key)] then
+            return { answered = "play:" .. GAMES[tonumber(key)].name }
+          end
+        elseif event.kind == "mouse" then
+          -- The heading and the blank under it are rows 0 and 1; the games start at 2.
+          local n = (event.row or 0) - 1
+          if GAMES[n] then
+            at = n
+            if event.what == "release" then return { answered = "play:" .. GAMES[n].name } end
+          end
+        end
+        return draw()
       end
     end,
   })

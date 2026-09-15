@@ -1,150 +1,92 @@
 //! What casper answers, and where.
 //!
-//! # The shape is the family's
-//!
 //! ```text
 //! -> {"call":"tools","args":[]}
-//! <- {"ok":true,"family":1,"n":1,"result":[[{"name":"cat",…}]]}
+//! <- {"ok":true,"family":1,"n":2,"result":[{"name":"cat",…},{"name":"patch",…}]}
 //! ```
 //!
-//! Four-byte big-endian length, then the body. `result` is a **list** and `n` says how long it
-//! is: a sibling that unpacks a list would read a bare value as *nothing at all*, so `tools()`
-//! would come back empty rather than wrong — and an empty answer looks like a casper with no
-//! tools. Settled here before either side ships.
-//!
-//! A refused call is a **reply**, not a dropped connection. The caller sees casper's error
-//! rather than a transport error, and "no such call: nope" says what to fix where "connection
-//! reset" does not.
-//!
-//! # Two links, because running a command is not a question
-//!
-//! casper's whole job is running things, and *a socket that runs commands is remote code
-//! execution*. So the surface splits by how much trust the link already carries:
-//!
-//! | link | verbs | why |
-//! |---|---|---|
-//! | socket | [`VERBS`] — read-only | anything the walls allow may ask what exists |
-//! | spawn (argv + stdin) | `run`, `configure` | the parent could have run the command itself |
-//!
-//! This is not a precaution that can be added later. A verb that ran something would be reachable
-//! by every process of this user the moment it shipped, and taking it away afterwards breaks
-//! whoever started calling it.
-//!
-//! # How this family talks
-//!
-//! Three transports, two shapes, one encoding. Written out here because it was written out
-//! nowhere: four wires had grown four different ways to say the same thing — `say`/`heard`,
-//! `to`/`from`, `message`, and a call envelope — and nothing anywhere said which was meant.
-//!
-//! **Three transports, and the choice between them is about what is being asked.**
-//!
-//! | | |
-//! |---|---|
-//! | **argv** | a question with an answer and nothing to hold open. One JSON object on stdout. |
-//! | **pipe** | a parent and the child it started. Newline-delimited JSON, both directions. |
-//! | **socket** | anything may knock. Four bytes of big-endian length, then JSON. |
-//!
-//! JSON is on all three. It is the *encoding*, not a transport, and naming it as one is how the
-//! diagram of this family came to have "argv + json" on an edge.
-//!
-//! **Two shapes, and the difference is whether anybody is waiting.**
-//!
-//! A **call** is answered:
-//!
-//! ```text
-//! -> {"call":"status","args":[]}
-//! <- {"ok":true,"family":1,"n":1,"result":[{"busy":false}]}
-//! ```
-//!
-//! An **event** is not:
-//!
-//! ```text
-//! {"event":"listening","at":"…"}
-//! ```
-//!
-//! `result` is a **list** and `n` says how long it is: a sibling that unpacks a list would read
-//! a bare value as *nothing at all*, so an answer would come back empty rather than wrong — and
-//! an empty answer looks like an empty session. `family` says which revision of this the reply
-//! is written in; a reader refuses a number it does not know and tolerates one it predates.
-//!
-//! A refused call is a **reply**, not a dropped connection. The caller then sees the far end's
-//! error rather than a transport error, and "no such call: nope" says what to fix where
-//! "connection reset" does not.
-//!
-//! **The tag key is `event`, everywhere, in both directions.** `scripts/gate-wire.sh` refuses
-//! any other, because the failure mode is silent: casper is another checkout with its own copy
-//! of these frames, so when two spellings drift nothing fails — the surface simply stops being
-//! answered.
+//! Newline-delimited JSON on a pipe, one object on stdout for argv. `result` is always a list and
+//! `n` its length; a sibling that unpacks a list reads a bare value as nothing at all. A refusal
+//! is a reply, not a dropped connection. An event's tag key is `event` in both directions, and
+//! `scripts/gate-wire.sh` refuses any other. Two doors: [`CLI_VERBS`] on the command line, and
+//! [`SOCKET_VERBS`] on a bound socket. `run` is on both — over the socket it is no remote shell,
+//! because the jail is the coordinator's, set on `serve`'s spawn, never the call's.
 
 use serde::{Deserialize, Serialize};
 
-/// Which revision of the family wire this speaks.
-///
-/// **There was no version anywhere, in four implementations that already disagree.** casper's
-/// reply always sends `n`; a sibling's makes it optional and adds a `fault` field casper has
-/// never had. Both are "the family wire". A consumer meeting an unexpected shape learns about it
-/// as a missing field at the point of use, which reads as the peer being broken rather than as
-/// the peer being a different version.
-///
-/// The number is duplicated in each sibling for the same reason the types are — a shared crate
-/// would be a dependency between repositories, and this family has none. It is bumped when a
-/// consumer that does not know about a change would misread a reply, not when a field is added
-/// that an older reader ignores.
+/// Which revision of the family wire this speaks. Bumped when a consumer that does not know about
+/// a change would misread a reply, not when a field is added that an older reader ignores.
 pub const FAMILY: u16 = 1;
 
-/// The version a reply is stamped with when it does not say.
-///
-/// Serde needs a function; [`FAMILY`] is the answer.
-fn family() -> u16 {
-    FAMILY
-}
+/// The revision of the registrar surface a plugin file is written against. It goes up only when
+/// something already published stops working. Reported on `verbs`, beside `family`.
+pub const SURFACE: u16 = 1;
 
 /// One call, as it arrives.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct Call {
-    /// Which verb.
     pub call: String,
-    /// Its arguments, in order.
     #[serde(default)]
     pub args: Vec<serde_json::Value>,
 }
 
-/// One reply, as it goes back.
-///
-/// Built through the constructors rather than by hand, so the `n`/`result` invariant holds in one
-/// place instead of at every call site that answers.
+/// Which kind of no an answer is. A refusal costs the caller a feature; a failure costs it the
+/// work that just happened.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Fault {
+    Refused,
+    Failed,
+}
+
+/// One reply, as it goes back. Built through the constructors, so the `n`/`result` invariant holds
+/// in one place rather than at every call site that answers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Reply {
-    /// Whether the call was answered.
     pub ok: bool,
-    /// Which revision of the family wire this reply is written in. See [`FAMILY`].
-    ///
-    /// Defaulted on the way in, so a reply from a build before this existed reads as `0` — "from
-    /// before versions" — rather than failing to parse. A reader refuses a number it does not
-    /// know and tolerates one it predates.
-    #[serde(default = "family")]
+    /// Missing reads as `0`: a peer from before the field, not one that named this revision.
+    #[serde(default)]
     pub family: u16,
-    /// How many values came back. Always `result.len()`.
+    /// Only on `verbs`: a fact about the program rather than about the reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface: Option<u16>,
+    /// Always `result.len()`.
     #[serde(default)]
     pub n: usize,
-    /// The values, in order.
     #[serde(default)]
     pub result: Vec<serde_json::Value>,
-    /// Why not, when `ok` is false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Which kind of no. Set explicitly, so the three siblings refuse in identical bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fault: Option<Fault>,
 }
 
 impl Reply {
-    /// An answer of one value.
     #[must_use]
     pub fn of(value: serde_json::Value) -> Self {
         Self {
             ok: true,
             family: FAMILY,
+            surface: None,
             n: 1,
             result: vec![value],
             error: None,
+            fault: None,
+        }
+    }
+
+    /// An answer of several values. A list is the rows, not one row that is a list.
+    #[must_use]
+    pub fn rows(values: Vec<serde_json::Value>) -> Self {
+        Self {
+            ok: true,
+            family: FAMILY,
+            surface: None,
+            n: values.len(),
+            result: values,
+            error: None,
+            fault: None,
         }
     }
 
@@ -154,9 +96,11 @@ impl Reply {
         Self {
             ok: true,
             family: FAMILY,
+            surface: None,
             n: 0,
             result: Vec::new(),
             error: None,
+            fault: None,
         }
     }
 
@@ -166,42 +110,67 @@ impl Reply {
         Self {
             ok: false,
             family: FAMILY,
+            surface: None,
             n: 0,
             result: Vec::new(),
             error: Some(why.into()),
+            fault: Some(Fault::Refused),
         }
     }
 }
 
-/// The verbs casper answers on its socket.
-///
-/// Read-only, every one of them. `run` is not here and must never be: see the module docs.
-///
-/// `verbs` ships from the first version because it cannot be added quietly later — a family where
-/// one tool can be asked what it speaks and another cannot has stopped being a family.
-pub const VERBS: &[(&str, &str)] = &[
-    ("verbs", "what casper answers"),
+/// Every verb casper answers on its command line, and what each does.
+pub const CLI_VERBS: &[(&str, &str)] = &[
+    ("verbs", "what this program answers, and on which door"),
     (
         "tools",
         "every tool it offers, with schemas and what each needs",
     ),
+    ("run", "run one; the call arrives as JSON on stdin"),
+    (
+        "surface",
+        "hold rows on the harness's screen and draw into them",
+    ),
     ("needs", "what a coordinator may tell it, as declarations"),
+    ("configure", "take that configuration, as Lua on stdin"),
+    (
+        "client",
+        "the client library for its surface — casper has none, and says so",
+    ),
+    (
+        "acknowledge",
+        "clear the installed packages, so their declarations may run",
+    ),
+    (
+        "serve",
+        "bind a session's socket and answer tools and run on it",
+    ),
 ];
 
-/// Whether `verb` is one this socket answers.
+/// Every verb casper answers on its socket: the tool surface, kept open across a session's calls.
+/// `run` is no remote shell here — the jail is `serve`'s spawn, not the call's. See [`crate::serving`].
+pub const SOCKET_VERBS: &[(&str, &str)] = &[
+    (
+        "tools",
+        "every tool it offers, with schemas and what each needs",
+    ),
+    (
+        "run",
+        "run one; the call arrives as a framed JSON or CBOR body",
+    ),
+];
+
+/// Whether `verb` is answered on the command line.
 #[must_use]
 pub fn known(verb: &str) -> bool {
-    VERBS.iter().any(|(name, _)| *name == verb)
+    CLI_VERBS.iter().any(|(name, _)| *name == verb)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn a_reply_of_one_value_is_a_list_of_one() {
-        // The family invariant. A bare value here reads as "returned nothing" to a client that
-        // unpacks, and the bug presents as a casper with no tools rather than as an error.
         let wire = serde_json::to_string(&Reply::of(serde_json::json!({"a": 1}))).expect("enc");
         assert_eq!(wire, r#"{"ok":true,"family":1,"n":1,"result":[{"a":1}]}"#);
     }
@@ -225,18 +194,46 @@ mod tests {
     }
 
     #[test]
-    fn the_socket_runs_nothing() {
-        // The rule this file exists to hold. A verb that ran something would be reachable by
-        // every process of this user the moment it shipped, and taking it away afterwards breaks
-        // whoever had started calling it.
-        for (verb, _) in VERBS {
-            for shape in ["run", "exec", "shell", "eval", "spawn", "call"] {
-                assert!(
-                    !verb.contains(shape),
-                    "`{verb}` is a {shape}-shaped verb on a socket"
-                );
+    fn no_verb_is_listed_twice_on_one_door() {
+        // A verb may be on both doors — `tools` and `run` are — but never twice on the same one.
+        for (door, table) in [("cli", CLI_VERBS), ("socket", SOCKET_VERBS)] {
+            for (verb, _) in table {
+                let listed = table.iter().filter(|(name, _)| name == verb).count();
+                assert_eq!(listed, 1, "`{verb}` is advertised {listed} times on {door}");
             }
         }
+    }
+
+    #[test]
+    fn a_fault_is_spelled_the_way_the_family_spells_it() {
+        for (fault, spelled) in [
+            (Fault::Refused, "\"refused\""),
+            (Fault::Failed, "\"failed\""),
+        ] {
+            let wire = serde_json::to_string(&fault).expect("enc");
+            assert_eq!(wire, spelled);
+            assert_eq!(
+                serde_json::from_str::<Fault>(&wire).expect("dec"),
+                fault,
+                "a sibling's fault must read back"
+            );
+        }
+    }
+
+    #[test]
+    fn every_socket_verb_has_serve_on_the_command_line_to_open_it() {
+        // A socket verb no one can reach is worse than none: a program advertising a `socket` door
+        // must answer `serve` on the command line to open it (FAMILY.md, and gate-family probes it).
+        assert!(
+            known("serve"),
+            "casper advertises socket verbs, so it must answer `serve` to bind one"
+        );
+        // The socket is not a remote shell: `run` on it is safe because the jail is the coordinator's,
+        // set on `serve`'s spawn, never the call's. This is the invariant `serving` rests on.
+        assert!(
+            SOCKET_VERBS.iter().any(|(name, _)| *name == "run"),
+            "the tool surface is what the socket is for"
+        );
     }
 
     #[test]

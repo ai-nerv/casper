@@ -7,18 +7,9 @@
 //! })
 //! ```
 //!
-//! **The other kind of tenant.** A `surface` declaration draws its own rows, frame by frame, in
-//! Lua. A `screen` declaration names a *program*, and casper puts it on a pty of exactly that
-//! size, types into it what the person types, and hands back what it painted. Neither the tool
-//! nor the harness draws anything: the program does.
-//!
-//! Nothing about the wire changes for this. What comes back is the same rows of spans a game
-//! sends, so the harness cannot tell `htop` from the dinosaur and does not have to — which is
-//! the whole point of the reservation being *space* rather than a widget.
-//!
-//! **Why casper and not the harness.** Running programs is casper's entire job and the reason it
-//! has a spawn link rather than a socket verb. A harness that opened its own pty would be back to
-//! spawning commands, which is the thing the split exists to prevent.
+//! A `surface` declaration draws its own rows in Lua. A `screen` declaration names a program,
+//! which casper puts on a pty of exactly that size, types into, and reads back. What crosses the
+//! wire is the same rows of spans either way.
 
 use crate::paint::Line;
 use crate::tools::{At, Button, Pointed};
@@ -33,9 +24,7 @@ pub mod rewriting;
 /// What to run, as a declaration described it.
 #[derive(Debug, Clone, Default)]
 pub struct Spec {
-    /// The program.
     pub command: String,
-    /// Its arguments.
     pub args: Vec<String>,
     /// Where to run it.
     pub cwd: Option<String>,
@@ -45,9 +34,6 @@ pub struct Spec {
 
 impl Spec {
     /// Read a spec out of what a `screen` declaration returned, or `None` if it named no program.
-    ///
-    /// A missing `command` is not a malformed table, it is a declaration that decided there was
-    /// nothing to run — so it is a `None` the caller can report rather than a raise.
     #[must_use]
     pub fn from_json(value: &serde_json::Value) -> Option<Self> {
         let command = value.get("command")?.as_str()?.to_owned();
@@ -88,16 +74,21 @@ impl Spec {
     }
 }
 
+const CHUNK: usize = 8 * 1024;
+
+/// How far ahead of the frame loop a program may get, in reads of [`CHUNK`]: the queue holds this
+/// many and one frame takes this many. Past it the program blocks in the kernel, as it does at a
+/// terminal nobody is reading, rather than filling casper's heap.
+const AHEAD: usize = 64;
+
 /// A program running on a pty, and the screen it has painted so far.
 pub struct Screen {
     /// The master side. Shared, because a thread is reading it while this writes to it.
     pty: Arc<pty_process::blocking::Pty>,
     child: std::process::Child,
-    /// What the reader thread has picked up and this has not yet fed to the emulator.
-    ///
-    /// A thread rather than a non-blocking read: the frame loop is synchronous and a read that
-    /// blocked would freeze the whole surface until the program next said something, which for
-    /// anything waiting on input is forever.
+    /// What the reader thread has picked up and this has not yet fed to the emulator. A thread
+    /// rather than a non-blocking read: the frame loop is synchronous, and a read that blocked
+    /// would freeze the surface until the program next spoke.
     output: std::sync::mpsc::Receiver<Vec<u8>>,
     vt: vt100::Parser<noticing::Noticing>,
     /// The one dialect difference the emulator does not speak. See [`rewriting`].
@@ -116,9 +107,8 @@ impl Screen {
         if let Some(cwd) = &spec.cwd {
             command = command.current_dir(cwd);
         }
-        // **The program is told what it is running on.** Without a `TERM` a curses program either
-        // refuses to start or falls back to something from the 1980s, and what it is running on
-        // is this emulator — which speaks xterm's sequences and its colours.
+        // Without a `TERM` a curses program refuses to start or falls back to something ancient,
+        // and what it is running on is this emulator, which speaks xterm.
         command = command
             .env("TERM", "xterm-256color")
             .env("COLORTERM", "truecolor")
@@ -127,13 +117,15 @@ impl Screen {
         for (key, value) in &spec.env {
             command = command.env(key, value);
         }
+        // Under the hangup the closing master already sends, for the program that ignores it.
+        command = crate::tied::on_a_screen(command);
         let child = command.spawn(pts)?;
 
         let pty = Arc::new(pty);
-        let (sender, output) = std::sync::mpsc::channel();
+        let (sender, output) = std::sync::mpsc::sync_channel(AHEAD);
         let reading = Arc::clone(&pty);
         std::thread::spawn(move || {
-            let mut buffer = [0u8; 8192];
+            let mut buffer = [0u8; CHUNK];
             // Ends when the program does: the last slave fd closing makes this read fail, which
             // drops the sender and is how the frame loop learns the program is gone.
             while let Ok(read) = (&*reading).read(&mut buffer) {
@@ -147,8 +139,8 @@ impl Screen {
             pty,
             child,
             output,
-            // With the canary attached: anything the emulator cannot read is counted
-            // rather than silently dropped. See [`noticing`].
+            // With the canary attached: anything the emulator cannot read is counted. See
+            // [`noticing`].
             vt: vt100::Parser::new_with_callbacks(
                 rows.max(1),
                 cols.max(1),
@@ -160,15 +152,15 @@ impl Screen {
         })
     }
 
-    /// Take everything the program has written since the last frame.
+    /// Take what the program has written since the last frame, up to `AHEAD` reads of it.
     ///
-    /// `false` once it is gone — its output is closed and nothing more will be painted.
+    /// `false` once it is gone — its output is closed and nothing more will be painted. Past the
+    /// cap the rest waits for the next frame, so a program still writing cannot hold this here.
     pub fn read(&mut self) -> bool {
-        loop {
+        for _ in 0..AHEAD {
             match self.output.try_recv() {
                 Ok(mut bytes) => {
-                    // Before the emulator sees them, because the whole point is that it cannot
-                    // read one of these on its own.
+                    // Before the emulator sees them: it cannot read one of these on its own.
                     self.fixing.apply(&mut bytes);
                     self.vt.process(&bytes);
                 }
@@ -176,30 +168,33 @@ impl Screen {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => return false,
             }
         }
+        true
     }
 
     /// Type a named key into it.
     ///
-    /// A key with no byte sequence sends nothing rather than a guess: a byte invented here is a
-    /// keystroke the program was never given and cannot be told about.
+    /// A key with no byte sequence sends nothing rather than a guess.
     pub fn typed(&mut self, name: &str) {
         let application = self.vt.screen().application_cursor();
         if let Some(bytes) = keying::bytes(name, application) {
-            let _ = (&*self.pty).write_all(&bytes);
+            if let Err(why) = (&*self.pty).write_all(&bytes) {
+                crate::noted!("{}: the key `{name}` was not delivered: {why}", self.named);
+            }
         }
     }
 
     /// Hand it the pointer, if it asked for one.
     ///
-    /// **Only if it asked.** A program that never turned mouse reporting on is one whose input is
-    /// a keyboard, and writing escape sequences at it would type garbage into whatever it is
-    /// reading — which for a shell is a command somebody did not write.
+    /// Only if it asked: a program that never turned mouse reporting on would read the escape
+    /// sequences as typed input.
     pub fn pointed(&mut self, kind: Pointed, button: Option<Button>, row: u16, col: u16) {
         if self.vt.screen().mouse_protocol_mode() == vt100::MouseProtocolMode::None {
             return;
         }
         let bytes = keying::mouse(kind, button, row, col);
-        let _ = (&*self.pty).write_all(&bytes);
+        if let Err(why) = (&*self.pty).write_all(&bytes) {
+            crate::noted!("{}: a pointer event was not delivered: {why}", self.named);
+        }
     }
 
     /// Tell it the room changed.
@@ -208,9 +203,15 @@ impl Screen {
     /// `SIGWINCH` the pty sends is what makes the program redraw itself at the new size.
     pub fn resized(&mut self, rows: u16, cols: u16) {
         self.vt.screen_mut().set_size(rows.max(1), cols.max(1));
-        let _ = self
+        if let Err(why) = self
             .pty
-            .resize(pty_process::Size::new(rows.max(1), cols.max(1)));
+            .resize(pty_process::Size::new(rows.max(1), cols.max(1)))
+        {
+            crate::noted!(
+                "{}: the pty was not resized to {rows}x{cols}, so the program was never told: {why}",
+                self.named
+            );
+        }
     }
 
     /// What it has painted, and where it left the cursor.
@@ -222,9 +223,8 @@ impl Screen {
 
     /// What the model is told once it has ended.
     ///
-    /// The status and the screen it left behind, because that is the useful half: a person who ran
-    /// a viewer wants the model to know what was on it, and "exited 0" alone says nothing about
-    /// what happened. Trimmed of the blank rows a full-screen program pads itself out with.
+    /// The status and the screen it left behind, trimmed of the blank rows a full-screen program
+    /// pads itself out with.
     #[must_use]
     pub fn epitaph(&mut self) -> String {
         let status = match self.child.try_wait() {
@@ -243,10 +243,8 @@ impl Screen {
         }
     }
 
-    /// What the emulator could not read, and how often.
-    ///
-    /// Empty when it understood everything, which is what a screen that came out right looks like
-    /// from in here. See [`noticing`].
+    /// What the emulator could not read, and how often. Empty when it understood everything. See
+    /// [`noticing`].
     #[must_use]
     pub fn dropped(&self) -> Vec<(String, usize)> {
         self.vt.callbacks().dropped()
@@ -254,9 +252,6 @@ impl Screen {
 
     /// Ask it to go, and make sure it has.
     pub fn close(&mut self) {
-        // **Said on the way out, if anything was lost.** A screen that renders wrong is the one
-        // failure here with no clue attached: the program ran, it drew, and what came out is
-        // quietly not what it meant. One line naming the sequence turns that into a fact.
         if let Some(said) = self.vt.callbacks().summary() {
             crate::noted!("{}: {said}", self.named);
         }
@@ -267,8 +262,6 @@ impl Screen {
 
 impl Drop for Screen {
     fn drop(&mut self) {
-        // A program that outlived the rows it was drawing into would be a `vim` nobody can see and
-        // nobody can type at, still holding the file open.
         self.close();
     }
 }
@@ -285,8 +278,7 @@ mod tests {
             ..Spec::default()
         };
         let mut screen = Screen::open(&spec, rows, cols).expect("a pty");
-        // Polled rather than slept once: a loaded machine takes longer to get a shell started
-        // than any single sleep anybody would be willing to write here.
+        // Polled rather than slept once: a loaded machine is slow to get a shell started.
         for _ in 0..200 {
             screen.read();
             if screen
@@ -312,8 +304,6 @@ mod tests {
 
     #[test]
     fn the_program_is_given_the_size_it_was_granted() {
-        // A curses program lays itself out from this and gets it wrong for the life of the run if
-        // the pty was opened at some default and corrected afterwards.
         let screen = ran("stty size", 9, 41);
         let drawn = screen.drawn().0;
         let first: String = drawn[0].iter().map(|span| span.text.as_str()).collect();
@@ -322,8 +312,6 @@ mod tests {
 
     #[test]
     fn a_program_positioning_the_other_way_still_lands_where_it_meant_to() {
-        // Through a real pty and the real emulator, because the point of the rewrite is what the
-        // emulator does with the byte afterwards — and it is the emulator that drops it.
         for (spelling, name) in [("H", "CUP"), ("f", "HVP")] {
             let screen = ran(&format!(r"printf '\033[3;5{spelling}X'; sleep 2"), 5, 20);
             let rows: Vec<String> = screen
@@ -355,7 +343,6 @@ mod tests {
 
     #[test]
     fn what_it_left_on_the_screen_is_what_the_model_is_told() {
-        // The useful half. "exited 0" alone says nothing about what the person just watched.
         let mut screen = ran("printf marker", 3, 20);
         while screen.read() {
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -365,10 +352,38 @@ mod tests {
         assert!(said.contains("status 0"), "{said}");
     }
 
+    /// This process's peak resident size, in kilobytes.
+    fn peak_kb() -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .unwrap_or_default()
+            .lines()
+            .find_map(|line| line.strip_prefix("VmHWM:"))
+            .and_then(|rest| rest.trim().trim_end_matches(" kB").trim().parse().ok())
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn a_program_that_floods_a_screen_neither_freezes_the_loop_nor_fills_the_heap() {
+        let before = peak_kb();
+        let (tell, heard) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut screen = ran("yes casper-flood-fixture", 24, 80);
+            // A second of nobody drawing. An unbounded queue took a hundred megabytes of it.
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let alive = screen.read();
+            let _ = tell.send((alive, peak_kb()));
+            screen.close();
+        });
+        let (alive, after) = heard
+            .recv_timeout(std::time::Duration::from_secs(15))
+            .expect("`read` did not return while the program was still writing");
+        assert!(alive, "the program is still running");
+        let grew = after.saturating_sub(before);
+        assert!(grew < 64 * 1024, "the screen grew {grew} kB in a second");
+    }
+
     #[test]
     fn a_declaration_that_names_no_program_opens_nothing() {
-        // Rather than a raise. It is a `screen` that decided there was nothing to run, which the
-        // caller reports as a tool result the model can read.
         assert!(Spec::from_json(&serde_json::json!({})).is_none());
         assert!(Spec::from_json(&serde_json::json!({"command": ""})).is_none());
     }

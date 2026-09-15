@@ -1,6 +1,6 @@
 [package]
 name = "casper"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "The tooling interface: what a tool is, what it says, and what it shows"
 license = "MIT"
@@ -25,10 +25,23 @@ pty-process = "0.5"
 vt100 = "0.16"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
+sha2 = "0.10"
 ciborium = "0.2"
 anyhow = "1"
 luna = { git = "https://github.com/onix-os/luna", tag = "v0.5.0" }
 thiserror = "2.0"
+# The kernel's half of "casper belongs to the magi that started it": `PR_SET_PDEATHSIG`, and
+# nothing else from it. Already in the lockfile underneath pty-process, so this is a feature
+# and not a package.
+rustix = { version = "1", features = ["process", "net"] }
+seccompiler = "0.5"
+libc = "0.2.189"
+landlock = "0.4.4"
+# What `read`, `write` and `edit` show, in the file's own language: Sublime's grammars, read as
+# regexes, so no language is compiled in and none needs a program on the machine.
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
+# bat's own grammars on top of syntect's: TOML, Nix, TypeScript and the rest a project is made of.
+two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
 
 [dev-dependencies]
 

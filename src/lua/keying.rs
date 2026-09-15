@@ -9,28 +9,10 @@
 //! end
 //! ```
 //!
-//! **What it is for.** Where the Kitty keyboard protocol is live a keystroke arrives *twice* —
-//! once going down, once coming up — and nothing in the frame makes that obvious to somebody
-//! writing their first surface. A list that acted on both moved two rows for one press of the
-//! arrow, which is exactly the bug that shipped in the permission prompt: a person selecting the
-//! wrong permission with no way to see why.
-//!
-//! Nothing in the protocol tells you which kind of tenant you are. A game *wants* the release,
-//! because that is what ends a jump; a list has no use for it and cannot tell it apart from a
-//! press. So the safe reading is the short one: ask for a tap and get a tap.
-//!
-//! **What it hides, and when not to use it.**
-//!
-//! - A release comes back as `nil`. A tenant that needs one — anything where holding a key means
-//!   something — reads `event.state` itself. Both games do.
-//! - A *repeat* comes back as the key. It says the key is still down, which for a list is another
-//!   step: holding an arrow scrolls, rather than needing a tap a row.
-//! - The name is folded to lower case, because the thing this is for is matching against `"j"`,
-//!   `"enter"`, `"esc"`. A tenant that wants the character as typed — a field somebody is typing
-//!   into — reads `event.key`, where a capital is still a capital.
-//!
-//! Anything that is not a key event at all — a tick, a resize, the pointer — is `nil`, so one
-//! call answers "is this a keypress, and which" without a guard in front of it.
+//! Where the Kitty keyboard protocol is live a keystroke arrives twice, going down and coming
+//! up. A release answers `nil`, a repeat answers the key, the name is folded to lower case, and
+//! anything that is not a key event answers `nil`. A tenant that needs the release, or the
+//! character as typed, reads `event.state` and `event.key` itself.
 
 use luna::{Callback, CallbackReturn, Value};
 
@@ -50,8 +32,6 @@ pub fn table(ctx: luna::Context<'_>) -> Callback<'_> {
 /// The key this event is a press of, lower-cased, or `None`.
 fn tapped<'gc>(ctx: luna::Context<'gc>, event: &Value<'gc>) -> Option<String> {
     let Value::Table(event) = event else {
-        // Not a table at all. `nil` rather than a raise: this sits at the top of a frame handler,
-        // and a tenant handed something odd should draw its rows rather than end.
         return None;
     };
     let text = |field| match event.get_value(ctx, field) {
@@ -61,9 +41,7 @@ fn tapped<'gc>(ctx: luna::Context<'gc>, event: &Value<'gc>) -> Option<String> {
     if text("kind").as_deref() != Some("key") {
         return None;
     }
-    // Absent is a press. That is every terminal without the protocol, where a key is one bare
-    // event and there is no state on the frame at all — and a guard that read a missing field as
-    // "not a press" would make those terminals answer nothing.
+    // Absent state is a press: that is every terminal without the Kitty protocol.
     match text("state").as_deref() {
         None | Some("down" | "repeat") => text("key").map(|key| key.to_lowercase()),
         _ => None,
@@ -106,8 +84,6 @@ mod tests {
 
     #[test]
     fn a_key_coming_up_is_not() {
-        // The whole reason this exists. A list that read a release as a press moved two rows for
-        // one press of the arrow, and nothing on screen said why.
         assert_eq!(
             tapped(&serde_json::json!({"kind": "key", "key": "down", "state": "up"})),
             "<nothing>"
@@ -116,7 +92,6 @@ mod tests {
 
     #[test]
     fn a_repeat_is_a_tap_because_the_key_is_still_down() {
-        // What makes holding an arrow scroll a list rather than needing a tap a row.
         assert_eq!(
             tapped(&serde_json::json!({"kind": "key", "key": "j", "state": "repeat"})),
             "j"
@@ -125,8 +100,6 @@ mod tests {
 
     #[test]
     fn a_terminal_that_says_nothing_about_state_is_pressing_the_key() {
-        // Every terminal without the Kitty protocol. Reading a missing field as "not a press"
-        // would make those answer nothing at all.
         assert_eq!(
             tapped(&serde_json::json!({"kind": "key", "key": "enter"})),
             "enter"
@@ -135,8 +108,6 @@ mod tests {
 
     #[test]
     fn a_capital_matches_the_binding_it_was_typed_for() {
-        // `q` quits whether or not shift was down. A tenant that wants the character as typed —
-        // a field somebody is typing into — reads `event.key` instead.
         assert_eq!(
             tapped(&serde_json::json!({"kind": "key", "key": "Q", "state": "down"})),
             "q"

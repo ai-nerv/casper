@@ -1,0 +1,125 @@
+//! Every setting casper declares must change something.
+//!
+//! Driven through the binary rather than the library, because the channel is the point: casper is
+//! one process per call, so a `configure` that only reached the configuring process would report
+//! `set` for something that evaporated on exit.
+
+use std::process::Command;
+
+/// A config directory holding this checkout's declarations, rather than whatever `make install`
+/// has put on the machine.
+fn installed() -> casper::scratch::Scratch {
+    let dir = casper::scratch::Scratch::new("casper-settings", "config");
+    let into = dir.join("casper");
+    std::fs::create_dir_all(&into).expect("mkdir");
+    std::fs::write(into.join("tools.lua"), include_str!("../config/tools.lua")).expect("write");
+    dir
+}
+
+/// Every directory casper finds through the environment, pointed at this test's own. All three
+/// matter: `tools.lua` comes from the config one, `shell` writes the next working directory under
+/// the runtime one, and installed packages are read from the data one. `gate-hermetic` cannot
+/// catch a missing one, because it exports all four for the whole run.
+fn pointed(command: &mut Command, at: &casper::scratch::Scratch) {
+    command
+        .env("XDG_CONFIG_HOME", &**at)
+        .env("XDG_RUNTIME_DIR", &**at)
+        .env("XDG_DATA_HOME", &**at);
+}
+
+/// Run casper with a configuration, and give back stdout.
+fn with(configured: &str, args: &[&str], stdin: Option<&str>) -> String {
+    let dir = installed();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_casper"));
+    command.args(args).env("CASPER_CONFIGURE", configured);
+    pointed(&mut command, &dir);
+    let Some(body) = stdin else {
+        let out = command.output().expect("casper runs");
+        return String::from_utf8_lossy(&out.stdout).into_owned();
+    };
+    use std::io::Write;
+    let mut child = command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("casper runs");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(body.as_bytes())
+        .expect("write");
+    let out = child.wait_with_output().expect("casper finishes");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn a_coordinator_reaches_a_program_it_spawns_per_call() {
+    // `casper configure` applies to the process running it, and every later call is a fresh one.
+    let listed = with(r#"{"tools":{"dino":{"off":true}}}"#, &["tools"], None);
+    assert!(!listed.contains(r#""name":"dino""#), "{listed}");
+    let plain = with("", &["tools"], None);
+    assert!(
+        plain.contains(r#""name":"dino""#),
+        "and it is there by default"
+    );
+}
+
+#[test]
+fn off_means_gone_rather_than_unlisted() {
+    // A model that was never told about a tool can still guess at one.
+    let ran = with(
+        r#"{"tools":{"dino":{"off":true}}}"#,
+        &["run"],
+        Some(r#"{"tool":"dino","args":{}}"#),
+    );
+    assert!(ran.contains(r#""ok":false"#), "{ran}");
+    assert!(ran.contains("no such tool: dino"), "{ran}");
+}
+
+#[test]
+fn hidden_takes_a_tool_out_of_the_listing_and_leaves_it_runnable() {
+    let listed = with(r#"{"tools":{"tools":{"hidden":true}}}"#, &["tools"], None);
+    assert!(!listed.contains(r#""name":"tools""#), "{listed}");
+
+    let ran = with(
+        r#"{"tools":{"tools":{"hidden":true}}}"#,
+        &["run"],
+        Some(r#"{"tool":"tools","args":{}}"#),
+    );
+    assert!(ran.contains(r#""ok":true"#), "still runs: {ran}");
+}
+
+#[test]
+fn output_bytes_caps_what_the_model_reads() {
+    let ran = with(
+        r#"{"output_bytes":200}"#,
+        &["run"],
+        Some(r#"{"tool":"read","args":{"path":"config/tools.lua"}}"#),
+    );
+    let reply: serde_json::Value = serde_json::from_str(&ran).unwrap_or_else(|_| panic!("{ran}"));
+    let said = reply["result"][0]["said"].as_str().expect("said");
+    assert!(
+        said.len() < 400,
+        "cut to about the cap: {} bytes",
+        said.len()
+    );
+    assert!(said.contains("bytes dropped"), "and says so: {said}");
+    // Both ends kept: a file read wants its head, a build that failed wants its tail.
+    assert!(said.starts_with("-- The tools casper offers."), "{said}");
+    assert!(said.trim_end().ends_with("end"), "{said}");
+}
+
+#[test]
+fn every_declared_setting_is_read_by_something() {
+    // The rule this file enforces, stated once. If a fourth setting is added to `needs`, this
+    // fails until somebody writes the test that proves it does something.
+    let covered = ["tools", "load", "output_bytes"];
+    for need in casper::setup::needs() {
+        assert!(
+            covered.contains(&need.name.as_str()),
+            "`{}` is declared in `needs` and nothing here proves it changes anything",
+            need.name
+        );
+    }
+}

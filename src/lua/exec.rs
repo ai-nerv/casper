@@ -1,34 +1,34 @@
 //! The one way a declaration reaches a process.
 //!
-//! `os.execute` and `io.popen` are gone — see [`crate::lua::sandbox`] — and this is what replaces
-//! them. Not because running programs is dangerous here; running programs is casper's entire job.
-//! Because a declaration that spawned directly would spawn *outside* everything casper is for:
-//! no bound on the output, nothing to cancel, no verb attached, and no record of what ran.
+//! `os.execute` and `io.popen` are gone — see [`crate::lua::sandbox`] — and this replaces them.
 //!
 //! ```lua
 //! local done = casper.exec("bat", { "--color=always", path })
 //! if done.code ~= 0 then return { said = done.err, failed = true } end
 //! return { said = done.out }
+//!
+//! -- A third argument is fed to the program's standard input.
+//! casper.exec("sh", { "-c", 'cat > "$1"', "sh", path }, contents)
 //! ```
 //!
-//! **Never on a socket.** This is reachable only from a declaration, and declarations run only on
-//! the spawn link — argv and stdin, from a parent that could have run the command itself. A verb
-//! that reached this over a socket would be a remote shell wearing a friendly name.
+//! Reachable only from a declaration, which runs only on the spawn link and never on a socket.
 
 use luna::{Callback, CallbackReturn, Table, Value};
 
 /// The most output one call will carry back.
 ///
-/// A tool result is read by a model with a context window, so an unbounded one is a turn that
-/// cannot be sent. Cut with a line saying so rather than silently: output that stops mid-sentence
-/// reads as a program that crashed.
+/// Cut with a line saying so rather than silently: output that stops mid-sentence reads as a crash.
 pub const MOST: usize = 256 * 1024;
 
 /// `casper.exec`, as a callable.
 #[must_use]
 pub fn table(ctx: luna::Context<'_>) -> Callback<'_> {
     Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
-        let (program, args): (Value, Value) = stack.consume(ctx)?;
+        let (program, args, input): (Value, Value, Value) = stack.consume(ctx)?;
+        let input = match input {
+            Value::String(fed) => Some(fed.as_bytes().to_vec()),
+            _ => None,
+        };
         let Value::String(program) = program else {
             return Err(raise(
                 ctx,
@@ -50,7 +50,7 @@ pub fn table(ctx: luna::Context<'_>) -> Callback<'_> {
             }
         }
 
-        let done = run(&program, &argv);
+        let done = fed(&program, &argv, input);
         let out = Table::new(&ctx);
         out.set(
             ctx,
@@ -78,49 +78,119 @@ pub struct Done {
     /// Its standard error, bounded.
     pub err: String,
     /// Its exit status, or `-1` when it could not be started at all.
-    ///
-    /// A distinct number rather than an error, because "there is no `bat` on this machine" is
-    /// something the *model* can act on — by asking for `cat` instead — and an error the caller
-    /// had to translate would arrive as a broken tool.
     pub code: i64,
 }
+
+/// One read off a pipe.
+const CHUNK: usize = 8 * 1024;
 
 /// Run one program to completion.
 #[must_use]
 pub fn run(program: &str, args: &[String]) -> Done {
-    let out = std::process::Command::new(program)
+    fed(program, args, None)
+}
+
+/// Run one program to completion with `input` on its standard input: how a declaration writes a
+/// file, through a program inside the jail rather than by a hand that stands outside it.
+#[must_use]
+pub fn fed(program: &str, args: &[String], input: Option<Vec<u8>>) -> Done {
+    // Wrapped in a kernel jail when a coordinator asked for one; unchanged otherwise. This is the
+    // one place a declaration's command becomes a process, so it is the one place to contain it.
+    let jail = crate::jail::Jail::from_env();
+    let (program, args) = jail.wrap(program, args);
+    let (program, args) = (program.as_str(), args.as_slice());
+    let mut command = std::process::Command::new(program);
+    let stdin = if input.is_some() {
+        std::process::Stdio::piped()
+    } else {
+        std::process::Stdio::null()
+    };
+    command
         .args(args)
-        .stdin(std::process::Stdio::null())
-        .output();
-    match out {
-        Ok(done) => Done {
-            out: bounded(&String::from_utf8_lossy(&done.stdout)),
-            err: bounded(&String::from_utf8_lossy(&done.stderr)),
-            code: done.status.code().map_or(-1, i64::from),
-        },
+        .stdin(stdin)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // The seccomp half of the jail, on the command bwrap goes on to run — and on the program
+    // itself when there is no bwrap. Built by jail, armed in the one fork/exec window. Off with it.
+    if let Some(filter) = jail.seccomp() {
+        crate::tied::confine(&mut command, filter);
+    }
+    // Landlock's filesystem, network and signal walls, in-process only where there is no bwrap to
+    // build the world — the one containment that stands without a namespace.
+    if let Some(ruleset) = jail.landlock() {
+        crate::tied::restrict(&mut command, ruleset);
+    }
+    // Without this the program is reparented to init the moment a magi is killed.
+    crate::tied::running(&mut command);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
         Err(why) => {
             crate::noted!("exec: {program} could not be run: {why}");
-            Done {
+            return Done {
                 out: String::new(),
                 err: format!("{program} could not be run: {why}"),
                 code: -1,
-            }
+            };
         }
+    };
+    // Both pipes are read as they fill and only [`MOST`] bytes are held: collecting each stream
+    // whole first would let the program pick how much memory casper takes, and reading neither
+    // would block it on a full pipe.
+    // Fed from its own thread, so a program writing while it reads cannot wedge on a full pipe.
+    let feeding = input.zip(child.stdin.take()).map(|(bytes, mut pipe)| {
+        std::thread::spawn(move || {
+            use std::io::Write as _;
+            let _ = pipe.write_all(&bytes);
+        })
+    });
+    let piped = child.stdout.take();
+    let reading = std::thread::spawn(move || kept(piped));
+    let err = kept(child.stderr.take());
+    let code = child.wait().ok().and_then(|it| it.code());
+    let out = reading.join().unwrap_or_default();
+    if let Some(feeding) = feeding {
+        let _ = feeding.join();
+    }
+    Done {
+        out: said(&out.0, out.1),
+        err: said(&err.0, err.1),
+        code: code.map_or(-1, i64::from),
     }
 }
 
-/// Cut `text` to what a turn can carry, saying so if anything went.
-fn bounded(text: &str) -> String {
-    if text.len() <= MOST {
-        return text.to_owned();
+/// Read `from` to its end, holding the first [`MOST`] bytes and counting the rest.
+fn kept<R: std::io::Read>(from: Option<R>) -> (Vec<u8>, usize) {
+    let (mut held, mut dropped) = (Vec::new(), 0);
+    let Some(mut from) = from else {
+        return (held, dropped);
+    };
+    let mut buffer = [0_u8; CHUNK];
+    while let Ok(read) = from.read(&mut buffer) {
+        if read == 0 {
+            break;
+        }
+        let room = MOST.saturating_sub(held.len()).min(read);
+        held.extend_from_slice(&buffer[..room]);
+        dropped += read - room;
     }
-    // On a character boundary, or the string will not build.
-    let mut at = MOST;
-    while at > 0 && !text.is_char_boundary(at) {
-        at -= 1;
+    (held, dropped)
+}
+
+/// What one stream came back as: what was held, and a line saying how much was not.
+fn said(held: &[u8], dropped: usize) -> String {
+    if dropped == 0 {
+        return String::from_utf8_lossy(held).into_owned();
     }
-    let dropped = text.len() - at;
-    format!("{}\n… {dropped} more bytes, not shown", &text[..at])
+    // Back to where a character last ended: the hold stops wherever the room ran out.
+    let whole = match std::str::from_utf8(held) {
+        Ok(_) => held.len(),
+        Err(bad) => bad.valid_up_to(),
+    };
+    format!(
+        "{}\n… {} more bytes, not shown",
+        String::from_utf8_lossy(&held[..whole]),
+        dropped + (held.len() - whole)
+    )
 }
 
 /// Raise a message into Lua.
@@ -144,17 +214,21 @@ mod tests {
 
     #[test]
     fn a_program_that_failed_still_answers() {
-        // A non-zero exit is a result the model reads, not an error the caller invents a message
-        // for: what the program printed is usually what says how to fix it.
         let done = run("sh", &["-c".to_owned(), "echo oops >&2; exit 3".to_owned()]);
         assert_eq!(done.code, 3);
         assert_eq!(done.err.trim(), "oops");
     }
 
     #[test]
+    fn input_is_fed_to_the_program_and_closed() {
+        // `cat` ends only when its input does, so this also proves the pipe is closed.
+        let done = fed("cat", &[], Some(b"fed through\n".to_vec()));
+        assert_eq!(done.out, "fed through\n");
+        assert_eq!(done.code, 0);
+    }
+
+    #[test]
     fn a_program_that_is_not_installed_is_something_the_model_can_act_on() {
-        // "there is no `bat` here" is answerable — ask for `cat` instead — and an error the
-        // caller had to translate would reach the model as a broken tool.
         let done = run("casper-no-such-program-anywhere", &[]);
         assert_eq!(done.code, -1);
         assert!(done.err.contains("could not be run"), "{}", done.err);
@@ -162,28 +236,57 @@ mod tests {
 
     #[test]
     fn output_is_cut_to_what_a_turn_can_carry_and_says_it_was() {
-        // Silently stopping mid-sentence reads as a program that crashed.
-        let huge = "x".repeat(MOST + 500);
-        let cut = bounded(&huge);
-        assert!(cut.len() < huge.len());
+        let done = run(
+            "sh",
+            &["-c".to_owned(), "head -c 600000 /dev/zero".to_owned()],
+        );
+        assert!(done.out.len() < 600_000, "{} bytes", done.out.len());
         assert!(
-            cut.ends_with("more bytes, not shown"),
+            done.out.ends_with("337856 more bytes, not shown"),
             "{}",
-            &cut[cut.len() - 40..]
+            &done.out[done.out.len() - 40..]
         );
     }
 
     #[test]
     fn what_fits_is_left_exactly_as_it_was() {
-        assert_eq!(bounded("short"), "short");
+        assert_eq!(said(b"short", 0), "short");
     }
 
     #[test]
     fn cutting_lands_on_a_character_boundary() {
-        // A multi-byte character split down the middle is a string that will not build, which
-        // would turn a long result into a panic.
-        let huge = "é".repeat(MOST);
-        let cut = bounded(&huge);
-        assert!(cut.starts_with('é'));
+        // Three bytes to a character and `MOST` not a multiple of three, so the hold splits one.
+        let huge = "€".repeat(MOST);
+        let cut = said(&huge.as_bytes()[..MOST], 12);
+        assert!(cut.starts_with('€'));
+        assert!(!cut.contains('\u{fffd}'), "a character was split");
+        assert!(
+            cut.ends_with("13 more bytes, not shown"),
+            "{}",
+            &cut[cut.len() - 40..]
+        );
+    }
+
+    /// This process's peak resident size, in kilobytes.
+    fn peak_kb() -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .unwrap_or_default()
+            .lines()
+            .find_map(|line| line.strip_prefix("VmHWM:"))
+            .and_then(|rest| rest.trim().trim_end_matches(" kB").trim().parse().ok())
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn a_program_that_writes_without_stopping_does_not_choose_caspers_memory() {
+        let before = peak_kb();
+        // Half a gigabyte: a fixture no buffer on this path could hold by accident.
+        let done = run(
+            "sh",
+            &["-c".to_owned(), "head -c 536870912 /dev/zero".to_owned()],
+        );
+        let grew = peak_kb().saturating_sub(before);
+        assert!(done.out.len() < MOST + 64, "{} bytes held", done.out.len());
+        assert!(grew < 64 * 1024, "casper grew {grew} kB reading 512 MB");
     }
 }

@@ -213,10 +213,9 @@ dinosaur and does not have to.
 | state lives in | the closure's upvalues | the program |
 | ends when | it answers | the program exits |
 
-**Why casper and not the harness.** Running programs is casper's whole job, and the reason it has
-a spawn link rather than a socket verb — *a socket that runs commands is remote code execution*. A
-harness that opened its own pty would be back to spawning commands, which is the thing the split
-exists to prevent.
+**Why casper and not the harness.** Running programs is casper's whole job, and the jail it wraps
+them in is why a harness does not run them itself. A harness that opened its own pty would be back to
+spawning commands unjailed, which is the thing the split exists to prevent.
 
 Three consequences worth stating:
 
@@ -267,19 +266,22 @@ per keypress would work for a picker and not for anything that animates.
 
 ## What crosses, and how
 
-The family contract, unchanged: 4-byte big-endian length, JSON body, replies
-`{"ok":true,"n":N,"result":[…]}`, a refusal is `ok:false` with a fault and never a dropped
-connection, the connection stays open, `verbs()` ships from v1, peer identity from `SO_PEERCRED`.
+The family contract, unchanged: JSON body, replies `{"ok":true,"n":N,"result":[…]}`, a refusal is
+`ok:false` with a fault and never a dropped connection, `verbs` ships from v1.
 
-**But not `run`.** The skill is explicit — *a socket that runs commands is remote code execution* —
-and running commands is casper's entire job. So the surface splits by trust:
+**Two doors, one jail.** The old rule — *a socket that runs commands is remote code execution* — held
+only while the jail was the caller's to set. casper binds a socket with `serve` and answers `tools`
+and `run` on it, but the walls are set on `serve`'s spawn, in casper's own environment, by the
+coordinator — never by a call. A socket peer runs inside exactly the jail a spawned call would, and a
+peer of another user is refused. So the socket is a warm tool surface, not a shell:
 
-| link | verbs | why |
+| link | verbs | why it is safe |
 |---|---|---|
-| **socket** | `verbs` `tools` `needs` | read-only. Anyone the walls allow may ask what exists. |
-| **spawn** (argv + stdin) | `run` `configure` | the parent could have run the command itself. |
+| **spawn** (argv + stdin) | all of them, `run` included | the parent could have run the command itself. |
+| **socket** (`serve`) | `tools` and `run` | the jail is the spawner's — a call cannot widen it — and only the same user reaches it. |
 
-magi spawns `casper run --json` and writes the call on stdin, exactly as it spawns `melchior ask`.
+magi spawns `casper run --json` and writes the call on stdin, or keeps one `casper serve` and frames
+calls to it — the same surface, chosen by `MAGI_TOOLS_DOOR`.
 A turn is a stream — a `shell` writes output for a minute — so `run` streams a line per event and
 exits, which is the shape the broker already reads.
 
@@ -311,7 +313,7 @@ what a tool would do and never decides whether it may.
 
 1. **The contract**, in `magi-proto::tooling`, with round-trip tests. Nothing works until both
    sides agree, and a shape settled late is two encoders that already drifted.
-2. **casper answering `verbs`/`tools`** over the socket, with a Lua VM and one declared tool.
+2. **casper answering `verbs`/`tools`** on its command line, with a Lua VM and one declared tool.
 3. **`run` over the spawn link**, streaming, with `said` only.
 4. **`shown`**: the paint vocabulary, the ANSI adapter, `cat` and `patch`.
 5. **The ask**: permission moves out of magi.
