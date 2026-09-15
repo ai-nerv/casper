@@ -178,6 +178,29 @@ local function put(path, contents)
   return casper.exec("sh", { "-c", 'cat > "$1"', "sh", path }, contents)
 end
 
+-- A result in one line, for the stub a harness shows once it has elided the result: the first line
+-- with anything on it, trimmed and cut to fit.
+local function oneline(text, limit)
+  limit = limit or 120
+  local line = (tostring(text or ""):match("[^\n]*%S[^\n]*") or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  if #line > limit then line = line:sub(1, limit - 3) .. "..." end
+  return line
+end
+
+-- The last line with anything on it, which is where a command says how it went.
+local function lastline(text)
+  local last = ""
+  for line in tostring(text or ""):gmatch("[^\n]+") do
+    if line:find("%S") then last = line end
+  end
+  return oneline(last, 60)
+end
+
+-- A failure the model reads, kept whole: an error elided is a mistake repeated.
+local function failure(said)
+  return { said = said, failed = true, keep = true, brief = oneline(said) }
+end
+
 do -- read
   -- Highlighted for the person in the file's own language, the plain text for the model always:
   -- colour would spend the model's context on nothing it can use.
@@ -202,7 +225,7 @@ do -- read
     run = function(args)
       local plain = casper.exec("cat", { args.path })
       if plain.code ~= 0 then
-        return { said = plain.err, failed = true }
+        return failure(plain.err)
       end
       local all = lines_of(plain.out)
       local first = math.max(1, math.floor(tonumber(args.offset) or 1))
@@ -214,7 +237,13 @@ do -- read
         said = said .. ("\n(lines %d-%d of %d)"):format(first, last, #all)
       end
       local shown = casper.paint.code(table.concat(kept, "\n"), args.path)
-      return { said = said, shown = shown }
+      local span = (first > 1 or last < #all)
+        and ("lines %d-%d of %d"):format(first, last, #all) or ("%d lines"):format(#all)
+      return {
+        said = said, shown = shown,
+        brief = ("read %s (%s)"):format(args.path, span),
+        back = ("read %s"):format(args.path),
+      }
     end,
   })
 end
@@ -239,10 +268,10 @@ do -- write
       local dir = args.path:match("^(.*)/[^/]*$")
       if dir and dir ~= "" then
         local made = casper.exec("mkdir", { "-p", dir })
-        if made.code ~= 0 then return { said = made.err, failed = true } end
+        if made.code ~= 0 then return failure(made.err) end
       end
       local done = put(args.path, args.contents)
-      if done.code ~= 0 then return { said = done.err, failed = true } end
+      if done.code ~= 0 then return failure(done.err) end
       -- The model is told what happened in a line; the person is shown what was written.
       local said = ("wrote %s: %d lines, %d bytes, %s"):format(
         args.path, #lines_of(args.contents), #args.contents, existed and "replaced" or "new file")
@@ -253,7 +282,12 @@ do -- write
         { role = "dim", text = ("  %d lines · %s"):format(
           #lines_of(args.contents), existed and "replaced" or "new file") },
       })
-      return { said = said, shown = shown }
+      return {
+        said = said, shown = shown,
+        brief = ("wrote %s (%d lines, %s)"):format(
+          args.path, #lines_of(args.contents), existed and "replaced" or "new file"),
+        back = ("read %s"):format(args.path),
+      }
     end,
   })
 end
@@ -318,10 +352,10 @@ do -- edit
 
     run = function(args)
       if args.old == "" then
-        return { said = "`old` is empty: say which text to replace", failed = true }
+        return failure("`old` is empty: say which text to replace")
       end
       local read = casper.exec("cat", { args.path })
-      if read.code ~= 0 then return { said = read.err, failed = true } end
+      if read.code ~= 0 then return failure(read.err) end
       local text = read.out
 
       -- Counted before anything is replaced: patching the wrong one of two matches silently is the
@@ -335,15 +369,15 @@ do -- edit
         from = to + 1
       end
       if count == 0 then
-        return { said = "that exact text is not in " .. args.path .. ". Read it again -- it may "
-          .. "have changed, or the whitespace may differ.", failed = true }
+        return failure("that exact text is not in " .. args.path .. ". Read it again -- it may "
+          .. "have changed, or the whitespace may differ.")
       end
       if count > 1 then
-        return { said = ("that text appears %d times in %s. Include more of the surrounding lines "
-          .. "so it matches exactly once."):format(count, args.path), failed = true }
+        return failure(("that text appears %d times in %s. Include more of the surrounding lines "
+          .. "so it matches exactly once."):format(count, args.path))
       end
       local done = put(args.path, text:sub(1, s - 1) .. args.new .. text:sub(e + 1))
-      if done.code ~= 0 then return { said = done.err, failed = true } end
+      if done.code ~= 0 then return failure(done.err) end
 
       -- The whole lines the change touched, before and after, then aligned.
       local from_line, to_line = s, e
@@ -360,7 +394,12 @@ do -- edit
       local all, hunk = lines_of(text), {}
       local start = math.max(1, first - CONTEXT)
       for k = start, first - 1 do hunk[#hunk + 1] = " " .. all[k] end
-      for _, line in ipairs(changes(before, after)) do hunk[#hunk + 1] = line end
+      local added, removed = 0, 0
+      for _, line in ipairs(changes(before, after)) do
+        hunk[#hunk + 1] = line
+        local mark = line:sub(1, 1)
+        if mark == "+" then added = added + 1 elseif mark == "-" then removed = removed + 1 end
+      end
       local last = first + #before - 1
       for k = last + 1, math.min(#all, last + CONTEXT) do hunk[#hunk + 1] = " " .. all[k] end
       local olds, news = 0, 0
@@ -372,7 +411,11 @@ do -- edit
 
       local diff = ("--- %s\n+++ %s\n@@ -%d,%d +%d,%d @@\n"):format(
         args.path, args.path, start, olds, start, news) .. table.concat(hunk, "\n")
-      return { said = diff, shown = casper.paint.diff(diff, args.path) }
+      return {
+        said = diff, shown = casper.paint.diff(diff, args.path),
+        brief = ("edited %s (+%d -%d at line %d)"):format(args.path, added, removed, first),
+        back = ("read %s"):format(args.path),
+      }
     end,
   })
 end
@@ -454,10 +497,19 @@ wait $!]]):format(kept, held, args.command, kept),
       if done.err ~= "" then
         out = out == "" and done.err or (out .. "\n" .. done.err)
       end
+      -- What it ran, how it ended and its last line: enough to know whether to run it again.
+      local lines = select(2, out:gsub("\n", "")) + ((out ~= "" and not out:find("\n$")) and 1 or 0)
+      local last = lastline(out)
+      local brief = ("`%s` exited %d, %d lines%s"):format(oneline(args.command, 60), done.code,
+        lines, last ~= "" and ('; last: "%s"'):format(last) or "")
+      local back = "shell: " .. args.command
       if done.code ~= 0 then
-        return { said = out .. "\n(exit " .. tostring(done.code) .. ")", failed = true }
+        return {
+          said = out .. "\n(exit " .. tostring(done.code) .. ")", failed = true,
+          keep = true, brief = brief, back = back,
+        }
       end
-      return { said = out }
+      return { said = out, brief = brief, back = back }
     end,
   })
 end

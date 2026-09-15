@@ -47,6 +47,15 @@ pub struct Ran {
     /// Deferred tools this call made available, for the harness to add to the model's list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unlocks: Vec<String>,
+    /// What to show in place of `said` once the result is elided from a model's context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brief: Option<String>,
+    /// How to get the full result back again: `read src/a.rs`, `shell: cargo test`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub back: Option<String>,
+    /// Never elide this result.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep: bool,
 }
 
 impl Ran {
@@ -193,6 +202,22 @@ mod tests {
         let wire = serde_json::to_string(&ran).expect("encodes");
         assert!(wire.contains(r#""shown":"painted""#), "{wire}");
         assert!(wire.contains(r#""role":"removed""#), "{wire}");
+    }
+
+    #[test]
+    fn a_stub_a_way_back_and_a_keep_hint_travel_only_when_set() {
+        let plain = serde_json::to_string(&Ran::said("x")).expect("encodes");
+        assert!(
+            !plain.contains("brief") && !plain.contains("keep"),
+            "{plain}"
+        );
+        let ran: Ran = serde_json::from_value(serde_json::json!({
+            "said": "x", "brief": "read a.rs (3 lines)", "back": "read a.rs", "keep": true
+        }))
+        .expect("decodes");
+        assert_eq!(ran.brief.as_deref(), Some("read a.rs (3 lines)"));
+        assert_eq!(ran.back.as_deref(), Some("read a.rs"));
+        assert!(ran.keep);
     }
 
     #[test]
