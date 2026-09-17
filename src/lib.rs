@@ -15,6 +15,8 @@ pub mod scratch;
 pub mod serving;
 pub mod setup;
 pub mod surface;
+#[cfg(test)]
+mod testing;
 pub mod tied;
 pub mod tools;
 pub mod wire;

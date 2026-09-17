@@ -21,6 +21,9 @@ pub mod noticing;
 pub mod painting;
 pub mod rewriting;
 
+#[cfg(test)]
+mod exiting;
+
 /// What to run, as a declaration described it.
 #[derive(Debug, Clone, Default)]
 pub struct Spec {
@@ -94,6 +97,7 @@ pub struct Screen {
     /// The one dialect difference the emulator does not speak. See [`rewriting`].
     fixing: rewriting::Rewriting,
     named: String,
+    _jail: crate::jail::Prepared,
 }
 
 impl Screen {
@@ -102,11 +106,15 @@ impl Screen {
         let (pty, pts) = pty_process::blocking::open()?;
         pty.resize(pty_process::Size::new(rows.max(1), cols.max(1)))?;
 
-        let mut command = pty_process::blocking::Command::new(&spec.command);
-        command = command.args(&spec.args);
-        if let Some(cwd) = &spec.cwd {
-            command = command.current_dir(cwd);
-        }
+        let jail = crate::jail::Jail::from_env();
+        let mut prepared = jail.prepare(
+            &spec.command,
+            &spec.args,
+            spec.cwd.as_deref().map(std::path::Path::new),
+            &spec.env,
+            true,
+        )?;
+        let mut command = prepared.screen();
         // Without a `TERM` a curses program refuses to start or falls back to something ancient,
         // and what it is running on is this emulator, which speaks xterm.
         command = command
@@ -114,11 +122,6 @@ impl Screen {
             .env("COLORTERM", "truecolor")
             .env("LINES", rows.to_string())
             .env("COLUMNS", cols.to_string());
-        for (key, value) in &spec.env {
-            command = command.env(key, value);
-        }
-        // Under the hangup the closing master already sends, for the program that ignores it.
-        command = crate::tied::on_a_screen(command);
         let child = command.spawn(pts)?;
 
         let pty = Arc::new(pty);
@@ -149,6 +152,7 @@ impl Screen {
             ),
             fixing: rewriting::Rewriting::new(),
             named: spec.command.clone(),
+            _jail: prepared,
         })
     }
 
@@ -165,7 +169,9 @@ impl Screen {
                     self.vt.process(&bytes);
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => return true,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => return false,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    return matches!(self.child.try_wait(), Ok(None));
+                }
             }
         }
         true
@@ -176,10 +182,10 @@ impl Screen {
     /// A key with no byte sequence sends nothing rather than a guess.
     pub fn typed(&mut self, name: &str) {
         let application = self.vt.screen().application_cursor();
-        if let Some(bytes) = keying::bytes(name, application) {
-            if let Err(why) = (&*self.pty).write_all(&bytes) {
-                crate::noted!("{}: the key `{name}` was not delivered: {why}", self.named);
-            }
+        if let Some(bytes) = keying::bytes(name, application)
+            && let Err(why) = (&*self.pty).write_all(&bytes)
+        {
+            crate::noted!("{}: the key `{name}` was not delivered: {why}", self.named);
         }
     }
 
@@ -364,6 +370,15 @@ mod tests {
 
     #[test]
     fn a_program_that_floods_a_screen_neither_freezes_the_loop_nor_fills_the_heap() {
+        if crate::testing::isolated(
+            concat!(
+                module_path!(),
+                "::a_program_that_floods_a_screen_neither_freezes_the_loop_nor_fills_the_heap"
+            )
+            .trim_start_matches("casper::"),
+        ) {
+            return;
+        }
         let before = peak_kb();
         let (tell, heard) = std::sync::mpsc::channel();
         std::thread::spawn(move || {

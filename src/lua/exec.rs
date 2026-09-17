@@ -99,31 +99,26 @@ pub fn fed(program: &str, args: &[String], input: Option<Vec<u8>>) -> Done {
     let began = std::time::Instant::now();
     let jail = crate::jail::Jail::from_env();
     let asked = crate::noted::short(&format!("{program} {}", args.join(" ")));
-    let (program, args) = jail.wrap(program, args);
-    let (program, args) = (program.as_str(), args.as_slice());
-    let mut command = std::process::Command::new(program);
+    let mut prepared = match jail.prepare(program, args, None, &[], false) {
+        Ok(prepared) => prepared,
+        Err(why) => {
+            return Done {
+                out: String::new(),
+                err: format!("jail refused: {why}"),
+                code: -1,
+            };
+        }
+    };
+    let mut command = prepared.command();
     let stdin = if input.is_some() {
         std::process::Stdio::piped()
     } else {
         std::process::Stdio::null()
     };
     command
-        .args(args)
         .stdin(stdin)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    // The seccomp half of the jail, on the command bwrap goes on to run — and on the program
-    // itself when there is no bwrap. Built by jail, armed in the one fork/exec window. Off with it.
-    if let Some(filter) = jail.seccomp() {
-        crate::tied::confine(&mut command, filter);
-    }
-    // Landlock's filesystem, network and signal walls, in-process only where there is no bwrap to
-    // build the world — the one containment that stands without a namespace.
-    if let Some(ruleset) = jail.landlock() {
-        crate::tied::restrict(&mut command, ruleset);
-    }
-    // Without this the program is reparented to init the moment a magi is killed.
-    crate::tied::running(&mut command);
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(why) => {
@@ -289,6 +284,15 @@ mod tests {
 
     #[test]
     fn a_program_that_writes_without_stopping_does_not_choose_caspers_memory() {
+        if crate::testing::isolated(
+            concat!(
+                module_path!(),
+                "::a_program_that_writes_without_stopping_does_not_choose_caspers_memory"
+            )
+            .trim_start_matches("casper::"),
+        ) {
+            return;
+        }
         let before = peak_kb();
         // Half a gigabyte: a fixture no buffer on this path could hold by accident.
         let done = run(
@@ -296,6 +300,7 @@ mod tests {
             &["-c".to_owned(), "head -c 536870912 /dev/zero".to_owned()],
         );
         let grew = peak_kb().saturating_sub(before);
+        assert_eq!(done.code, 0, "the output fixture failed: {}", done.err);
         assert!(done.out.len() < MOST + 64, "{} bytes held", done.out.len());
         assert!(grew < 64 * 1024, "casper grew {grew} kB reading 512 MB");
     }

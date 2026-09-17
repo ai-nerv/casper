@@ -485,8 +485,7 @@ fn usage() -> bool {
     use std::io::Write;
     let mut out = std::io::stdout().lock();
     out.write_all(
-        concat!(
-            "casper — the tooling interface\n\
+        "casper — the tooling interface\n\
          \n\
          \x20 casper tools        every tool it offers, with schemas\n\
          \x20 casper run          one call on stdin, one result on stdout\n\
@@ -497,8 +496,7 @@ fn usage() -> bool {
          \n\
          Every verb prints the family's reply shape. casper answers on the\n\
          command line and on a socket it binds with serve. See DESIGN.md.\n"
-        )
-        .as_bytes(),
+            .as_bytes(),
     )
     .and_then(|()| out.flush())
     .inspect_err(|why| casper::noted!("usage: it could not be written: {why}"))

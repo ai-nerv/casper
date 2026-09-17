@@ -118,6 +118,9 @@ local function binary_path()
   return "target/release/" .. NAME
 end
 
+make.recipe{ name = "family-path", desc = "the binary selected by the build recipe",
+             run = function() print("NERV_BINARY=" .. binary_path()) end }
+
 -- **The binary, not the library.** casper is a program: the library exists so the tests can
 -- reach inside it, and nobody runs an rlib. This built `--lib` for a while, inherited from the
 -- scaffold, and the cost was not an error -- it was `make build` succeeding and leaving the
@@ -206,6 +209,15 @@ make.recipe{
 make.recipe{ name = "test", desc = "the suite",
              run = function() sh.cargo("test", "--all-targets") end }
 make.alias("t", "test")
+
+make.recipe{ name = "test-pty-lifecycle", desc = "PTY EOF and process exit boundaries",
+             run = function() sh.cargo("test", "--lib", "pty::exiting") end }
+
+make.recipe{ name = "test-resource-bounds", desc = "isolated command and screen memory limits",
+             run = function() sh.cargo("test", "--lib", "a_program_that_") end }
+
+make.recipe{ name = "test-containment", desc = "command and PTY jail boundaries",
+             run = function() sh.cargo("test", "--test", "containment", "--", "--nocapture") end }
 
 make.recipe{ name = "test-all", desc = "the suite, with every feature on",
              run = function() sh.cargo("test", "--all-targets", "--all-features") end }

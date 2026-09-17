@@ -22,27 +22,65 @@ fn alone() -> std::io::Result<()> {
     Ok(())
 }
 
-// SAFETY: the closure is `alone` and `arm` and a `Pid` copied into it: three raw syscalls and a
-// comparison, which is all `pre_exec` permits between the fork and the exec of a process that
-// has other threads. See the module documentation.
+// SAFETY: descriptor inheritance, process grouping, and parent-death setup use raw syscalls
+// on prebuilt data, without allocating between fork and exec.
 #[allow(unsafe_code)]
-pub fn running(command: &mut std::process::Command) {
+pub fn running(command: &mut std::process::Command, descriptors: Vec<std::os::fd::OwnedFd>) {
     let casper = rustix::process::getpid();
     unsafe {
         command.pre_exec(move || {
+            inherit(&descriptors)?;
             alone()?;
             arm(casper)
         })
     };
 }
 
-// SAFETY: as for [`running`]. `pty_process` composes this after its own `setsid` and `ioctl`,
-// both of which are equally safe down there, and the death signal survives both.
+// SAFETY: enforcement and parent-death hooks use prebuilt data and raw syscalls after PTY setup.
 #[allow(unsafe_code)]
 #[must_use]
-pub fn on_a_screen(command: pty_process::blocking::Command) -> pty_process::blocking::Command {
+pub fn on_a_screen(
+    command: pty_process::blocking::Command,
+    filter: Option<seccompiler::BpfProgram>,
+    ruleset: Option<landlock::RulesetCreated>,
+    descriptors: Vec<std::os::fd::OwnedFd>,
+) -> pty_process::blocking::Command {
     let casper = rustix::process::getpid();
-    unsafe { command.pre_exec(move || arm(casper)) }
+    unsafe {
+        command.pre_exec(move || {
+            inherit(&descriptors)?;
+            enforce(filter.as_ref(), ruleset.as_ref())?;
+            arm(casper)
+        })
+    }
+}
+
+fn inherit(descriptors: &[std::os::fd::OwnedFd]) -> std::io::Result<()> {
+    for descriptor in descriptors {
+        rustix::io::fcntl_setfd(descriptor, rustix::io::FdFlags::empty())?;
+    }
+    Ok(())
+}
+
+fn enforce(
+    filter: Option<&seccompiler::BpfProgram>,
+    ruleset: Option<&landlock::RulesetCreated>,
+) -> std::io::Result<()> {
+    let denied = |_| std::io::Error::from_raw_os_error(libc::EPERM);
+    if let Some(filter) = filter {
+        seccompiler::apply_filter(filter).map_err(denied)?;
+    }
+    if let Some(ruleset) = ruleset {
+        let status = ruleset
+            .try_clone()
+            .map_err(|_| std::io::Error::from_raw_os_error(libc::EPERM))?
+            .restrict_self()
+            .map_err(|_| std::io::Error::from_raw_os_error(libc::EPERM))?;
+        if status.ruleset != landlock::RulesetStatus::FullyEnforced {
+            return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+        }
+    }
+    Ok(())
 }
 
 // SAFETY: the closure only calls `apply_filter` on a filter built and moved in before the fork —
@@ -50,10 +88,7 @@ pub fn on_a_screen(command: pty_process::blocking::Command) -> pty_process::bloc
 #[allow(unsafe_code)]
 pub fn confine(command: &mut std::process::Command, filter: seccompiler::BpfProgram) {
     unsafe {
-        command.pre_exec(move || {
-            seccompiler::apply_filter(&filter)
-                .map_err(|why| std::io::Error::other(format!("seccomp: {why}")))
-        });
+        command.pre_exec(move || enforce(Some(&filter), None));
     }
 }
 
@@ -62,16 +97,6 @@ pub fn confine(command: &mut std::process::Command, filter: seccompiler::BpfProg
 #[allow(unsafe_code)]
 pub fn restrict(command: &mut std::process::Command, ruleset: landlock::RulesetCreated) {
     unsafe {
-        command.pre_exec(move || {
-            let status = ruleset
-                .try_clone()
-                .map_err(|why| std::io::Error::other(format!("landlock: {why}")))?
-                .restrict_self()
-                .map_err(|why| std::io::Error::other(format!("landlock: {why}")))?;
-            if status.ruleset == landlock::RulesetStatus::NotEnforced {
-                return Err(std::io::Error::other("landlock: not enforced"));
-            }
-            Ok(())
-        });
+        command.pre_exec(move || enforce(None, Some(&ruleset)));
     }
 }

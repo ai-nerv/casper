@@ -68,6 +68,16 @@ drawn wrong, and only running a program against it found out.
 
 ### Extensions
 
+The optional `run` field on an observed or amended turn identifies the scratch-memory run
+separately from the transcript key passed as the first argument. Transcripts may share a run,
+but their cursor spaces remain independent. The binding is durable and cannot be reassigned.
+Omitting `run` retains an existing binding or defaults to the transcript key. Agent identity
+remains connection-pinned; `run` never selects another agent's scratch. Implementations that
+do not support this extension may ignore the field.
+`resume` also returns the durable `run` for a transcript; a restarting coordinator retains it
+instead of rebinding the transcript to its new process's run. Without this field, the transcript
+key is the scratch run.
+
 | verb | shape | what magi loses without it |
 |---|---|---|
 | `amend` | `(session, turn) -> ok` | A turn revised after it settled keeps its first text. magi writes `observe` at a cursor that already has a row, and an implementation may treat that as an amend. |
