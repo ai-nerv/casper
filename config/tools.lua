@@ -31,9 +31,9 @@ casper.theme = {
 
 -- ── the manual ────────────────────────────────────────────────────────────────────────
 --
--- **Four tools are always in front of the model: `read`, `write`, `edit`, `shell`.** The rest are
--- deferred: every card sent costs tokens on every request, and a game or a multiplexer probe is
--- needed once a week. So they are listed here instead, as a tree `tools` walks one level at a time
+-- **What a session reaches for constantly is always in front of the model: `read`, `write`, `edit`,
+-- `shell`, and the three that find things -- `ls`, `tree`, `sese`.** The rest are deferred: every
+-- card sent costs tokens on every request, and a game or a multiplexer probe is needed once a week. So they are listed here instead, as a tree `tools` walks one level at a time
 -- -- the groups, then a group, then a tool -- and reaching a deferred tool's page unlocks it.
 local MANUAL = {
   { group = "files", about = "read, write and edit files; always available", tools = {
@@ -47,18 +47,18 @@ Prefer `edit` for a change to a file that exists: it cannot lose the parts you d
 edit(path, old, new) -- replace `old` with `new`. `old` must appear exactly once; include enough of
 the surrounding lines to make it unique. Answers with a unified diff of what changed.]] },
   } },
-  { group = "finding", about = "look around a directory, and search a repository by meaning", tools = {
-    { name = "ls", deferred = true, page = [[
+  { group = "finding", about = "look around a directory, and search a repository by meaning; always available", tools = {
+    { name = "ls", page = [[
 ls(path?, all?) -- what one directory holds, directories first, with a size against each file and a
 closing count. Build output, dependency trees and version control's own directories are named rather
 than opened. `all` keeps dotfiles, and one directory is shown whether or not version control knows it. Use
 `tree` to see further down than one level.]] },
-    { name = "tree", deferred = true, page = [[
+    { name = "tree", page = [[
 tree(path?, depth?, all?) -- the shape of a directory, drawn as a tree `depth` levels deep (3 by
 default). Same exclusions as `ls`, and inside a repository it draws only what version control
 accounts for, so an ignored tree is counted rather than descended; `all` shows everything. For what
 a single directory holds, `ls` is cheaper to read.]] },
-    { name = "sese", deferred = true, page = [[
+    { name = "sese", page = [[
 sese(query, path?, limit?) -- semantic search: ask in words what you are looking for -- "where is
 session expiry handled", "the retry policy for uploads" -- and get back the passages that answer it,
 each with its file and line range. For when you do not know the name of the thing. `grep` through
