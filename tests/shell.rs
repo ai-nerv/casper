@@ -62,6 +62,34 @@ impl Alone {
 }
 
 #[test]
+fn a_command_says_how_it_ended_and_what_it_said_last_for_its_stub() {
+    let alone = Alone::new("brief");
+    let said = alone.shell("printf 'one\\ntwo\\n'");
+    let brief = said["brief"].as_str().unwrap_or_default();
+    assert!(brief.contains("exited 0, 2 lines"), "{said}");
+    assert!(brief.contains(r#"last: "two""#), "{said}");
+    assert_eq!(said["back"], "shell: printf 'one\\ntwo\\n'", "{said}");
+    assert!(
+        said.get("keep").is_none(),
+        "a success may be elided: {said}"
+    );
+}
+
+#[test]
+fn a_command_that_failed_is_kept_with_its_status_as_the_stub() {
+    let alone = Alone::new("kept");
+    let said = alone.shell("echo broke >&2; sh -c 'exit 3'");
+    assert_eq!(said["keep"], serde_json::json!(true), "{said}");
+    assert!(
+        said["brief"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("exited 3"),
+        "{said}"
+    );
+}
+
+#[test]
 fn a_command_that_failed_is_reported_with_the_status_it_failed_with() {
     // `sh -c` rather than the `exit` builtin, so the status crosses a real process.
     let alone = Alone::new("failed");

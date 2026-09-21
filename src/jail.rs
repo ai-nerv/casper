@@ -1,19 +1,23 @@
 //! A command runs inside a kernel-built jail, so a rule is a wall it cannot cross whatever it runs.
 //!
 //! casper is where the model's commands become processes, so it is where they are contained.
-//! bubblewrap builds the world a command sees: a read-only view of the machine, writable only
-//! where the work is, the credential stores masked, no network, and no sight of the user's other
+//! bubblewrap builds the world a command sees: read-only system directories, writable only
+//! where the work is, no credential-store mounts, no network, and no sight of the user's other
 //! processes. It is inherited by everything the command starts, so a script that runs a program
 //! that runs a program is as bounded as the first.
 //!
-//! Beside bubblewrap's world, a seccomp filter ([`Jail::seccomp`]) denies the syscalls no command
-//! needs and a hostile one wants — reading another process's memory, `io_uring` — and it holds even
-//! where there is no bubblewrap. Where there is none, [`Jail::landlock`] adds Landlock's filesystem,
-//! network and signal walls in-process, the one containment that stands without a namespace. Both
-//! are built here as data and armed in [`crate::tied`], the crate's one fork/exec window. Off unless
-//! [`WANTED`] is set, so nothing changes for a session until a coordinator turns it on.
+//! [`Jail::prepare`] captures the child environment and required protections for ordinary and
+//! terminal children. Without bubblewrap, Landlock restricts filesystem and process access and
+//! seccomp blocks ungranted sockets. Missing required protections refuse the spawn.
 
 use std::path::{Path, PathBuf};
+
+mod command;
+mod credentials;
+mod filter;
+mod policy;
+mod temporary;
+pub use command::Prepared;
 
 /// What turns the jail on, in casper's own name as [`crate::setup`] reads its configuration. A
 /// coordinator sets it on the spawn: `1` for the conservative profile, or a JSON [`Grants`] object
@@ -22,12 +26,12 @@ pub const WANTED: &str = "CASPER_JAIL";
 
 /// What the session's grants add to the conservative floor, read off [`WANTED`] as JSON so casper
 /// need not know how magi keeps its ledger.
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Default, Clone, serde::Deserialize)]
 pub struct Grants {
     /// Directories a call may write, beyond the working directory.
     #[serde(default)]
     pub write: Vec<PathBuf>,
-    /// Whether any network was granted. bubblewrap's is all-or-nothing; per-host is Landlock's job.
+    /// Whether unrestricted network access was granted.
     #[serde(default)]
     pub reach: bool,
     /// A host directory to mount as `/tmp`, so a project's commands share one tmp rather than each
@@ -53,9 +57,7 @@ impl Grants {
 }
 
 /// The jail one command runs inside: whether it is on, and the paths it is built around. Read from
-/// this process's environment for the command door ([`Jail::from_env`]); a socket door reads the
-/// same from the connecting peer instead, so the walls are the coordinator's either way and never
-/// the call's.
+/// this process's environment for both the command and socket doors. Calls do not supply grants.
 pub struct Jail {
     grants: Option<Grants>,
     cwd: PathBuf,
@@ -76,37 +78,17 @@ impl Jail {
         }
     }
 
-    /// The command as it should actually be started: `bwrap` and its arguments wrapping the
-    /// program, or the program unchanged when the jail is off or unavailable.
+    /// Whether a coordinator asked for a jail at all.
     #[must_use]
-    pub fn wrap(&self, program: &str, args: &[String]) -> (String, Vec<String>) {
-        let Some(grants) = self.grants.as_ref() else {
-            return (program.to_owned(), args.to_vec());
-        };
-        let Some(bwrap) = which("bwrap") else {
-            crate::noted!("jail: bwrap is not installed; {program} runs unsandboxed");
-            return (program.to_owned(), args.to_vec());
-        };
-        let mut argv = profile(&self.cwd, &self.home, grants);
-        // Cleared, then the few a command needs — never this process's own credentials, which is
-        // what masking the stores on disk would miss.
-        argv.push("--clearenv".to_owned());
-        for keep in ["PATH", "HOME", "TERM", "LANG", "LC_ALL", "USER"] {
-            if let Some(value) = std::env::var_os(keep).and_then(|v| v.into_string().ok()) {
-                argv.extend(["--setenv".to_owned(), keep.to_owned(), value]);
-            }
-        }
-        argv.push("--".to_owned());
-        argv.push(program.to_owned());
-        argv.extend(args.iter().cloned());
-        (bwrap, argv)
+    pub const fn on(&self) -> bool {
+        self.grants.is_some()
     }
 }
 
 /// The bubblewrap arguments: the conservative floor, widened by whatever the session's [`Grants`]
 /// carried. In order, because bubblewrap applies them in order and a later mount wins.
 #[must_use]
-pub fn profile(cwd: &Path, home: &Path, grants: &Grants) -> Vec<String> {
+fn profile(cwd: &Path, grants: &Grants) -> Vec<String> {
     let mut a: Vec<String> = Vec::new();
     let path = |a: &mut Vec<String>, flag: &str, p: &Path| {
         a.push(flag.to_owned());
@@ -117,8 +99,9 @@ pub fn profile(cwd: &Path, home: &Path, grants: &Grants) -> Vec<String> {
         a.push(p.display().to_string());
         a.push(p.display().to_string());
     };
-    // Readable everywhere, so a build finds its toolchain; writable is layered on top.
-    a.extend(["--ro-bind", "/", "/"].map(str::to_owned));
+    for dir in read_floor() {
+        bind(&mut a, "--ro-bind", &dir);
+    }
     a.extend(["--dev", "/dev"].map(str::to_owned));
     a.extend(["--proc", "/proc"].map(str::to_owned));
     // A shared `/tmp` when the coordinator gave one, so a project's commands see each other's temp
@@ -136,12 +119,6 @@ pub fn profile(cwd: &Path, home: &Path, grants: &Grants) -> Vec<String> {
     for writable in &grants.write {
         bind(&mut a, "--bind", writable);
     }
-    // The credential stores, masked though the machine is readable.
-    for deny in mandatory_deny(home) {
-        if deny.exists() {
-            path(&mut a, "--tmpfs", &deny);
-        }
-    }
     // A writable checkout keeps its `.git`, but not the hooks the next `git` would run.
     let hooks = cwd.join(".git/hooks");
     if hooks.exists() {
@@ -157,27 +134,6 @@ pub fn profile(cwd: &Path, home: &Path, grants: &Grants) -> Vec<String> {
     a.extend(["--die-with-parent", "--new-session"].map(str::to_owned));
     path(&mut a, "--chdir", cwd);
     a
-}
-
-/// The stores kept out of reach whatever the grants: a command that could read these could carry
-/// the user's keys out however narrow the rest of its reach.
-fn mandatory_deny(home: &Path) -> Vec<PathBuf> {
-    [".ssh", ".aws", ".gnupg", ".docker", ".kube", ".config/gh"]
-        .iter()
-        .map(|p| home.join(p))
-        .collect()
-}
-
-impl Jail {
-    /// The seccomp filter for a jailed command, or `None` with the jail off. Built here; armed in
-    /// [`crate::tied::confine`] as a `pre_exec` step, inherited across `exec`, so it holds for the
-    /// command bubblewrap goes on to run — and even where there is no bubblewrap, the one wall that
-    /// stands without namespaces.
-    #[must_use]
-    pub fn seccomp(&self) -> Option<seccompiler::BpfProgram> {
-        self.grants.as_ref()?;
-        Some(deny(FORBIDDEN))
-    }
 }
 
 /// The syscalls no jailed command ever needs and that a hostile one would reach for: reading
@@ -208,41 +164,47 @@ fn deny(forbid: &[i64]) -> seccompiler::BpfProgram {
         arch,
     )
     .and_then(std::convert::TryInto::try_into)
-    .unwrap_or_default()
+    .unwrap_or_else(|why| {
+        crate::noted!("jail: the seccomp filter could not be built ({why}); none is armed");
+        seccompiler::BpfProgram::default()
+    })
 }
 
-impl Jail {
-    /// The Landlock ruleset for a jailed command when bubblewrap will not build the world — the one
-    /// path where the filesystem, network and signal walls must stand without a mount namespace.
-    /// `None` when bwrap is present (it contains the command instead), when the jail is off, or on a
-    /// kernel without Landlock. Built here; armed in [`crate::tied::restrict`].
-    #[must_use]
-    pub fn landlock(&self) -> Option<landlock::RulesetCreated> {
-        let grants = self.grants.as_ref()?;
-        if which("bwrap").is_some() {
-            return None;
-        }
-        ruleset(&self.cwd, grants)
-    }
-}
-
-/// The system directories a command reads to run at all — never `$HOME`, so the credential stores
-/// under it stay unreadable the way bubblewrap's mask makes them.
+/// System directories readable in both backends, subject to credential-overlap validation.
 const SYSTEM_READ: &[&str] = &[
-    "/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/opt", "/proc", "/sys", "/run",
+    "/usr",
+    "/lib",
+    "/lib64",
+    "/bin",
+    "/sbin",
+    "/etc",
+    "/opt",
+    "/nix/store",
 ];
+
+/// Every directory a jailed command may read: the system ones, and wherever this machine keeps its
+/// Rust toolchain, which is not always beneath them. A command that cannot reach the toolchain
+/// cannot build anything, and where rustup puts it is the person's own arrangement.
+pub(super) fn read_floor() -> Vec<PathBuf> {
+    SYSTEM_READ
+        .iter()
+        .map(PathBuf::from)
+        .chain(policy::toolchain())
+        .filter(|dir| dir.exists())
+        .collect()
+}
 
 /// A Landlock ruleset from the grants: read across the system directories, write at `cwd`, each
 /// granted directory and the scratch devices, TCP denied unless a reach grant, signals scoped to
-/// this domain. Best-effort, so an older kernel keeps the walls it can rather than failing.
-fn ruleset(cwd: &Path, grants: &Grants) -> Option<landlock::RulesetCreated> {
+/// this domain. Every requested right must be supported by the running kernel.
+fn ruleset(cwd: &Path, grants: &Grants, protected: &[PathBuf]) -> Option<landlock::RulesetCreated> {
     use landlock::{
         ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
         RulesetAttr, RulesetCreatedAttr, Scope,
     };
-    let abi = ABI::V5;
+    let abi = ABI::V6;
     let mut ruleset = Ruleset::default()
-        .set_compatibility(CompatLevel::BestEffort)
+        .set_compatibility(CompatLevel::HardRequirement)
         .handle_access(AccessFs::from_all(abi))
         .ok()?
         .scope(Scope::Signal | Scope::AbstractUnixSocket)
@@ -254,17 +216,31 @@ fn ruleset(cwd: &Path, grants: &Grants) -> Option<landlock::RulesetCreated> {
     }
     let mut created = ruleset.create().ok()?;
     let (read, all) = (AccessFs::from_read(abi), AccessFs::from_all(abi));
-    for dir in SYSTEM_READ {
-        if let Ok(fd) = PathFd::new(dir) {
-            created = created.add_rule(PathBeneath::new(fd, read)).ok()?;
-        }
+    for dir in read_floor() {
+        let fd = policy::validated_fd(&dir, protected).ok()?;
+        created = created.add_rule(PathBeneath::new(fd, read)).ok()?;
     }
     let writable = std::iter::once(cwd.to_path_buf())
         .chain(grants.write.iter().cloned())
-        .chain([PathBuf::from("/tmp"), PathBuf::from("/dev")]);
+        .chain(grants.tmp.iter().cloned());
     for dir in writable {
-        if let Ok(fd) = PathFd::new(&dir) {
-            created = created.add_rule(PathBeneath::new(fd, all)).ok()?;
+        let fd = policy::validated_fd(&dir, protected).ok()?;
+        created = created.add_rule(PathBeneath::new(fd, all)).ok()?;
+    }
+    for device in [
+        "/dev/null",
+        "/dev/zero",
+        "/dev/random",
+        "/dev/urandom",
+        "/dev/tty",
+    ] {
+        if let Ok(fd) = PathFd::new(device) {
+            created = created
+                .add_rule(PathBeneath::new(
+                    fd,
+                    AccessFs::ReadFile | AccessFs::WriteFile | AccessFs::IoctlDev,
+                ))
+                .ok()?;
         }
     }
     Some(created)
@@ -286,14 +262,10 @@ mod tests {
     use crate::scratch::Scratch;
 
     #[test]
-    fn the_floor_reads_the_world_writes_the_cwd_and_cuts_the_network() {
-        let a = profile(
-            Path::new("/w/proj"),
-            Path::new("/home/x"),
-            &Grants::default(),
-        )
-        .join(" ");
-        assert!(a.contains("--ro-bind / /"), "{a}");
+    fn the_floor_reads_system_directories_writes_the_cwd_and_cuts_the_network() {
+        let a = profile(Path::new("/w/proj"), &Grants::default()).join(" ");
+        assert!(!a.contains("--ro-bind / /"), "{a}");
+        assert!(a.contains("--ro-bind /usr /usr"), "{a}");
         assert!(a.contains("--bind /w/proj /w/proj"), "{a}");
         assert!(a.contains("--unshare-net"), "{a}");
         assert!(a.contains("--die-with-parent"), "{a}");
@@ -306,7 +278,7 @@ mod tests {
             reach: true,
             tmp: None,
         };
-        let a = profile(Path::new("/w/proj"), Path::new("/home/x"), &grants).join(" ");
+        let a = profile(Path::new("/w/proj"), &grants).join(" ");
         assert!(
             a.contains("--bind /w/proj /w/proj"),
             "the cwd is still writable: {a}"
@@ -329,13 +301,16 @@ mod tests {
             reach: false,
             tmp: Some(dir.to_path_buf()),
         };
-        let a = profile(Path::new("/w/proj"), Path::new("/home/x"), &grants).join(" ");
+        let a = profile(Path::new("/w/proj"), &grants).join(" ");
         assert!(
             a.contains(&format!("--bind {} /tmp", dir.display())),
             "the shared tmp is bound as /tmp: {a}"
         );
         assert!(
-            !a.contains("--tmpfs /tmp"),
+            !a.split_whitespace()
+                .collect::<Vec<_>>()
+                .windows(2)
+                .any(|args| args == ["--tmpfs", "/tmp"]),
             "the private tmpfs is gone: {a}"
         );
     }
@@ -349,9 +324,18 @@ mod tests {
             None,
             "the suite must not set {WANTED}"
         );
-        let (program, args) = Jail::from_env().wrap("sh", &["-c".to_owned(), "echo hi".to_owned()]);
-        assert_eq!(program, "sh");
-        assert_eq!(args, ["-c", "echo hi"]);
+        let mut prepared = Jail::from_env()
+            .prepare(
+                "sh",
+                &["-c".to_owned(), "echo hi".to_owned()],
+                None,
+                &[],
+                false,
+            )
+            .expect("unjailed command");
+        let command = prepared.command();
+        assert_eq!(command.get_program(), "sh");
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["-c", "echo hi"]);
     }
 
     #[test]
@@ -380,33 +364,20 @@ mod tests {
 
     #[test]
     fn landlock_alone_denies_a_read_outside_the_set_and_keeps_the_cwd_writable() {
-        // The degraded path: no bwrap, so Landlock is the only wall, built and armed the way
-        // `tied::restrict` arms it. The ruleset grants /tmp, so the secret goes under $HOME — the
-        // credential tree Landlock exists to close — proved unreadable while the cwd stays writable.
-        let Some(home) = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .filter(|h| !h.as_os_str().is_empty())
-        else {
-            eprintln!("skipping: no HOME to hide a secret under");
-            return;
-        };
-        struct Hidden(PathBuf);
-        impl Drop for Hidden {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let outside = home.join(format!(".casper-lltest-{}", std::process::id()));
+        let dir = Scratch::new("jail", "landlock");
+        let outside = dir.join("home");
         std::fs::create_dir_all(&outside).expect("mkdir");
-        let _hidden = Hidden(outside.clone());
         let secret = outside.join("secret");
         std::fs::write(&secret, "THE-SECRET-KEY").expect("write");
 
-        let dir = Scratch::new("jail", "landlock");
         let work = dir.join("work");
         std::fs::create_dir_all(&work).expect("mkdir");
-        let Some(ruleset) = ruleset(&work, &Grants::default()) else {
-            eprintln!("skipping: no Landlock here");
+        let Some(ruleset) = ruleset(&work, &Grants::default(), &[]) else {
+            assert!(
+                std::env::var_os("CASPER_REQUIRE_CONTAINMENT").is_none(),
+                "required Landlock unavailable"
+            );
+            eprintln!("NOT VERIFIED: Landlock unavailable");
             return;
         };
         let script = format!(
@@ -439,7 +410,7 @@ mod tests {
         std::fs::create_dir_all(&work).expect("mkdir");
         std::fs::write(home.join(".ssh/id"), "THE-SECRET-KEY").expect("write");
 
-        let mut argv = profile(&work, &home, &Grants::default());
+        let mut argv = profile(&work, &Grants::default());
         argv.push("--clearenv".to_owned());
         argv.extend([
             "--setenv".to_owned(),

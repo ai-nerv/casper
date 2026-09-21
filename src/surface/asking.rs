@@ -3,6 +3,7 @@
 //! ```lua
 //! local who = casper.knows("session")          -- { id = "…", cwd = "…" }
 //! local found = casper.knows("memories", { query = "deploy", limit = 5 })
+//! local said = casper.knows("helper", { role = "safety", instruction = "…", input = "rm -rf build" })
 //! ```
 //!
 //! A tenant asks in the middle of being asked, and the answer arrives on the same pipe every
@@ -97,6 +98,20 @@ pub(crate) fn wonder(verb: &str, args: serde_json::Value) -> Result<serde_json::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_helper_question_goes_out_as_any_other_wonder() {
+        let asked = FromSurface::Ask {
+            wondered: 1,
+            wonder: "helper".to_owned(),
+            args: serde_json::json!({"role": "safety", "instruction": "judge", "input": "rm -rf build"}),
+        };
+        let wire: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&asked).expect("encodes")).expect("json");
+        assert_eq!(wire["event"], "ask");
+        assert_eq!(wire["wonder"], "helper");
+        assert_eq!(wire["args"]["role"], "safety");
+    }
 
     #[test]
     fn a_frame_that_arrived_while_waiting_is_handed_back_before_the_pipe_is_read() {

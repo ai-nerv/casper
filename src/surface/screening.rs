@@ -8,14 +8,20 @@ use crate::pty::{Screen, Spec};
 use crate::tools::{FromSurface, Held, ToSurface};
 
 /// Run `spec`'s program in `rows` by `cols` until it ends or the reservation does.
-pub(super) fn hold<I>(spec: &Spec, rows: u16, cols: u16, frames: I)
-where
+pub(super) fn hold<I>(
+    spec: &Spec,
+    rows: u16,
+    cols: u16,
+    frames: I,
+    watched: &mut super::Watched<'_>,
+) where
     I: Iterator<Item = std::io::Result<String>>,
 {
     let mut screen = match Screen::open(spec, rows, cols) {
         Ok(screen) => screen,
         // Said rather than silent: the harness is holding rows for this.
         Err(why) => {
+            crate::noted!("surface: `{}` would not start: {why}", spec.command);
             super::say(&FromSurface::Done {
                 answered: format!("`{}` would not start: {why}", spec.command),
             });
@@ -36,6 +42,7 @@ where
             // every key twice. A repeat is a second keypress and is sent.
             ToSurface::Key { key, state } => {
                 if state != Held::Up {
+                    watched.keys += 1;
                     screen.typed(&key);
                 }
             }
@@ -44,7 +51,10 @@ where
                 button,
                 row,
                 col,
-            } => screen.pointed(kind, button, row, col),
+            } => {
+                watched.pointer += 1;
+                screen.pointed(kind, button, row, col);
+            }
             ToSurface::Resize { rows, cols, .. } => screen.resized(rows, cols),
             ToSurface::Tick => {}
             // The program is killed rather than left running behind rows nobody can see.

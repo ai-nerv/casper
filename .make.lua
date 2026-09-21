@@ -118,6 +118,9 @@ local function binary_path()
   return "target/release/" .. NAME
 end
 
+make.recipe{ name = "family-path", desc = "the binary selected by the build recipe",
+             run = function() print("NERV_BINARY=" .. binary_path()) end }
+
 -- **The binary, not the library.** casper is a program: the library exists so the tests can
 -- reach inside it, and nobody runs an rlib. This built `--lib` for a while, inherited from the
 -- scaffold, and the cost was not an error -- it was `make build` succeeding and leaving the
@@ -173,14 +176,26 @@ make.recipe{
     -- nothing, so a listing like this prints the files and copies none of them.
     local found = oslo.run{ "find", "config", "-type", "f", "-name", "*.lua", capture = true }
     assert(found.ok, "could not list config/")
-    local copied = 0
+    local copied, back = 0, {}
     for file in (found.out or ""):gmatch("[^\n]+") do
       local into = CONFIG .. "/" .. file:gsub("^config/", "")
       assert(oslo.run{ "mkdir", "-p", (into:match("^(.*)/[^/]*$")) }.ok, "could not create " .. into)
-      assert(oslo.run{ "install", "-m", "644", file, into }.ok, "could not install " .. file)
-      copied = copied + 1
+      -- Whichever side was edited last wins, so an edit made to the installed copy comes back
+      -- here rather than being overwritten. `cp -p` keeps the time, so the two agree afterwards.
+      local differs = oslo.fs.stat(into) and not oslo.run{ "cmp", "-s", file, into }.ok
+      if differs and oslo.run{ "test", into, "-nt", file }.ok then
+        assert(oslo.run{ "cp", "-p", into, file }.ok, "could not bring back " .. into)
+        back[#back + 1] = file
+      else
+        assert(oslo.run{ "cp", "-p", file, into }.ok, "could not install " .. file)
+        assert(oslo.run{ "chmod", "644", into }.ok, "could not set the mode of " .. into)
+        copied = copied + 1
+      end
     end
     print(("%d files -> %s"):format(copied, CONFIG))
+    for _, file in ipairs(back) do
+      print(("   <- %s was newer in %s, and came back"):format(file, CONFIG))
+    end
   end,
 }
 
@@ -206,6 +221,15 @@ make.recipe{
 make.recipe{ name = "test", desc = "the suite",
              run = function() sh.cargo("test", "--all-targets") end }
 make.alias("t", "test")
+
+make.recipe{ name = "test-pty-lifecycle", desc = "PTY EOF and process exit boundaries",
+             run = function() sh.cargo("test", "--lib", "pty::exiting") end }
+
+make.recipe{ name = "test-resource-bounds", desc = "isolated command and screen memory limits",
+             run = function() sh.cargo("test", "--lib", "a_program_that_") end }
+
+make.recipe{ name = "test-containment", desc = "command and PTY jail boundaries",
+             run = function() sh.cargo("test", "--test", "containment", "--", "--nocapture") end }
 
 make.recipe{ name = "test-all", desc = "the suite, with every feature on",
              run = function() sh.cargo("test", "--all-targets", "--all-features") end }

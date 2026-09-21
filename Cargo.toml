@@ -1,6 +1,6 @@
 [package]
 name = "casper"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "The tooling interface: what a tool is, what it says, and what it shows"
 license = "MIT"
@@ -33,7 +33,7 @@ thiserror = "2.0"
 # The kernel's half of "casper belongs to the magi that started it": `PR_SET_PDEATHSIG`, and
 # nothing else from it. Already in the lockfile underneath pty-process, so this is a feature
 # and not a package.
-rustix = { version = "1", features = ["process", "net"] }
+rustix = { version = "1", features = ["process", "net", "fs"] }
 seccompiler = "0.5"
 libc = "0.2.189"
 landlock = "0.4.4"

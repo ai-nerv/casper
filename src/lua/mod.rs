@@ -4,6 +4,7 @@
 
 pub mod ask;
 pub mod convert;
+pub mod dirs;
 pub mod engine;
 pub mod exec;
 pub mod fs;
@@ -11,5 +12,7 @@ pub mod json;
 pub mod keying;
 pub mod paint;
 pub mod sandbox;
+pub mod seek;
 pub mod stream;
 pub mod surface;
+pub mod wondering;

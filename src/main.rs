@@ -45,7 +45,9 @@ fn main() -> std::process::ExitCode {
         );
         return std::process::ExitCode::SUCCESS;
     }
-    let delivered = match args.first().map(String::as_str).unwrap_or("help") {
+    let verb = args.first().map_or("help", String::as_str);
+    let began = std::time::Instant::now();
+    let delivered = match verb {
         "verbs" => {
             let mut reply = listing(described());
             reply.surface = Some(casper::wire::SURFACE);
@@ -72,6 +74,15 @@ fn main() -> std::process::ExitCode {
         "help" | "--help" | "-h" => usage(),
         other => say(how, &Reply::refused(format!("no such call: {other}"))),
     };
+    casper::noted!(
+        "cli: {verb} answered in {}ms{}",
+        began.elapsed().as_millis(),
+        if delivered {
+            ""
+        } else {
+            "; the reply never arrived"
+        }
+    );
     // Zero for anything casper said, refusals included. Non-zero only when the reply did not
     // reach the caller at all.
     if delivered {
@@ -160,7 +171,14 @@ fn acknowledged() -> Reply {
         .collect();
 
     let manifest = casper::acknowledged::manifest_in(&dir);
-    match casper::acknowledged::acknowledge(&manifest, &files) {
+    let done = casper::acknowledged::acknowledge(&manifest, &files);
+    casper::noted!(
+        "acknowledge: {} package files: {}",
+        files.len(),
+        done.as_ref()
+            .map_or_else(Clone::clone, |_| "cleared".to_owned())
+    );
+    match done {
         Ok(_) => listing(serde_json::Value::Array(
             files
                 .iter()
@@ -180,7 +198,9 @@ fn listing(value: serde_json::Value) -> Reply {
 
 /// What a coordinator may tell this casper.
 fn needs() -> serde_json::Value {
-    serde_json::to_value(casper::setup::needs()).unwrap_or(serde_json::Value::Null)
+    let needs = casper::setup::needs();
+    casper::noted!("needs: {} settings a coordinator may set", needs.len());
+    serde_json::to_value(needs).unwrap_or(serde_json::Value::Null)
 }
 
 /// Read Lua configuration on stdin, apply it, and say what was done with each name. A chunk that
@@ -190,7 +210,15 @@ fn configure() -> Reply {
     if let Err(why) = std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut source) {
         return Reply::refused(format!("nothing to read: {why}"));
     }
-    match casper::setup::read(&source) {
+    let read = casper::setup::read(&source);
+    casper::noted!(
+        "configure: {}",
+        match &read {
+            Ok(applied) => casper::noted::short(&serde_json::json!(applied).to_string()),
+            Err(why) => format!("refused: {why}"),
+        }
+    );
+    match read {
         Ok(applied) => match serde_json::to_value(applied) {
             Ok(value) => Reply::rows(vec![value]),
             Err(why) => Reply::refused(format!("that cannot be described: {why}")),
@@ -222,6 +250,7 @@ fn tools() -> Reply {
         .into_iter()
         .filter(|card| !casper::setup::is_off(&card.name) && !casper::setup::is_hidden(&card.name))
         .collect();
+    casper::noted!("tools: {} offered", offered.len());
     match serde_json::to_value(offered) {
         Ok(cards) => listing(cards),
         Err(why) => Reply::refused(format!("the tools cannot be described: {why}")),
@@ -244,6 +273,7 @@ fn ran() -> Reply {
 /// socket. The jail it runs in is this process's, so a socket call runs inside the walls `serve`
 /// was spawned with, never ones the call named.
 fn run_call(call: &Call) -> Reply {
+    let began = std::time::Instant::now();
     let mut engine = match loaded() {
         Ok(engine) => engine,
         Err(why) => return Reply::refused(why),
@@ -251,13 +281,33 @@ fn run_call(call: &Call) -> Reply {
     // Off means gone, not merely unlisted: a model can guess at a tool it was never told about.
     // `hidden` is the setting that means hidden, and it still runs.
     if casper::setup::is_off(&call.tool) {
+        casper::noted!("run: {} refused: it is turned off", call.tool);
         return Reply::refused(format!("no such tool: {}", call.tool));
     }
     let Some(mut ran) = engine.call(&call.tool, &given(call)) else {
+        casper::noted!("run: {} refused: no such tool", call.tool);
         return Reply::refused(format!("no such tool: {}", call.tool));
     };
     // What the model reads is capped; what the person is shown is not.
     ran.said = casper::setup::bounded(ran.said);
+    casper::noted!(
+        "run: {} {} jailed={} → {} in {}ms, {} bytes; brief={:?} back={:?} keep={}",
+        call.tool,
+        casper::noted::short(&call.args.to_string()),
+        casper::jail::Jail::from_env().on(),
+        if ran.failed {
+            "failed"
+        } else if ran.waiting() {
+            "asking"
+        } else {
+            "ok"
+        },
+        began.elapsed().as_millis(),
+        ran.said.len(),
+        ran.brief.as_deref().unwrap_or_default(),
+        ran.back.as_deref().unwrap_or_default(),
+        ran.keep
+    );
     answer(&ran)
 }
 
@@ -283,6 +333,10 @@ fn serve(how: As, args: &[String]) -> bool {
     };
     // Ready before it is used: the coordinator connects once it has read this off stdout.
     listening(&at);
+    casper::noted!(
+        "serve: listening at {at}, jailed={}",
+        casper::jail::Jail::from_env().on()
+    );
     if let Err(why) = casper::serving::accept(&listener, answer_socket) {
         casper::noted!("serve: {why}");
     }
@@ -292,6 +346,19 @@ fn serve(how: As, args: &[String]) -> bool {
 /// One socket call: the tool surface, and a refusal for anything else. `run`'s tool call rides in
 /// the first argument, the way the family wraps a verb's payload.
 fn answer_socket(call: &casper::wire::Call) -> Reply {
+    let began = std::time::Instant::now();
+    let reply = on_socket(call);
+    casper::noted!(
+        "socket: {} {} in {}ms",
+        call.call,
+        if reply.ok { "answered" } else { "refused" },
+        began.elapsed().as_millis()
+    );
+    reply
+}
+
+/// What a socket call is answered with.
+fn on_socket(call: &casper::wire::Call) -> Reply {
     match call.call.as_str() {
         "tools" => tools(),
         "run" => match call.args.first() {
@@ -379,12 +446,14 @@ fn loaded() -> Result<Engine, String> {
     // The registry replaces by name, so the order is the precedence: `tools.lua`, `plugin/`,
     // installed packages, `after/plugin/`, then a coordinator's own file. A layer that will not
     // run is named on stderr and does not stop the others.
+    casper::noted!("setup: {} declaration files", files.len());
     for (path, trust) in files {
         match std::fs::read_to_string(&path) {
             Ok(source) => {
                 if trust.needs_acknowledging()
                     && !casper::acknowledged::cleared(&known, &path, &source)
                 {
+                    casper::noted!("setup: {} held until acknowledged", path.display());
                     aside(format_args!(
                         "casper: {}; run `casper acknowledge` to clear it",
                         casper::acknowledged::Held {
@@ -395,10 +464,14 @@ fn loaded() -> Result<Engine, String> {
                     continue;
                 }
                 if let Err(why) = engine.run(&source, &path.to_string_lossy()) {
+                    casper::noted!("setup: {} will not run: {why}", path.display());
                     aside(format_args!("casper: {}: {why}", path.display()));
                 }
             }
-            Err(why) => aside(format_args!("casper: {}: {why}", path.display())),
+            Err(why) => {
+                casper::noted!("setup: {} cannot be read: {why}", path.display());
+                aside(format_args!("casper: {}: {why}", path.display()));
+            }
         }
     }
 
@@ -412,8 +485,7 @@ fn usage() -> bool {
     use std::io::Write;
     let mut out = std::io::stdout().lock();
     out.write_all(
-        concat!(
-            "casper — the tooling interface\n\
+        "casper — the tooling interface\n\
          \n\
          \x20 casper tools        every tool it offers, with schemas\n\
          \x20 casper run          one call on stdin, one result on stdout\n\
@@ -424,8 +496,7 @@ fn usage() -> bool {
          \n\
          Every verb prints the family's reply shape. casper answers on the\n\
          command line and on a socket it binds with serve. See DESIGN.md.\n"
-        )
-        .as_bytes(),
+            .as_bytes(),
     )
     .and_then(|()| out.flush())
     .inspect_err(|why| casper::noted!("usage: it could not be written: {why}"))

@@ -115,7 +115,7 @@ fn hex(text: &str) -> Option<crate::paint::Colour> {
 
 /// Painted lines, as the view a declaration hands back. Tagged, because a bare list of lines
 /// would be indistinguishable from a question.
-fn lines<'gc>(ctx: luna::Context<'gc>, painted: &[crate::paint::Line]) -> Table<'gc> {
+pub(crate) fn lines<'gc>(ctx: luna::Context<'gc>, painted: &[crate::paint::Line]) -> Table<'gc> {
     let view = Table::new(&ctx);
     view.set(ctx, "shown", luna::String::from_slice(&ctx, b"painted"))
         .ok();

@@ -51,13 +51,20 @@ pub fn hold(tool: &str, engine: &mut Engine) -> bool {
     // `holds` says whether this terminal ever reports a key coming back up; a tenant told
     // otherwise waits for a release that never comes.
     let size = serde_json::json!({"rows": rows, "cols": cols, "holds": holds});
+    crate::noted!("surface: {tool} opened at {rows}x{cols}");
+    let mut watched = Watched {
+        tool,
+        keys: 0,
+        pointer: 0,
+    };
     // A `screen` declaration is asked about before `surface`, and takes precedence over it.
     if let Some(spec) = engine
         .screen(tool, &args, &size)
         .as_ref()
         .and_then(crate::pty::Spec::from_json)
     {
-        screening::hold(&spec, rows, cols, lines);
+        crate::noted!("surface: {tool} runs `{}` on a pty", spec.command);
+        screening::hold(&spec, rows, cols, lines, &mut watched);
         return delivered();
     }
     if !engine.open(tool, &args, &size) {
@@ -79,11 +86,14 @@ pub fn hold(tool: &str, engine: &mut Engine) -> bool {
             return delivered();
         };
         let event = match read(&line) {
-            ToSurface::Key { key, state } => serde_json::json!({
-                "kind": "key",
-                "key": key,
-                "state": state,
-            }),
+            ToSurface::Key { key, state } => {
+                watched.keys += 1;
+                serde_json::json!({
+                    "kind": "key",
+                    "key": key,
+                    "state": state,
+                })
+            }
             // Already in this surface's own coordinates: row 0 is its first row, and nothing
             // outside the rows it was granted ever arrives.
             ToSurface::Mouse {
@@ -91,13 +101,16 @@ pub fn hold(tool: &str, engine: &mut Engine) -> bool {
                 button,
                 row,
                 col,
-            } => serde_json::json!({
-                "kind": "mouse",
-                "what": kind,
-                "button": button,
-                "row": row,
-                "col": col,
-            }),
+            } => {
+                watched.pointer += 1;
+                serde_json::json!({
+                    "kind": "mouse",
+                    "what": kind,
+                    "button": button,
+                    "row": row,
+                    "col": col,
+                })
+            }
             ToSurface::Tick => serde_json::json!({"kind": "tick"}),
             ToSurface::Resize { rows, cols, holds } => {
                 serde_json::json!({"kind": "resize", "rows": rows, "cols": cols, "holds": holds})
@@ -115,6 +128,24 @@ pub fn hold(tool: &str, engine: &mut Engine) -> bool {
         }
     }
     delivered()
+}
+
+/// A surface's life, for the log: said when it ends, however it ends. Counts, never contents.
+pub(crate) struct Watched<'a> {
+    tool: &'a str,
+    pub(crate) keys: usize,
+    pub(crate) pointer: usize,
+}
+
+impl Drop for Watched<'_> {
+    fn drop(&mut self) {
+        crate::noted!(
+            "surface: {} closed after {} keys and {} pointer events",
+            self.tool,
+            self.keys,
+            self.pointer
+        );
+    }
 }
 
 /// Hand one frame to the tenant and say what it drew. `false` when the surface is over.

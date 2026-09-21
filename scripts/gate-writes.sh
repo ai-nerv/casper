@@ -37,10 +37,10 @@ ROOT="${GATE_ROOT:-src}"
 
 # May write. Adding to this list is a deliberate act; the point is that it cannot happen by
 # accident.
-WRITERS='src/acknowledged.rs src/noted.rs src/scratch.rs src/serving.rs'
+WRITERS='src/acknowledged.rs src/noted.rs src/scratch.rs src/serving.rs src/jail/temporary.rs'
 
 # May remove. The scratch helper owns what it removes; the socket door clears a dead daemon's file.
-REMOVERS='src/scratch.rs src/serving.rs'
+REMOVERS='src/scratch.rs src/serving.rs src/jail/temporary.rs'
 
 # What counts as reaching for the filesystem to change it. `File::create` and `OpenOptions` are
 # here because both truncate or create without the word `write` appearing anywhere.
@@ -50,7 +50,7 @@ REMOVERS='src/scratch.rs src/serving.rs'
 # each is a way to change what is on disk: `set_permissions`, `set_times`, `symlink` and
 # `File::options`, which is `OpenOptions` under another spelling. `create_new` matched only as a
 # substring of `File::create`, and is spelled out here rather than left to that.
-WRITING='fs::(write|create_dir|create_dir_all|copy|rename|hard_link|soft_link|symlink|set_permissions|set_times)|File::(create|create_new|options)|OpenOptions'
+WRITING='fs::(write|create_dir|create_dir_all|copy|rename|hard_link|soft_link|symlink|set_permissions|set_times)\b|File::(create|create_new|options)|OpenOptions|DirBuilder::'
 REMOVING='fs::(remove_file|remove_dir|remove_dir_all)'
 
 fail=0

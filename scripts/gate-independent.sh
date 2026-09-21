@@ -37,7 +37,12 @@ found=$(
         if (started && depth <= 0) skipping = 0
         next
       }
-      { sub(/\/\/.*$/, ""); print }
+      {
+        sub(/\/\/.*$/, "")
+        gsub(/"magi"/, "\"credential-directory\"")
+        gsub(/(home\/\.local\/share|data)\/magi(\/credentials\.json)?/, "credential-fixture")
+        print
+      }
     ' "$file" | grep -nE "\\b(magi|melchior|balthasar)" || true)
     [ -n "$hit" ] || continue
     printf '%s: %s\n' "$file" "$(printf '%s' "$hit" | head -1)"

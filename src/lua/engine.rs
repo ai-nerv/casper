@@ -152,6 +152,8 @@ impl Engine {
             casper.set(ctx, "stream", stream).ok();
             ctx.set_global("__stream", stream);
             casper.set(ctx, "fs", crate::lua::fs::table(ctx)).ok();
+            casper.set(ctx, "dirs", crate::lua::dirs::table(ctx)).ok();
+            casper.set(ctx, "seek", crate::lua::seek::table(ctx)).ok();
             // A declaration cannot open a file, so a stub arrives as text and is `load`ed.
             let clients = Table::new(&ctx);
             for (name, source) in CLIENTS {
@@ -165,6 +167,9 @@ impl Engine {
             }
             casper.set(ctx, "clients", clients).ok();
             casper.set(ctx, "ask", crate::lua::ask::table(ctx)).ok();
+            casper
+                .set(ctx, "wonder", crate::lua::wondering::table(ctx))
+                .ok();
             casper
                 .set(ctx, "surface", crate::lua::surface::table(ctx))
                 .ok();
@@ -412,6 +417,7 @@ fn card<'gc>(ctx: luna::Context<'gc>, name: &str, spec: Table<'gc>) -> Option<Ca
             .unwrap_or_else(|| serde_json::json!({"type": "object"})),
         needs: text("needs"),
         deferred: matches!(spec.get_value(ctx, "deferred"), Value::Boolean(true)),
+        group: text("group").unwrap_or_default(),
     })
 }
 

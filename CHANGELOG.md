@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.0] - 2026-09-21
+
+### <!-- 0 -->⛰️  Features
+
+- A tool says which branch it sits under
+- Ls, tree and sese
+- The side edited last wins
+- Every step into the family's log
+- Stubs, ways back and keep hints
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Ask a model that decides, a question a passage
+- Ls, tree and sese are always available
+- Read the toolchain wherever it lives
+
+### <!-- 3 -->📚 Documentation
+
+- Say it locates, and never answers
+- Plan as the layout fallback
+- Layout, jobs and notes verbs
+
 ## [0.2.0] - 2026-09-15
 
 ### <!-- 0 -->⛰️  Features

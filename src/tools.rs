@@ -18,6 +18,9 @@ pub struct Card {
     /// Kept out of the model's list until a `tools` lookup unlocks it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deferred: bool,
+    /// Which branch of the manual it sits under: `files`, `finding`, `shell`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
 }
 
 /// One call, as it arrives.
@@ -47,6 +50,15 @@ pub struct Ran {
     /// Deferred tools this call made available, for the harness to add to the model's list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unlocks: Vec<String>,
+    /// What to show in place of `said` once the result is elided from a model's context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brief: Option<String>,
+    /// How to get the full result back again: `read src/a.rs`, `shell: cargo test`. `keep` beside
+    /// it means never elide this result at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub back: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep: bool,
 }
 
 impl Ran {
@@ -82,10 +94,19 @@ impl Ran {
         }
     }
 
+    /// A question for the harness, and no result yet.
+    #[must_use]
+    pub fn wondering(wonder: Wondering) -> Self {
+        Self {
+            shown: Some(Shown::Wonder(wonder)),
+            ..Self::default()
+        }
+    }
+
     /// Whether this call is waiting on an answer rather than finished.
     #[must_use]
     pub fn waiting(&self) -> bool {
-        matches!(self.shown, Some(Shown::Ask(_)))
+        matches!(self.shown, Some(Shown::Ask(_) | Shown::Wonder(_)))
     }
 }
 
@@ -99,6 +120,20 @@ pub enum Shown {
     Ask(Ask),
     /// Rows the tool reserves and fills itself, in whatever shape its tenant draws.
     Surface(Surface),
+    Wonder(Wondering),
+}
+
+/// A question a tool is putting to the harness rather than to the person: `wonder` is one of its
+/// verbs (`helper`, `session`, `model`, `memories`) and `about` says in one line what it is for.
+/// The same resumption an [`Ask`] uses, with nobody to interrupt — which is how a tool reaches a
+/// model without casper holding a credential or knowing a provider.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Wondering {
+    pub wonder: String,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub args: serde_json::Value,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub about: String,
 }
 
 /// Rows a tool has asked for, and what to open to fill them.
@@ -196,6 +231,22 @@ mod tests {
     }
 
     #[test]
+    fn a_stub_a_way_back_and_a_keep_hint_travel_only_when_set() {
+        let plain = serde_json::to_string(&Ran::said("x")).expect("encodes");
+        assert!(
+            !plain.contains("brief") && !plain.contains("keep"),
+            "{plain}"
+        );
+        let ran: Ran = serde_json::from_value(serde_json::json!({
+            "said": "x", "brief": "read a.rs (3 lines)", "back": "read a.rs", "keep": true
+        }))
+        .expect("decodes");
+        assert_eq!(ran.brief.as_deref(), Some("read a.rs (3 lines)"));
+        assert_eq!(ran.back.as_deref(), Some("read a.rs"));
+        assert!(ran.keep);
+    }
+
+    #[test]
     fn a_failure_is_a_result_the_model_reads() {
         let ran = Ran::failed("no such file");
         assert!(ran.failed);
@@ -210,6 +261,7 @@ mod tests {
             parameters: serde_json::json!({"type": "object"}),
             needs: Some("run".to_owned()),
             deferred: false,
+            group: String::new(),
         };
         let wire = serde_json::to_string(&card).expect("encodes");
         assert!(!wire.contains("allow") && !wire.contains("grant"), "{wire}");

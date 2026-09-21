@@ -31,9 +31,9 @@ casper.theme = {
 
 -- ── the manual ────────────────────────────────────────────────────────────────────────
 --
--- **Four tools are always in front of the model: `read`, `write`, `edit`, `shell`.** The rest are
--- deferred: every card sent costs tokens on every request, and a game or a multiplexer probe is
--- needed once a week. So they are listed here instead, as a tree `tools` walks one level at a time
+-- **What a session reaches for constantly is always in front of the model: `read`, `write`, `edit`,
+-- `shell`, and the three that find things -- `ls`, `tree`, `sese`.** The rest are deferred: every
+-- card sent costs tokens on every request, and a game or a multiplexer probe is needed once a week. So they are listed here instead, as a tree `tools` walks one level at a time
 -- -- the groups, then a group, then a tool -- and reaching a deferred tool's page unlocks it.
 local MANUAL = {
   { group = "files", about = "read, write and edit files; always available", tools = {
@@ -46,6 +46,30 @@ Prefer `edit` for a change to a file that exists: it cannot lose the parts you d
     { name = "edit", page = [[
 edit(path, old, new) -- replace `old` with `new`. `old` must appear exactly once; include enough of
 the surrounding lines to make it unique. Answers with a unified diff of what changed.]] },
+  } },
+  { group = "finding", about = "look around a directory, and search a repository by meaning; always available", tools = {
+    { name = "ls", page = [[
+ls(path?, all?) -- what one directory holds, directories first, with a size against each file and a
+closing count. Build output, dependency trees and version control's own directories are named rather
+than opened. `all` keeps dotfiles, and one directory is shown whether or not version control knows it. Use
+`tree` to see further down than one level.]] },
+    { name = "tree", page = [[
+tree(path?, depth?, all?) -- the shape of a directory, drawn as a tree `depth` levels deep (3 by
+default). Same exclusions as `ls`, and inside a repository it draws only what version control
+accounts for, so an ignored tree is counted rather than descended; `all` shows everything. For what
+a single directory holds, `ls` is cheaper to read.]] },
+    { name = "sese", page = [[
+sese(query, path?, limit?) -- find WHERE something lives, by meaning rather than by string. Answers
+with a ranked list of passages -- file, line range, score out of 10 -- and nothing else. It locates;
+it does not explain, summarise or answer.
+
+Name the thing to find, not a question to be answered:
+  yes  "where session expiry is handled" / "the retry policy for uploads" / "the config parser"
+  no   "what is this project about" / "how does auth work" / "explain the parser"
+The second kind scores half the repository alike and tells you nothing.
+
+`read` the passages it ranked highest -- that is where the answer is. When you already know the
+string you are after, `grep` through `shell` is faster and exact.]] },
   } },
   { group = "shell", about = "commands, and programs that need a terminal", tools = {
     { name = "shell", page = [[
@@ -84,18 +108,20 @@ pick, and it opens in the prompt or, for doom, in the float.]] },
   } },
 }
 
--- Which declarations are deferred, read off the manual so the two cannot disagree, and marked as
--- each is declared: every `casper.tool` below passes through this one wrapper.
+-- Which branch of the manual each declaration sits under, and which are deferred, read off the
+-- manual so the two cannot disagree: every `casper.tool` below passes through this one wrapper.
 do
-  local deferred = {}
+  local deferred, group = {}, {}
   for _, branch in ipairs(MANUAL) do
     for _, entry in ipairs(branch.tools) do
       if entry.deferred then deferred[entry.name] = true end
+      group[entry.name] = branch.group
     end
   end
   local declare = casper.tool
   casper.tool = function(name, spec)
     if deferred[name] then spec.deferred = true end
+    spec.group = spec.group or group[name]
     return declare(name, spec)
   end
 end
@@ -178,6 +204,29 @@ local function put(path, contents)
   return casper.exec("sh", { "-c", 'cat > "$1"', "sh", path }, contents)
 end
 
+-- A result in one line, for the stub a harness shows once it has elided the result: the first line
+-- with anything on it, trimmed and cut to fit.
+local function oneline(text, limit)
+  limit = limit or 120
+  local line = (tostring(text or ""):match("[^\n]*%S[^\n]*") or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  if #line > limit then line = line:sub(1, limit - 3) .. "..." end
+  return line
+end
+
+-- The last line with anything on it, which is where a command says how it went.
+local function lastline(text)
+  local last = ""
+  for line in tostring(text or ""):gmatch("[^\n]+") do
+    if line:find("%S") then last = line end
+  end
+  return oneline(last, 60)
+end
+
+-- A failure the model reads, kept whole: an error elided is a mistake repeated.
+local function failure(said)
+  return { said = said, failed = true, keep = true, brief = oneline(said) }
+end
+
 do -- read
   -- Highlighted for the person in the file's own language, the plain text for the model always:
   -- colour would spend the model's context on nothing it can use.
@@ -202,7 +251,7 @@ do -- read
     run = function(args)
       local plain = casper.exec("cat", { args.path })
       if plain.code ~= 0 then
-        return { said = plain.err, failed = true }
+        return failure(plain.err)
       end
       local all = lines_of(plain.out)
       local first = math.max(1, math.floor(tonumber(args.offset) or 1))
@@ -214,7 +263,101 @@ do -- read
         said = said .. ("\n(lines %d-%d of %d)"):format(first, last, #all)
       end
       local shown = casper.paint.code(table.concat(kept, "\n"), args.path)
-      return { said = said, shown = shown }
+      local span = (first > 1 or last < #all)
+        and ("lines %d-%d of %d"):format(first, last, #all) or ("%d lines"):format(#all)
+      return {
+        said = said, shown = shown,
+        brief = ("read %s (%s)"):format(args.path, span),
+        back = ("read %s"):format(args.path),
+      }
+    end,
+  })
+end
+
+do -- ls, tree
+  -- Both are one walk drawn two ways, and the walk happens inside the jail: `casper.dirs` runs the
+  -- walker the way `read` cats a file, so a listing can only name what a command could have reached.
+  local function looking(name, depth, tracked)
+    return function(args)
+      local root = (args.path ~= nil and args.path ~= "") and args.path or "."
+      local out = casper.dirs[name](root, {
+        depth = depth(args),
+        hidden = args.all == true,
+        tracked = tracked and args.all ~= true,
+      })
+      if out.failed then return failure(out.said) end
+      return {
+        said = out.said, shown = out.shown,
+        brief = out.brief, back = ("%s %s"):format(name, root),
+      }
+    end
+  end
+
+  local PLACE = { type = "string", description = "The directory. Defaults to the session's own." }
+  local ALL = { type = "boolean", description = "Show dotfiles too. Off by default." }
+
+  casper.tool("ls", {
+    description = [[
+  What one directory holds: directories first, then files with a size against each, and a closing
+  count. Build output, dependency trees and version control's own directories are named, not opened.]],
+    parameters = { type = "object", properties = { path = PLACE, all = ALL } },
+    needs = "read",
+    run = looking("list", function() return 1 end, false),
+  })
+
+  casper.tool("tree", {
+    description = [[
+  The shape of a directory, drawn as a tree. Same exclusions as `ls`, and inside a repository only
+  what version control accounts for: an ignored tree is named, not descended. `all` shows everything.]],
+    parameters = {
+      type = "object",
+      properties = {
+        path = PLACE,
+        depth = { type = "integer", minimum = 1, maximum = 32, description = "Levels to descend. Defaults to 3." },
+        all = ALL,
+      },
+    },
+    needs = "read",
+    run = looking("tree", function(args) return math.floor(tonumber(args.depth) or 3) end, true),
+  })
+end
+
+do -- sese
+  -- **Two calls, one search.** The first reads the repository and comes back with a question for
+  -- a model rather than an answer; the harness answers it out of the session and runs this again
+  -- with what it said. casper never learns which model that was, and holds no key to reach one.
+  casper.tool("sese", {
+    description = [[
+  Find WHERE something lives in this repository, by meaning rather than by string. Answers with a
+  ranked list of passages -- file, line range, score out of 10 -- and nothing else. It locates; it
+  does not explain, summarise or answer.
+
+  Name the thing to find, not a question to be answered:
+    yes  "where session expiry is handled" / "the retry policy for uploads" / "the config parser"
+    no   "what is this project about" / "how does auth work" / "explain the parser"
+  The second kind scores half the repository alike and tells you nothing.
+
+  Then `read` the passages it ranked highest -- that is where the answer is. When you already know
+  the string you are after, `grep` through `shell` is faster and exact.]],
+    parameters = {
+      type = "object",
+      properties = {
+        query = { type = "string", description = "The thing to find, named in words -- \"where session expiry is handled\". Not a question to be answered." },
+        path = { type = "string", description = "Where to search. Defaults to the session's own directory." },
+        limit = { type = "integer", minimum = 1, maximum = 40, description = "Most passages to return. Defaults to 8." },
+      },
+      required = { "query" },
+    },
+    needs = "read",
+
+    run = function(args)
+      local out = casper.seek(args.query, args.path, { limit = args.limit }, args.answered)
+      if out.failed then return failure(out.said) end
+      if out.wonder then return casper.wonder("helper", out.wonder, out.about) end
+      return {
+        said = out.said, shown = out.shown,
+        brief = out.brief, back = ("sese: %s"):format(args.query),
+      }
     end,
   })
 end
@@ -239,10 +382,10 @@ do -- write
       local dir = args.path:match("^(.*)/[^/]*$")
       if dir and dir ~= "" then
         local made = casper.exec("mkdir", { "-p", dir })
-        if made.code ~= 0 then return { said = made.err, failed = true } end
+        if made.code ~= 0 then return failure(made.err) end
       end
       local done = put(args.path, args.contents)
-      if done.code ~= 0 then return { said = done.err, failed = true } end
+      if done.code ~= 0 then return failure(done.err) end
       -- The model is told what happened in a line; the person is shown what was written.
       local said = ("wrote %s: %d lines, %d bytes, %s"):format(
         args.path, #lines_of(args.contents), #args.contents, existed and "replaced" or "new file")
@@ -253,7 +396,12 @@ do -- write
         { role = "dim", text = ("  %d lines · %s"):format(
           #lines_of(args.contents), existed and "replaced" or "new file") },
       })
-      return { said = said, shown = shown }
+      return {
+        said = said, shown = shown,
+        brief = ("wrote %s (%d lines, %s)"):format(
+          args.path, #lines_of(args.contents), existed and "replaced" or "new file"),
+        back = ("read %s"):format(args.path),
+      }
     end,
   })
 end
@@ -318,10 +466,10 @@ do -- edit
 
     run = function(args)
       if args.old == "" then
-        return { said = "`old` is empty: say which text to replace", failed = true }
+        return failure("`old` is empty: say which text to replace")
       end
       local read = casper.exec("cat", { args.path })
-      if read.code ~= 0 then return { said = read.err, failed = true } end
+      if read.code ~= 0 then return failure(read.err) end
       local text = read.out
 
       -- Counted before anything is replaced: patching the wrong one of two matches silently is the
@@ -335,15 +483,15 @@ do -- edit
         from = to + 1
       end
       if count == 0 then
-        return { said = "that exact text is not in " .. args.path .. ". Read it again -- it may "
-          .. "have changed, or the whitespace may differ.", failed = true }
+        return failure("that exact text is not in " .. args.path .. ". Read it again -- it may "
+          .. "have changed, or the whitespace may differ.")
       end
       if count > 1 then
-        return { said = ("that text appears %d times in %s. Include more of the surrounding lines "
-          .. "so it matches exactly once."):format(count, args.path), failed = true }
+        return failure(("that text appears %d times in %s. Include more of the surrounding lines "
+          .. "so it matches exactly once."):format(count, args.path))
       end
       local done = put(args.path, text:sub(1, s - 1) .. args.new .. text:sub(e + 1))
-      if done.code ~= 0 then return { said = done.err, failed = true } end
+      if done.code ~= 0 then return failure(done.err) end
 
       -- The whole lines the change touched, before and after, then aligned.
       local from_line, to_line = s, e
@@ -360,7 +508,12 @@ do -- edit
       local all, hunk = lines_of(text), {}
       local start = math.max(1, first - CONTEXT)
       for k = start, first - 1 do hunk[#hunk + 1] = " " .. all[k] end
-      for _, line in ipairs(changes(before, after)) do hunk[#hunk + 1] = line end
+      local added, removed = 0, 0
+      for _, line in ipairs(changes(before, after)) do
+        hunk[#hunk + 1] = line
+        local mark = line:sub(1, 1)
+        if mark == "+" then added = added + 1 elseif mark == "-" then removed = removed + 1 end
+      end
       local last = first + #before - 1
       for k = last + 1, math.min(#all, last + CONTEXT) do hunk[#hunk + 1] = " " .. all[k] end
       local olds, news = 0, 0
@@ -372,7 +525,11 @@ do -- edit
 
       local diff = ("--- %s\n+++ %s\n@@ -%d,%d +%d,%d @@\n"):format(
         args.path, args.path, start, olds, start, news) .. table.concat(hunk, "\n")
-      return { said = diff, shown = casper.paint.diff(diff, args.path) }
+      return {
+        said = diff, shown = casper.paint.diff(diff, args.path),
+        brief = ("edited %s (+%d -%d at line %d)"):format(args.path, added, removed, first),
+        back = ("read %s"):format(args.path),
+      }
     end,
   })
 end
@@ -454,10 +611,19 @@ wait $!]]):format(kept, held, args.command, kept),
       if done.err ~= "" then
         out = out == "" and done.err or (out .. "\n" .. done.err)
       end
+      -- What it ran, how it ended and its last line: enough to know whether to run it again.
+      local lines = select(2, out:gsub("\n", "")) + ((out ~= "" and not out:find("\n$")) and 1 or 0)
+      local last = lastline(out)
+      local brief = ("`%s` exited %d, %d lines%s"):format(oneline(args.command, 60), done.code,
+        lines, last ~= "" and ('; last: "%s"'):format(last) or "")
+      local back = "shell: " .. args.command
       if done.code ~= 0 then
-        return { said = out .. "\n(exit " .. tostring(done.code) .. ")", failed = true }
+        return {
+          said = out .. "\n(exit " .. tostring(done.code) .. ")", failed = true,
+          keep = true, brief = brief, back = back,
+        }
       end
-      return { said = out }
+      return { said = out, brief = brief, back = back }
     end,
   })
 end

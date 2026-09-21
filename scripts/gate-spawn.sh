@@ -2,8 +2,7 @@
 # Every place casper starts a program is named here, and every one of them ties what it starts.
 #
 # casper's whole job is running programs, so it cannot have balthasar's gate — the one that says
-# nothing may exec. What it can have is the inverse: exec is allowed in exactly two files, and
-# both of them hand the command to `crate::tied` before it runs.
+# nothing may exec. Commands are prepared in one module, with both execution doors using it.
 #
 # **The failure this exists for is silent and expensive.** `PR_SET_PDEATHSIG` is cleared across
 # `fork`, so a spawn that skips `tied` produces a process that outlives the magi that asked for
@@ -21,12 +20,8 @@
 set -eu
 ROOT="${GATE_ROOT:-src}"
 
-# The two doors out, and what each is for. Adding to this list is a deliberate act; the point is
-# that it cannot happen by accident.
-#
-#   src/lua/exec.rs   `casper.exec`, the one way a declaration runs anything
-#   src/pty.rs        a `screen` tool's program, on a pty of its own
-SPAWNS='src/lua/exec.rs src/pty.rs'
+# The command constructor shared by ordinary execution and PTY screens.
+SPAWNS='src/jail/command.rs'
 
 # The module that arms them. It names `Command` in a signature and spawns nothing itself.
 TIED='src/tied.rs'
@@ -56,13 +51,13 @@ found=$(
   done
 )
 if [ -n "$found" ]; then
-  echo "gate-spawn: something outside the two named doors starts a program:" >&2
+  echo "gate-spawn: something outside shared jail preparation constructs a command:" >&2
   printf '%s\n' "$found" | sed 's/^/  /' >&2
   echo "gate-spawn: a spawn that skips \`crate::tied\` outlives the magi that asked for it" >&2
   fail=1
 fi
 
-# ---- and both doors tie what they start -------------------------------------------------------
+# ---- preparation ties children and both doors use preparation --------------------------------
 for file in $SPAWNS; do
   if [ ! -f "$ROOT/${file#src/}" ] && [ ! -f "$file" ]; then
     echo "gate-spawn: $file is named here and is not there any more" >&2
@@ -78,6 +73,19 @@ for file in $SPAWNS; do
   fi
 done
 
+for file in src/running.rs src/pty.rs; do
+  if ! awk '{ sub(/\/\/.*$/, ""); print }' "$file" | grep -q 'jail.prepare('; then
+    echo "gate-spawn: $file bypasses jail preparation" >&2
+    fail=1
+  fi
+done
+for symbol in running on_a_screen confine restrict; do
+  if ! awk '{ sub(/\/\/.*$/, ""); print }' src/jail/command.rs | grep -q "tied::$symbol("; then
+    echo "gate-spawn: jail preparation no longer calls tied::$symbol" >&2
+    fail=1
+  fi
+done
+
 # ---- and neither door lets what it started choose casper's memory -----------------------------
 # A program casper starts decides how much it writes, and both doors used to hold all of it before
 # cutting it to size. `casper.exec` on a program that wrote 512MB took 525MB of peak resident
@@ -86,7 +94,7 @@ done
 #
 # Each door is held to its own half of the answer, and each is a one-word edit from losing it:
 #
-#   src/lua/exec.rs   reads both pipes as they fill, keeps `MOST` and counts the rest. Any call
+#   src/running.rs    reads both pipes as they fill, keeps `MOST` and counts the rest. Any call
 #                     that reads a stream to its end puts the whole of it back in memory.
 #   src/pty.rs        a bounded queue, so a program that outruns the drawing blocks in the kernel
 #                     as it would at a terminal nobody is reading. `mpsc::channel` is the
@@ -107,9 +115,9 @@ strip() {
   ' "$1"
 }
 
-held=$(strip src/lua/exec.rs | grep -nE '\.output\(\)|read_to_end|read_to_string' || true)
+held=$(strip src/running.rs | grep -nE '\.output\(\)|read_to_end|read_to_string' || true)
 if [ -n "$held" ]; then
-  echo "gate-spawn: src/lua/exec.rs reads a spawned program's stream to its end:" >&2
+  echo "gate-spawn: src/running.rs reads a spawned program's stream to its end:" >&2
   printf '%s\n' "$held" | sed 's/^/  /' >&2
   echo "gate-spawn: the program then picks how much memory casper takes; keep MOST and drain" >&2
   fail=1
