@@ -239,7 +239,8 @@ fn ranked(asked: &Asked<'_>, answered: &str) -> Found {
             Span::new(Role::Dim, format!("  {:.0}/10", scored.score)),
         ]);
     }
-    let counted = format!("({shown} passages, ranked by meaning)\n");
+    let counted =
+        format!("({shown} passages, ranked by meaning — read the ones that scored highest)\n");
     said.push_str(&counted);
     lines.push(vec![Span::new(Role::Dim, counted.trim_end())]);
     Found {

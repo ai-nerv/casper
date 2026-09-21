@@ -59,10 +59,17 @@ default). Same exclusions as `ls`, and inside a repository it draws only what ve
 accounts for, so an ignored tree is counted rather than descended; `all` shows everything. For what
 a single directory holds, `ls` is cheaper to read.]] },
     { name = "sese", page = [[
-sese(query, path?, limit?) -- semantic search: ask in words what you are looking for -- "where is
-session expiry handled", "the retry policy for uploads" -- and get back the passages that answer it,
-each with its file and line range. For when you do not know the name of the thing. `grep` through
-`shell` is the better tool when you know the string you are after.]] },
+sese(query, path?, limit?) -- find WHERE something lives, by meaning rather than by string. Answers
+with a ranked list of passages -- file, line range, score out of 10 -- and nothing else. It locates;
+it does not explain, summarise or answer.
+
+Name the thing to find, not a question to be answered:
+  yes  "where session expiry is handled" / "the retry policy for uploads" / "the config parser"
+  no   "what is this project about" / "how does auth work" / "explain the parser"
+The second kind scores half the repository alike and tells you nothing.
+
+`read` the passages it ranked highest -- that is where the answer is. When you already know the
+string you are after, `grep` through `shell` is faster and exact.]] },
   } },
   { group = "shell", about = "commands, and programs that need a terminal", tools = {
     { name = "shell", page = [[
@@ -319,14 +326,21 @@ do -- sese
   -- with what it said. casper never learns which model that was, and holds no key to reach one.
   casper.tool("sese", {
     description = [[
-  Semantic search: ask in words what you are looking for -- "where is session expiry handled", "the
-  retry policy for uploads" -- and get back the passages that answer it, each with its file and line
-  range. For when you do not know the name of the thing. When you do know the string, `grep` through
-  `shell` is faster and exact.]],
+  Find WHERE something lives in this repository, by meaning rather than by string. Answers with a
+  ranked list of passages -- file, line range, score out of 10 -- and nothing else. It locates; it
+  does not explain, summarise or answer.
+
+  Name the thing to find, not a question to be answered:
+    yes  "where session expiry is handled" / "the retry policy for uploads" / "the config parser"
+    no   "what is this project about" / "how does auth work" / "explain the parser"
+  The second kind scores half the repository alike and tells you nothing.
+
+  Then `read` the passages it ranked highest -- that is where the answer is. When you already know
+  the string you are after, `grep` through `shell` is faster and exact.]],
     parameters = {
       type = "object",
       properties = {
-        query = { type = "string", description = "What you are looking for, in words." },
+        query = { type = "string", description = "The thing to find, named in words -- \"where session expiry is handled\". Not a question to be answered." },
         path = { type = "string", description = "Where to search. Defaults to the session's own directory." },
         limit = { type = "integer", minimum = 1, maximum = 40, description = "Most passages to return. Defaults to 8." },
       },
