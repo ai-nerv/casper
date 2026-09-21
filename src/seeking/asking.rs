@@ -6,24 +6,37 @@
 use super::fragment::Fragment;
 use serde_json::{Value, json};
 
-/// What the model is asked to do. It scores; it does not choose, summarise or explain — a passage
-/// that scores well is shown as it stands, so there is nothing for it to write.
+/// The rungs a passage is scored against, lowest first; the index is the score. Four named rungs
+/// rather than a nought-to-ten line, because a model that decides is asked which rung a thing is on.
+const RUNGS: [&str; 4] = [
+    "shares words with the question and nothing else",
+    "about the same subject, but does not answer the question",
+    "directly involved: a caller, a definition it depends on, its tests",
+    "this is where the thing asked about is implemented or decided",
+];
+
+/// The top rung, and what a rung is scaled onto for showing.
+const TOP: f64 = (RUNGS.len() - 1) as f64;
+const OUT_OF: f64 = 10.0;
+
+/// What a model that writes is told. One that decides never reads it: it is asked the same thing
+/// as a question per passage.
 const INSTRUCTION: &str = "\
 You are ranking passages of source code against a question about what a repository does.
 
-Score each passage from 0 to 10 for how well it answers the question:
+Judge each passage on its own, and say which rung it is on:
 
-  10  this passage is where the thing asked about is implemented or decided
-   7  it is directly involved — a caller, a definition it depends on, its tests
-   4  it is about the same subject but does not answer the question
-   0  it shares words with the question and nothing else
+  3  this passage is where the thing asked about is implemented or decided
+  2  it is directly involved — a caller, a definition it depends on, its tests
+  1  it is about the same subject but does not answer the question
+  0  it shares words with the question and nothing else
 
 Judge what the code does, not whether it repeats the question's words. A passage using different
-names for the same thing still scores well; a passage full of the question's words that does
-something unrelated scores 0.
+names for the same thing still belongs on a high rung; a passage full of the question's words that
+does something unrelated is on rung 0.
 
-Answer with JSON only: {\"scores\": [{\"at\": \"src/thing.rs:120-158\", \"score\": 8}, ...]}, one
-entry per passage, `at` copied exactly as it is written above the passage, and nothing else.";
+Answer with JSON only: an object whose keys are the passage labels exactly as they are written
+above each passage, and whose values are the rung — {\"src/thing.rs:120-158\": 3, ...}.";
 
 /// How long the model may take, what its answer may cost, and how much of one passage it is shown.
 const PATIENCE: u64 = 45_000;
@@ -36,42 +49,45 @@ pub fn question(query: &str, shortlist: &[&Fragment]) -> Value {
     let mut input = format!("Question: {query}\n\nPassages:\n");
     for fragment in shortlist {
         let text: String = fragment.text.chars().take(OF_EACH).collect();
-        input.push_str(&format!("\n{}\n{text}\n", fragment.at()));
+        input.push_str(&format!("\nPASSAGE {}\n{text}\n", fragment.at()));
     }
     json!({
-        "role": "search",
-        // A search is worth the session's own model where nobody configured a smaller one for it:
-        // the alternative is a tool that silently stops being semantic.
-        "fallback": "main",
+        // A judgement, so it asks for the model kept for judgements rather than the session's own.
+        "role": "decision",
+        "fallback": "skip",
         "instruction": INSTRUCTION,
         "input": input,
-        "schema": schema(),
-        // Scoring is reading, not reasoning: measured against a repository, a budget here bought
-        // nothing a plain read of the passages did not already give.
+        "schema": schema(query, shortlist),
+        // The schema is the question itself; without this it never reaches the model.
+        "structured": true,
+        // Scoring is reading, not reasoning: a budget here bought nothing, measured.
         "thinking": "off",
         "max_tokens": MOST_TOKENS,
         "timeout_ms": PATIENCE,
     })
 }
 
-fn schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "scores": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "at": { "type": "string" },
-                        "score": { "type": "integer", "minimum": 0, "maximum": 10 },
-                    },
-                    "required": ["at", "score"],
-                },
-            },
-        },
-        "required": ["scores"],
-    })
+/// A property per passage, named by the label it is shown under. Not one property holding a list:
+/// a model that decides answers a question per property and has no way to say a list.
+fn schema(query: &str, shortlist: &[&Fragment]) -> Value {
+    let mut properties = serde_json::Map::new();
+    for fragment in shortlist {
+        let at = fragment.at();
+        properties.insert(
+            at.clone(),
+            json!({
+                "type": "integer",
+                "minimum": 0,
+                "maximum": RUNGS.len() - 1,
+                "description": format!(
+                    "Question: {query}\nJudge ONLY the passage labelled {at}. Which rung is it on?"
+                ),
+                "x-criteria": RUNGS,
+            }),
+        );
+    }
+    let required: Vec<String> = properties.keys().cloned().collect();
+    json!({ "type": "object", "properties": properties, "required": required })
 }
 
 /// What a harness answered: the model's text, or why there is none.
@@ -105,27 +121,28 @@ pub struct Scored {
     pub score: f64,
 }
 
-/// The scores a model wrote, however it wrapped them. A label it mangled is dropped rather than
-/// guessed at: the label is a path and a line range, and a wrong one reads back a wrong passage.
+/// The rung each passage was put on, scaled onto the score sese shows. Flat —
+/// `{"src/thing.rs:120-158": 3, …}` — and a key that is not a label is skipped.
 #[must_use]
 pub fn scores(said: &str) -> Vec<Scored> {
     let Some(found) = json_in(said) else {
         return Vec::new();
     };
-    let Some(rows) = found.get("scores").and_then(Value::as_array) else {
+    let Some(rows) = found.as_object() else {
         return Vec::new();
     };
     rows.iter()
-        .filter_map(|row| {
-            let (path, from, to) = at(row.get("at").and_then(Value::as_str)?)?;
-            let score = row
-                .get("score")
-                .and_then(|score| score.as_f64().or_else(|| score.as_str()?.parse().ok()))?;
+        .filter_map(|(label, value)| {
+            let (path, from, to) = at(label)?;
+            let rung = value
+                .as_f64()
+                .or_else(|| value.as_str()?.parse().ok())?
+                .clamp(0.0, TOP);
             Some(Scored {
                 path,
                 from,
                 to,
-                score: score.clamp(0.0, 10.0),
+                score: rung / TOP * OUT_OF,
             })
         })
         .collect()

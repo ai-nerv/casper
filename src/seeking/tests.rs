@@ -175,8 +175,10 @@ fn a_question_names_every_passage_by_where_it_is() {
     let input = question["input"].as_str().expect("an input");
     assert!(input.contains("src/a.rs:1-9"), "{input}");
     assert!(input.contains("src/b.rs:20-30"), "{input}");
-    assert_eq!(question["role"], "search");
-    assert_eq!(question["fallback"], "main");
+    assert_eq!(question["role"], "decision");
+    // Not the session's own model: one that writes scores badly and expensively, and on a
+    // helper's budget spends the lot reasoning and answers nothing.
+    assert_eq!(question["fallback"], "skip");
     assert_eq!(question["thinking"], "off");
 }
 
@@ -198,18 +200,18 @@ fn a_label_reads_back_as_a_place() {
 
 #[test]
 fn what_a_model_wrote_is_read_out_of_its_chatter() {
-    let said = "Sure!\n```json\n{\"scores\":[{\"at\":\"src/a.rs:1-9\",\"score\":8}]}\n```";
+    let said = "Sure!\n```json\n{\"src/a.rs:1-9\": 3}\n```";
     let scores = asking::scores(said);
     assert_eq!(scores.len(), 1);
     assert_eq!(scores[0].path, "src/a.rs");
     assert_eq!(scores[0].from, 1);
-    assert_eq!(scores[0].score, 8.0);
+    assert_eq!(scores[0].score, 10.0, "the top rung is the top score");
     assert!(asking::scores("no json at all").is_empty());
 }
 
 #[test]
 fn a_mangled_label_is_dropped_rather_than_guessed_at() {
-    let said = r#"{"scores":[{"at":"src/a.rs","score":9},{"at":"src/b.rs:1-4","score":7}]}"#;
+    let said = r#"{"src/a.rs": 3, "src/b.rs:1-4": 2}"#;
     let scores = asking::scores(said);
     assert_eq!(scores.len(), 1, "{scores:?}");
     assert_eq!(scores[0].path, "src/b.rs");
@@ -217,8 +219,42 @@ fn a_mangled_label_is_dropped_rather_than_guessed_at() {
 
 #[test]
 fn a_score_outside_the_scale_is_brought_back_onto_it() {
-    let said = r#"{"scores":[{"at":"src/a.rs:1-4","score":99}]}"#;
+    let said = r#"{"src/a.rs:1-4": 99}"#;
     assert_eq!(asking::scores(said)[0].score, 10.0);
+}
+
+#[test]
+fn the_bookkeeping_a_decisions_reply_carries_is_not_read_as_a_passage() {
+    // Its own reply names what it decided under `_decided`, which is not a label and not a score.
+    let said = r#"{"src/a.rs:1-4": 3, "_decided": {"src/a.rs:1-4": {"p": 0.9}}}"#;
+    let scores = asking::scores(said);
+    assert_eq!(scores.len(), 1, "{scores:?}");
+    assert_eq!(scores[0].path, "src/a.rs");
+}
+
+#[test]
+fn a_rung_in_the_middle_lands_in_the_middle_of_the_scale() {
+    // The model answers on the rungs' own scale and sese shows a score out of ten.
+    let said = r#"{"src/a.rs:1-4": 0, "src/b.rs:1-4": 2}"#;
+    let scores = asking::scores(said);
+    let of = |path: &str| {
+        scores
+            .iter()
+            .find(|s| s.path == path)
+            .map(|s| s.score)
+            .expect("scored")
+    };
+    assert_eq!(of("src/a.rs"), 0.0);
+    assert!((of("src/b.rs") - 6.67).abs() < 0.01, "{:?}", of("src/b.rs"));
+}
+
+#[test]
+fn a_fractional_rung_is_kept_rather_than_rounded_away() {
+    // A model that decides answers with its confidence spread across the rungs, so 2.93 means
+    // "almost certainly the top rung" and rounding it to 3 throws away the almost.
+    let said = r#"{"src/a.rs:1-4": 2.93}"#;
+    let score = asking::scores(said)[0].score;
+    assert!(score > 9.5 && score < 10.0, "{score}");
 }
 
 #[test]
