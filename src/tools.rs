@@ -18,6 +18,9 @@ pub struct Card {
     /// Kept out of the model's list until a `tools` lookup unlocks it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deferred: bool,
+    /// Which branch of the manual it sits under: `files`, `finding`, `shell`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
 }
 
 /// One call, as it arrives.
@@ -258,6 +261,7 @@ mod tests {
             parameters: serde_json::json!({"type": "object"}),
             needs: Some("run".to_owned()),
             deferred: false,
+            group: String::new(),
         };
         let wire = serde_json::to_string(&card).expect("encodes");
         assert!(!wire.contains("allow") && !wire.contains("grant"), "{wire}");

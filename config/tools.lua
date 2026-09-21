@@ -108,18 +108,20 @@ pick, and it opens in the prompt or, for doom, in the float.]] },
   } },
 }
 
--- Which declarations are deferred, read off the manual so the two cannot disagree, and marked as
--- each is declared: every `casper.tool` below passes through this one wrapper.
+-- Which branch of the manual each declaration sits under, and which are deferred, read off the
+-- manual so the two cannot disagree: every `casper.tool` below passes through this one wrapper.
 do
-  local deferred = {}
+  local deferred, group = {}, {}
   for _, branch in ipairs(MANUAL) do
     for _, entry in ipairs(branch.tools) do
       if entry.deferred then deferred[entry.name] = true end
+      group[entry.name] = branch.group
     end
   end
   local declare = casper.tool
   casper.tool = function(name, spec)
     if deferred[name] then spec.deferred = true end
+    spec.group = spec.group or group[name]
     return declare(name, spec)
   end
 end
