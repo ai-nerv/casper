@@ -68,7 +68,7 @@ pub(super) fn check_refusal(root: &Path, mode: &str) {
             }
         }
         _ => {
-            let done = casper::lua::exec::run("/bin/sh", &["-c".into(), script.into()]);
+            let done = casper::running::run("/bin/sh", &["-c".into(), script.into()]);
             assert_ne!(done.code, 0, "credential alias was exposed");
             assert!(done.err.contains("credential"), "{}", done.err);
         }

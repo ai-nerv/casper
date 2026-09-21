@@ -47,6 +47,23 @@ Prefer `edit` for a change to a file that exists: it cannot lose the parts you d
 edit(path, old, new) -- replace `old` with `new`. `old` must appear exactly once; include enough of
 the surrounding lines to make it unique. Answers with a unified diff of what changed.]] },
   } },
+  { group = "finding", about = "look around a directory, and search a repository by meaning", tools = {
+    { name = "ls", deferred = true, page = [[
+ls(path?, all?) -- what one directory holds, directories first, with a size against each file and a
+closing count. Build output, dependency trees and version control's own directories are named rather
+than opened. `all` keeps dotfiles, and one directory is shown whether or not version control knows it. Use
+`tree` to see further down than one level.]] },
+    { name = "tree", deferred = true, page = [[
+tree(path?, depth?, all?) -- the shape of a directory, drawn as a tree `depth` levels deep (3 by
+default). Same exclusions as `ls`, and inside a repository it draws only what version control
+accounts for, so an ignored tree is counted rather than descended; `all` shows everything. For what
+a single directory holds, `ls` is cheaper to read.]] },
+    { name = "sese", deferred = true, page = [[
+sese(query, path?, limit?) -- semantic search: ask in words what you are looking for -- "where is
+session expiry handled", "the retry policy for uploads" -- and get back the passages that answer it,
+each with its file and line range. For when you do not know the name of the thing. `grep` through
+`shell` is the better tool when you know the string you are after.]] },
+  } },
   { group = "shell", about = "commands, and programs that need a terminal", tools = {
     { name = "shell", page = [[
 shell(command) -- run a command and read what it printed. The working directory is kept between
@@ -243,6 +260,87 @@ do -- read
         said = said, shown = shown,
         brief = ("read %s (%s)"):format(args.path, span),
         back = ("read %s"):format(args.path),
+      }
+    end,
+  })
+end
+
+do -- ls, tree
+  -- Both are one walk drawn two ways, and the walk happens inside the jail: `casper.dirs` runs the
+  -- walker the way `read` cats a file, so a listing can only name what a command could have reached.
+  local function looking(name, depth, tracked)
+    return function(args)
+      local root = (args.path ~= nil and args.path ~= "") and args.path or "."
+      local out = casper.dirs[name](root, {
+        depth = depth(args),
+        hidden = args.all == true,
+        tracked = tracked and args.all ~= true,
+      })
+      if out.failed then return failure(out.said) end
+      return {
+        said = out.said, shown = out.shown,
+        brief = out.brief, back = ("%s %s"):format(name, root),
+      }
+    end
+  end
+
+  local PLACE = { type = "string", description = "The directory. Defaults to the session's own." }
+  local ALL = { type = "boolean", description = "Show dotfiles too. Off by default." }
+
+  casper.tool("ls", {
+    description = [[
+  What one directory holds: directories first, then files with a size against each, and a closing
+  count. Build output, dependency trees and version control's own directories are named, not opened.]],
+    parameters = { type = "object", properties = { path = PLACE, all = ALL } },
+    needs = "read",
+    run = looking("list", function() return 1 end, false),
+  })
+
+  casper.tool("tree", {
+    description = [[
+  The shape of a directory, drawn as a tree. Same exclusions as `ls`, and inside a repository only
+  what version control accounts for: an ignored tree is named, not descended. `all` shows everything.]],
+    parameters = {
+      type = "object",
+      properties = {
+        path = PLACE,
+        depth = { type = "integer", minimum = 1, maximum = 32, description = "Levels to descend. Defaults to 3." },
+        all = ALL,
+      },
+    },
+    needs = "read",
+    run = looking("tree", function(args) return math.floor(tonumber(args.depth) or 3) end, true),
+  })
+end
+
+do -- sese
+  -- **Two calls, one search.** The first reads the repository and comes back with a question for
+  -- a model rather than an answer; the harness answers it out of the session and runs this again
+  -- with what it said. casper never learns which model that was, and holds no key to reach one.
+  casper.tool("sese", {
+    description = [[
+  Semantic search: ask in words what you are looking for -- "where is session expiry handled", "the
+  retry policy for uploads" -- and get back the passages that answer it, each with its file and line
+  range. For when you do not know the name of the thing. When you do know the string, `grep` through
+  `shell` is faster and exact.]],
+    parameters = {
+      type = "object",
+      properties = {
+        query = { type = "string", description = "What you are looking for, in words." },
+        path = { type = "string", description = "Where to search. Defaults to the session's own directory." },
+        limit = { type = "integer", minimum = 1, maximum = 40, description = "Most passages to return. Defaults to 8." },
+      },
+      required = { "query" },
+    },
+    needs = "read",
+
+    run = function(args)
+      local out = casper.seek(args.query, args.path, { limit = args.limit }, args.answered)
+      if out.failed then return failure(out.said) end
+      if out.wonder then return casper.wonder("helper", out.wonder, out.about) end
+      return {
+        said = out.said, shown = out.shown,
+        brief = out.brief, back = ("sese: %s"):format(args.query),
       }
     end,
   })

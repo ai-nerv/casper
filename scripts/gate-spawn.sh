@@ -73,7 +73,7 @@ for file in $SPAWNS; do
   fi
 done
 
-for file in src/lua/exec.rs src/pty.rs; do
+for file in src/running.rs src/pty.rs; do
   if ! awk '{ sub(/\/\/.*$/, ""); print }' "$file" | grep -q 'jail.prepare('; then
     echo "gate-spawn: $file bypasses jail preparation" >&2
     fail=1
@@ -94,7 +94,7 @@ done
 #
 # Each door is held to its own half of the answer, and each is a one-word edit from losing it:
 #
-#   src/lua/exec.rs   reads both pipes as they fill, keeps `MOST` and counts the rest. Any call
+#   src/running.rs    reads both pipes as they fill, keeps `MOST` and counts the rest. Any call
 #                     that reads a stream to its end puts the whole of it back in memory.
 #   src/pty.rs        a bounded queue, so a program that outruns the drawing blocks in the kernel
 #                     as it would at a terminal nobody is reading. `mpsc::channel` is the
@@ -115,9 +115,9 @@ strip() {
   ' "$1"
 }
 
-held=$(strip src/lua/exec.rs | grep -nE '\.output\(\)|read_to_end|read_to_string' || true)
+held=$(strip src/running.rs | grep -nE '\.output\(\)|read_to_end|read_to_string' || true)
 if [ -n "$held" ]; then
-  echo "gate-spawn: src/lua/exec.rs reads a spawned program's stream to its end:" >&2
+  echo "gate-spawn: src/running.rs reads a spawned program's stream to its end:" >&2
   printf '%s\n' "$held" | sed 's/^/  /' >&2
   echo "gate-spawn: the program then picks how much memory casper takes; keep MOST and drain" >&2
   fail=1

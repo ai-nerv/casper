@@ -342,7 +342,7 @@ fn contained_child() {
     if mode == "socket" {
         socket::run(&root, &script, false);
     } else if mode == "command" {
-        let done = casper::lua::exec::run("/bin/sh", &["-c".into(), script]);
+        let done = casper::running::run("/bin/sh", &["-c".into(), script]);
         if variant == "refused" {
             assert_ne!(done.code, 0, "failed backend must not run unjailed");
             assert!(!root.join("work/report").exists());
