@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.0] - 2026-09-23
+
+### <!-- 3 -->📚 Documentation
+
+- Say an unlocked tool is called as a tool
+
 ## [0.4.0] - 2026-09-23
 
 ## [0.3.0] - 2026-09-21
