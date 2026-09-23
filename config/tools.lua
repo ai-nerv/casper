@@ -130,7 +130,13 @@ do -- tools
   -- One level an answer, never the whole tree: the point is that the model reads only the branch
   -- it needs. A page for a deferred tool carries `unlocks`, which the harness takes up.
   local function page(entry)
-    return { said = entry.page, unlocks = entry.deferred and { entry.name } or nil }
+    if not entry.deferred then return { said = entry.page } end
+    -- Said on the page itself, since that is what the model reads next: a model that saw `dino()`
+    -- and no word of how to reach it ran `dino` in the shell, twice.
+    local said = entry.page .. "\n\n`" .. entry.name .. "` is now one of your tools. Call it as a tool,"
+      .. " the way you call `read` or `shell`; it is not a program, and running it in `shell` finds"
+      .. " nothing."
+    return { said = said, unlocks = { entry.name } }
   end
 
   casper.tool("tools", {
