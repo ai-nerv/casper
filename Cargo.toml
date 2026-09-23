@@ -1,6 +1,6 @@
 [package]
 name = "casper"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2024"
 description = "The tooling interface: what a tool is, what it says, and what it shows"
 license = "MIT"
