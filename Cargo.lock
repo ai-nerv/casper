@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "casper"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "ciborium",
