@@ -37,6 +37,14 @@ pub struct Need {
 pub fn needs() -> Vec<Need> {
     vec![
         Need {
+            name: "web".into(),
+            kind: Kind::Table,
+            about: "HTTP search/fetch settings: allow_private, searxng, timeout_secs and max_bytes"
+                .into(),
+            required: false,
+            default: None,
+        },
+        Need {
             name: "tools".to_owned(),
             kind: Kind::Table,
             about: "per tool, by name: `{ dino = { off = true }, shell = { hidden = true } }`. \

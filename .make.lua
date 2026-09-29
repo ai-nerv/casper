@@ -258,6 +258,12 @@ make.recipe{
 make.recipe{ name = "fmt", desc = "format the workspace",
              run = function() sh.cargo("fmt", "--all") end }
 
+make.recipe{ name = "test-web", desc = "native web extraction and network containment",
+             run = function() sh.cargo("test", "--test", "web") end }
+
+make.recipe{ name = "test-mcp", desc = "MCP client/server interoperability",
+             run = function() sh.cargo("test", "--test", "mcp") end }
+
 make.recipe{ name = "fmt-check", desc = "fail if anything is unformatted",
              run = function() sh.cargo("fmt", "--all", "--", "--check") end }
 

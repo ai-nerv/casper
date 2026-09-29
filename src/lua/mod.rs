@@ -15,4 +15,5 @@ pub mod sandbox;
 pub mod seek;
 pub mod stream;
 pub mod surface;
+pub mod web;
 pub mod wondering;

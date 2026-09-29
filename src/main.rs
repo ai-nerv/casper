@@ -46,6 +46,20 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::SUCCESS;
     }
     let verb = args.first().map_or("help", String::as_str);
+    if verb == "mcp" {
+        let result = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|why| why.to_string())
+            .and_then(|runtime| runtime.block_on(casper::mcp::serve(&args)));
+        return match result {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(why) => {
+                eprintln!("casper mcp: {why}");
+                std::process::ExitCode::FAILURE
+            }
+        };
+    }
     let began = std::time::Instant::now();
     let delivered = match verb {
         "verbs" => {
@@ -424,7 +438,7 @@ fn answer(ran: &Ran) -> Reply {
 
 /// An engine with the declarations loaded.
 fn loaded() -> Result<Engine, String> {
-    let mut engine = Engine::new();
+    let mut engine = Engine::with_web_configuration(casper::setup::told("web").cloned());
 
     // The declarations are installed files, not strings in the binary, and the directory is named
     // rather than searched: a relative `config/` would load whichever checkout the working
