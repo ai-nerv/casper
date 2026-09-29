@@ -19,6 +19,7 @@ mod policy;
 mod temporary;
 pub use command::Prepared;
 pub(crate) use command::worker;
+pub(crate) use command::worker_std;
 
 /// What turns the jail on, in casper's own name as [`crate::setup`] reads its configuration. A
 /// coordinator sets it on the spawn: `1` for the conservative profile, or a JSON [`Grants`] object

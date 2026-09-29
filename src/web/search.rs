@@ -37,7 +37,7 @@ pub(crate) fn run(request: &Request, settings: &Settings) -> Result<Value, Strin
                 .map_err(|why| format!("SearXNG did not return JSON: {why}"))?;
             value["results"].as_array().ok_or("SearXNG response has no results")?.iter().filter_map(|result| {
                 let url = Url::parse(result["url"].as_str()?).ok()?;
-                if !matches!(url.scheme(), "http" | "https") { return None; }
+                if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty() || url.password().is_some() { return None; }
                 Some(json!({"url": url.as_str(), "title": result["title"].as_str().unwrap_or_default(),
                     "snippet": result["content"].as_str().unwrap_or_default()}))
             }).take(limit).collect::<Vec<_>>()
@@ -56,7 +56,7 @@ pub(crate) fn run(request: &Request, settings: &Settings) -> Result<Value, Strin
                 let raw = found.url.join(link.value().attr("href")?).ok()?;
                 let target = raw.query_pairs().find(|(key, _)| key == "uddg").map(|(_, target)| target.into_owned()).unwrap_or_else(|| raw.to_string());
                 let url = Url::parse(&target).ok()?;
-                if !matches!(url.scheme(), "http" | "https") { return None; }
+                if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty() || url.password().is_some() { return None; }
                 let snippet = result.select(&extract::selector(".result__snippet")).next()
                     .map(|node| extract::clean(&node.text().collect::<String>())).unwrap_or_default();
                 Some(json!({"url": url.as_str(), "title": extract::clean(&link.text().collect::<String>()), "snippet": snippet}))

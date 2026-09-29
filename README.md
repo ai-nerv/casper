@@ -30,6 +30,8 @@ casper surface <tool>        # hold rows on the harness's screen and draw into t
 |---|---|
 | `read` `write` `edit` | read a file, write one, change one — a highlighted file or a coloured diff on screen |
 | `shell` | run a command, and remember where it ran |
+| `web` | native Rust web search and bounded readable HTTP(S) page extraction, with source URLs |
+| `browse` | Chromium navigation, DOM snapshots, clicking, typing, keys, scrolling and PNG screenshots |
 | `tools` | the manual for everything below: a tree the model walks, and a page unlocks its tool |
 | `screen` | an interactive program — a pager, an editor, `htop`, `git add -p` — in rows on the screen |
 | `hexe` `oslo` `session` | ask the multiplexer, the shell, or the harness about themselves |
@@ -40,7 +42,26 @@ and sent to the model only once a `tools` lookup reaches them, because every car
 on every request.
 
 Every one of them is declared in `config/tools.lua`, in Lua, and nothing about them is compiled
-in. A tool of your own goes in the same file.
+in as a declaration. Network operations and Chromium control are implemented in Rust behind
+those declarations. A tool of your own goes in the same file.
+
+## MCP and browsing
+
+`casper mcp --root /path/to/project --tools=read,web,browse` exposes configured tools using the
+official Rust MCP SDK over stdio. Disabled and hidden tools are not exposed. Tool failures are
+MCP error results, and cancelled or timed-out calls stop their worker processes.
+
+For an owned browser, add `--browser /path/to/chromium`. Casper starts a dedicated profile and
+closes it with the MCP session, including when the MCP parent is killed. Chromium is the only
+additional browser runtime; no Node, Python or Playwright service is required.
+
+Alternatively, run `casper browser --program /path/to/chromium`. Its first stdout line supplies
+the loopback endpoint, PID and profile directory; set `CASPER_BROWSER_ENDPOINT` for tool calls.
+It remains alive until Ctrl-C, SIGTERM or stdin EOF. Use `browse` with `open` first, then retain
+the returned `target` for subsequent actions. Screenshot bytes are inline PNG images in the
+family result and MCP image content blocks.
+
+See [MCP_WEB.md](MCP_WEB.md) for configuration, trust boundaries, examples and real-browser tests.
 
 ## Surfaces
 

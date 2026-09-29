@@ -46,16 +46,58 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::SUCCESS;
     }
     let verb = args.first().map_or("help", String::as_str);
-    if verb == "mcp" {
-        let result = tokio::runtime::Builder::new_multi_thread()
+    if matches!(verb, "mcp" | "browser") {
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
             .enable_all()
             .build()
-            .map_err(|why| why.to_string())
-            .and_then(|runtime| runtime.block_on(casper::mcp::serve(&args)));
+        {
+            Ok(runtime) => runtime,
+            Err(why) => {
+                eprintln!("casper {verb}: {why}");
+                return std::process::ExitCode::FAILURE;
+            }
+        };
+        let mut term = {
+            let _entered = runtime.enter();
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(term) => term,
+                Err(why) => {
+                    eprintln!("casper {verb}: {why}");
+                    return std::process::ExitCode::FAILURE;
+                }
+            }
+        };
+        let browser = match casper::browser::from_args(&args) {
+            Ok(browser) => browser,
+            Err(why) => {
+                eprintln!("casper {verb}: {why}");
+                return std::process::ExitCode::FAILURE;
+            }
+        };
+        let endpoint = browser
+            .as_ref()
+            .map(|browser| browser.endpoint().to_owned());
+        if verb == "browser"
+            && let Some(browser) = &browser
+        {
+            println!("{}", browser.readiness());
+        }
+        let result = runtime.block_on(async {
+            tokio::select! {
+                _ = term.recv() => Ok(()),
+                result = async {
+                    if verb == "mcp" { casper::mcp::serve(&args, endpoint).await }
+                    else { casper::browser::wait().await }
+                } => result,
+            }
+        });
+        runtime.shutdown_timeout(std::time::Duration::from_secs(1));
+        drop(browser);
         return match result {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(why) => {
-                eprintln!("casper mcp: {why}");
+                eprintln!("casper {verb}: {why}");
                 std::process::ExitCode::FAILURE
             }
         };
@@ -438,7 +480,10 @@ fn answer(ran: &Ran) -> Reply {
 
 /// An engine with the declarations loaded.
 fn loaded() -> Result<Engine, String> {
-    let mut engine = Engine::with_web_configuration(casper::setup::told("web").cloned());
+    let mut engine = Engine::with_network_configuration(
+        casper::setup::told("web").cloned(),
+        casper::setup::told("browser").cloned(),
+    );
 
     // The declarations are installed files, not strings in the binary, and the directory is named
     // rather than searched: a relative `config/` would load whichever checkout the working
@@ -502,6 +547,8 @@ fn usage() -> bool {
         "casper — the tooling interface\n\
          \n\
          \x20 casper tools        every tool it offers, with schemas\n\
+         \x20 casper mcp          expose configured tools over MCP stdio\n\
+         \x20 casper browser      hold an isolated Chromium process (--program PATH)\n\
          \x20 casper run          one call on stdin, one result on stdout\n\
          \x20 casper serve        bind a session's socket and answer on it\n\
          \x20 casper verbs        what it answers, and on which door\n\

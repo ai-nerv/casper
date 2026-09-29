@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.5] - 2026-09-29
+
+### <!-- 0 -->⛰️  Features
+
+- Add native Chromium tools
+
 ## [0.5.4] - 2026-09-29
 
 ### <!-- 0 -->⛰️  Features
