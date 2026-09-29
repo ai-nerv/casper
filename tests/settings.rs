@@ -112,9 +112,8 @@ fn output_bytes_caps_what_the_model_reads() {
 
 #[test]
 fn every_declared_setting_is_read_by_something() {
-    // The rule this file enforces, stated once. If a fourth setting is added to `needs`, this
-    // fails until somebody writes the test that proves it does something.
-    let covered = ["tools", "load", "output_bytes"];
+    // Settings are exercised here and by the network fixtures in tests/web.rs.
+    let covered = ["tools", "load", "output_bytes", "web"];
     for need in casper::setup::needs() {
         assert!(
             covered.contains(&need.name.as_str()),

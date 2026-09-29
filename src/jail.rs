@@ -18,6 +18,7 @@ mod filter;
 mod policy;
 mod temporary;
 pub use command::Prepared;
+pub(crate) use command::worker;
 
 /// What turns the jail on, in casper's own name as [`crate::setup`] reads its configuration. A
 /// coordinator sets it on the spawn: `1` for the conservative profile, or a JSON [`Grants`] object
@@ -82,6 +83,10 @@ impl Jail {
     #[must_use]
     pub const fn on(&self) -> bool {
         self.grants.is_some()
+    }
+
+    pub fn allows_network(&self) -> bool {
+        self.grants.as_ref().is_none_or(|grants| grants.reach)
     }
 }
 

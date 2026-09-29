@@ -1,6 +1,6 @@
 [package]
 name = "casper"
-version = "0.5.3"
+version = "0.5.4"
 edition = "2024"
 description = "The tooling interface: what a tool is, what it says, and what it shows"
 license = "MIT"
@@ -42,8 +42,14 @@ landlock = "0.4.4"
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
 # bat's own grammars on top of syntect's: TOML, Nix, TypeScript and the rest a project is made of.
 two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
+rmcp = { version = "3.5", default-features = false, features = ["server", "transport-io"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "process", "time", "signal"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "gzip"] }
+scraper = "0.24"
+url = "2"
 
 [dev-dependencies]
+rmcp = { version = "3.5", default-features = false, features = ["client", "transport-child-process"] }
 
 # The same gate the siblings are written under.
 [lints.rust]
