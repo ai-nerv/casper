@@ -32,13 +32,11 @@ pub(crate) fn public(address: IpAddr) -> bool {
             Some(ip) => public(IpAddr::V4(ip)),
             None => {
                 let segments = ip.segments();
-                !(ip.is_loopback()
-                    || ip.is_unspecified()
-                    || ip.is_multicast()
-                    || segments[0] & 0xfe00 == 0xfc00
-                    || segments[0] & 0xffc0 == 0xfe80
-                    || segments[0] == 0x2001 && segments[1] == 0x0db8)
-                    && segments[0] & 0xe000 == 0x2000
+                let special = (segments[0] == 0x2001
+                    && (segments[1] < 0x0200 || segments[1] == 0x0db8))
+                    || segments[0] == 0x2002
+                    || (segments[0] == 0x3fff && segments[1] & 0xf000 == 0);
+                segments[0] & 0xe000 == 0x2000 && !special
             }
         },
     }
@@ -158,4 +156,37 @@ pub(crate) fn fetch(source: &str, settings: &Settings) -> Result<Fetched, String
         });
     }
     Err("page exceeded five redirects".into())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_ordinary_public_destinations_are_allowed_without_private_permission() {
+        for source in [
+            "10.0.0.1",
+            "127.0.0.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "198.18.0.1",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+            "2001:db8::1",
+            "2001:2::1",
+            "2002:a00:1::1",
+            "3fff::1",
+        ] {
+            assert!(!super::public(source.parse().expect("address")), "{source}");
+        }
+        for source in [
+            "8.8.8.8",
+            "1.1.1.1",
+            "::ffff:8.8.8.8",
+            "2001:4860:4860::8888",
+            "2606:4700:4700::1111",
+        ] {
+            assert!(super::public(source.parse().expect("address")), "{source}");
+        }
+    }
 }

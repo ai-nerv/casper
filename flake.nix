@@ -81,6 +81,7 @@
         };
       in
       {
+        packages.browser-runtime = pkgs.chromium;
         devShells.default = pkgs.mkShell {
           packages = [
             rust

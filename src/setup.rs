@@ -37,6 +37,13 @@ pub struct Need {
 pub fn needs() -> Vec<Need> {
     vec![
         Need {
+            name: "browser".into(),
+            kind: Kind::Table,
+            about: "Trusted Chromium settings: endpoint, allow_private and timeout_secs".into(),
+            required: false,
+            default: None,
+        },
+        Need {
             name: "web".into(),
             kind: Kind::Table,
             about: "HTTP search/fetch settings: allow_private, searxng, timeout_secs and max_bytes"

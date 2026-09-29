@@ -59,6 +59,15 @@ pub struct Ran {
     pub back: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub keep: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<Image>,
+}
+
+/// An inline image accompanying a tool's textual result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Image {
+    pub data: String,
+    pub mime_type: String,
 }
 
 impl Ran {

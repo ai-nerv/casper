@@ -3,6 +3,7 @@
 //! has a view and no result, a `shell` has a result and no view.
 
 pub mod acknowledged;
+pub mod browser;
 pub mod framing;
 pub mod highlight;
 pub mod jail;

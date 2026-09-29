@@ -88,6 +88,7 @@ pub(crate) fn page(url: &Url, source: &str, content_type: &str) -> Page {
             let url = base.join(node.value().attr("href")?).ok()?;
             if !matches!(url.scheme(), "http" | "https")
                 || !url.username().is_empty()
+                || url.password().is_some()
                 || !seen.insert(url.to_string())
             {
                 return None;

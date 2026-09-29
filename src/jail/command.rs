@@ -7,10 +7,14 @@ use std::path::{Path, PathBuf};
 
 /// Launch the current Casper executable with inherited configuration and grants.
 pub(crate) fn worker(root: &Path) -> std::io::Result<tokio::process::Command> {
+    Ok(worker_std(root)?.into())
+}
+
+pub(crate) fn worker_std(root: &Path) -> std::io::Result<std::process::Command> {
     let mut command = std::process::Command::new(std::env::current_exe()?);
     command.current_dir(root);
     crate::tied::running(&mut command, Vec::new());
-    Ok(command.into())
+    Ok(command)
 }
 
 pub struct Prepared {

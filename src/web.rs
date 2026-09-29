@@ -49,6 +49,12 @@ impl Settings {
     }
 }
 
+pub(crate) fn validate_destination(source: &str, allow_private: bool) -> Result<String, String> {
+    let mut settings = Settings::configured(None);
+    settings.allow_private = allow_private;
+    http::validated(source, &settings).map(|(url, _)| url.to_string())
+}
+
 pub fn run(arguments: Value, configuration: Option<&Value>) -> Result<Value, String> {
     if !crate::jail::Jail::from_env().allows_network() {
         return Err("web access requires the jail's reach grant".into());

@@ -264,6 +264,22 @@ make.recipe{ name = "test-web", desc = "native web extraction and network contai
 make.recipe{ name = "test-mcp", desc = "MCP client/server interoperability",
              run = function() sh.cargo("test", "--test", "mcp") end }
 
+make.recipe{ name = "browser-runtime", desc = "provision the pinned Chromium runtime",
+             run = function()
+               sh.nix("build", ".#browser-runtime", "--no-link", "--print-out-paths")
+             end }
+
+make.recipe{ name = "test-browser", desc = "real Chromium navigation, interaction and MCP images",
+             run = function()
+               local built = oslo.run{ "nix", "build", ".#browser-runtime", "--no-link", "--print-out-paths", capture = true }
+               assert(built.ok, "Chromium runtime build failed")
+               local path = (built.out or ""):match("(/nix/store/[^%s]+)")
+               assert(path, "Chromium runtime path missing")
+               assert(oslo.run{ "env", "CASPER_TEST_BROWSER=" .. path .. "/bin/chromium",
+                               "cargo", "test", "--test", "browser", "--", "--ignored" }.ok,
+                      "real browser acceptance failed")
+             end }
+
 make.recipe{ name = "fmt-check", desc = "fail if anything is unformatted",
              run = function() sh.cargo("fmt", "--all", "--", "--check") end }
 

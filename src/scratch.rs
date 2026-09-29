@@ -1,6 +1,7 @@
 //! A temporary directory that removes itself on the return *and* on the unwind, which a trailing
 //! `remove_dir_all` does not.
 
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
 /// Distinguishes two scratches made in one process: the pid alone is not enough, because two
@@ -21,11 +22,20 @@ impl Scratch {
     /// If the directory cannot be created.
     #[must_use]
     pub fn new(prefix: &str, name: &str) -> Self {
+        Self::in_dir(&std::env::temp_dir(), prefix, name)
+    }
+
+    /// A private temporary directory beneath the supplied root.
+    #[must_use]
+    pub fn in_dir(root: &Path, prefix: &str, name: &str) -> Self {
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("{prefix}-{}-{n}-{name}", std::process::id()));
+        let path = root.join(format!("{prefix}-{}-{n}-{name}", std::process::id()));
         // A pid comes round again, and a run that was killed rather than unwound left its own.
         let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path).expect("a scratch directory");
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&path)
+            .expect("a scratch directory");
         Self { path }
     }
 
