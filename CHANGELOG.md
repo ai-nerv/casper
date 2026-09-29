@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.4] - 2026-09-29
+
+### <!-- 0 -->⛰️  Features
+
+- Add MCP server and native web tools
+
 ## [0.5.3] - 2026-09-29
 
 ## [0.5.2] - 2026-09-23
