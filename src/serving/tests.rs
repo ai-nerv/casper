@@ -57,6 +57,7 @@ fn keyed(call: &str) -> serde_json::Value {
 fn a_path_outside_the_runtime_is_not_one_to_bind() {
     assert!(!inside(Path::new("/tmp/casper.sock")));
     assert!(!inside(&runtime().join("../escape")));
+    assert!(!inside(&runtime()));
     assert!(inside(&runtime().join("proj/id")));
 }
 
@@ -131,11 +132,8 @@ fn a_slow_call_does_not_hold_up_another_connection() {
     std::thread::sleep(Duration::from_millis(50));
     let began = Instant::now();
     assert!(ask(&mut dial(&path), Wire::Json, keyed("tools")).ok);
-    assert!(
-        began.elapsed() < Duration::from_millis(500),
-        "{:?}",
-        began.elapsed()
-    );
+    let took = began.elapsed();
+    assert!(took < Duration::from_millis(500), "{took:?}");
     assert!(heard(&mut slow).ok);
 }
 

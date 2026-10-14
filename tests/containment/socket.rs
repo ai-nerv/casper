@@ -20,6 +20,15 @@ casper.tool("probe", {
     )
     .expect("socket declaration");
     let path = root.join("r/casper/s");
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let runtime = root.join("r");
+        let made = std::fs::DirBuilder::new().mode(0o700).create(&runtime);
+        assert!(
+            made.is_ok() || runtime.is_dir(),
+            "private runtime directory"
+        );
+    }
     let key = "5e".repeat(32);
     let mut server = super::lifecycle::Owned::new(
         Command::new(env!("CARGO_BIN_EXE_casper"))
