@@ -44,7 +44,27 @@ impl Alone {
         project: Option<&std::path::Path>,
         env: &[(&str, std::ffi::OsString)],
     ) -> serde_json::Value {
-        let mut command = Command::new(CASPER);
+        self.asking_by(Command::new(CASPER), call, project, env)
+    }
+
+    /// One `shell` call from casper started in `project` by a shell of its own: another caller,
+    /// and so another session. Answers with what it printed.
+    fn shell_apart(&self, project: &std::path::Path, args: serde_json::Value) -> String {
+        let mut apart = Command::new("sh");
+        apart.args(["-c", "\"$0\" \"$@\"; exit $?", CASPER]);
+        let call = serde_json::json!({"tool": "shell", "args": args}).to_string();
+        let said = self.asking_by(apart, &call, Some(project), &[])["result"][0].clone();
+        said["said"].as_str().unwrap_or_default().to_owned()
+    }
+
+    /// One call from `command`, which is casper or what starts it, with `run` added.
+    fn asking_by(
+        &self,
+        mut command: Command,
+        call: &str,
+        project: Option<&std::path::Path>,
+        env: &[(&str, std::ffi::OsString)],
+    ) -> serde_json::Value {
         if let Some(project) = project {
             command.current_dir(project);
         }
@@ -175,6 +195,49 @@ fn a_cd_in_one_project_does_not_move_another() {
 }
 
 #[test]
+fn a_cd_in_one_session_does_not_move_another() {
+    let alone = Alone::new("sessions");
+    let project = alone.project("p");
+    alone.shell_in(&project, &[], "cd sub");
+    let pwd = serde_json::json!({ "command": "pwd" });
+    assert_eq!(
+        alone.shell_apart(&project, pwd),
+        format!("{}\n", project.display())
+    );
+    assert_eq!(
+        alone.shell_in(&project, &[], "pwd"),
+        format!("{}\n", project.join("sub").display())
+    );
+}
+
+#[test]
+fn a_session_the_call_names_joins_no_other() {
+    let alone = Alone::new("forged");
+    let project = alone.project("p");
+    let forged = |command: &str| serde_json::json!({ "command": command, "session": "1-1" });
+    alone.shell_apart(&project, forged("cd sub"));
+    assert_eq!(
+        alone.shell_apart(&project, forged("pwd")),
+        format!("{}\n", project.display())
+    );
+}
+
+#[test]
+fn with_no_session_nothing_is_remembered() {
+    let mut engine = casper::lua::engine::Engine::new();
+    engine
+        .run(include_str!("../config/tools.lua"), "tools.lua")
+        .expect("the shipped declarations load");
+    let mut shell = |command: &str| {
+        let ran = engine.call("shell", &serde_json::json!({ "command": command }));
+        ran.map(|ran| ran.said).unwrap_or_default()
+    };
+    shell("cd src");
+    let here = std::env::current_dir().expect("the test's directory");
+    assert_eq!(shell("pwd -P"), format!("{}\n", here.display()));
+}
+
+#[test]
 fn a_remembered_directory_is_never_read_as_shell() {
     let alone = Alone::new("planted");
     let project = alone.project("p");
@@ -203,7 +266,7 @@ fn a_log_names_the_tool_and_counts_its_arguments_and_never_says_them() {
     let held = std::fs::read_to_string(&log).expect("the log");
     assert!(!held.contains(secret), "{held}");
     assert!(held.contains("run: shell with 1 argument "), "{held}");
-    assert!(held.contains("exec: sh with 5 arguments "), "{held}");
+    assert!(held.contains("exec: sh with 6 arguments "), "{held}");
     assert_eq!(std::fs::metadata(&log).expect("stat").mode() & 0o777, 0o600);
 }
 

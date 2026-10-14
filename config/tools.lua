@@ -578,24 +578,28 @@ do -- shell
   -- remembered on disk instead of the shell that was in it. That is less than a live shell keeps
   -- (an exported variable does not survive, nor a shell function) and it is the part that
   -- actually gets used.
-  -- The script around a command. The directory is remembered per project, keyed by where the
-  -- shell starts: under the jail in the jail's own `$TMPDIR`, off it in this user's runtime
-  -- directory, and only in a directory this user owns. What it reads back reaches `cd` as a
-  -- variable, never as text in the script, and so does everything else handed in.
+  -- The script around a command. The directory is remembered per session, the one casper hands
+  -- in as `args.session`, and within it per directory the shell starts in: under the jail in the
+  -- jail's own `$TMPDIR`, off it in this user's runtime directory, and only in a directory this
+  -- user owns. No session, no memory. What it reads back reaches `cd` as a variable, never as
+  -- text in the script, and so does everything else handed in.
   local BEFORE = [[
-casper_jailed=$1 casper_asked=$2; shift 2
-casper_key=$(pwd -P | cksum | cut -d' ' -f1)
-if [ -n "$casper_jailed" ]; then
-  casper_base="${TMPDIR:-/tmp}/casper-shell-cwd"
-elif [ -n "$XDG_RUNTIME_DIR" ] && [ -d "$XDG_RUNTIME_DIR" ] && [ -O "$XDG_RUNTIME_DIR" ]; then
-  casper_base="$XDG_RUNTIME_DIR/casper/shell-cwd"
-else
-  casper_base="${TMPDIR:-/tmp}/casper-$(id -u)/shell-cwd"
-fi
-mkdir -p "$casper_base" 2>/dev/null && chmod 700 "$casper_base" 2>/dev/null
+casper_jailed=$1 casper_asked=$2 casper_session=$3; shift 3
+case "$casper_session" in *[!0-9-]*) casper_session= ;; esac
 casper_memory=
-if [ -O "$casper_base" ] && [ -O "${casper_base%/*}" ]; then
-  casper_memory="$casper_base/$casper_key"
+if [ -n "$casper_session" ]; then
+  casper_key="$casper_session-$(pwd -P | cksum | cut -d' ' -f1)"
+  if [ -n "$casper_jailed" ]; then
+    casper_base="${TMPDIR:-/tmp}/casper-shell-cwd"
+  elif [ -n "$XDG_RUNTIME_DIR" ] && [ -d "$XDG_RUNTIME_DIR" ] && [ -O "$XDG_RUNTIME_DIR" ]; then
+    casper_base="$XDG_RUNTIME_DIR/casper/shell-cwd"
+  else
+    casper_base="${TMPDIR:-/tmp}/casper-$(id -u)/shell-cwd"
+  fi
+  mkdir -p "$casper_base" 2>/dev/null && chmod 700 "$casper_base" 2>/dev/null
+  if [ -O "$casper_base" ] && [ -O "${casper_base%/*}" ]; then
+    casper_memory="$casper_base/$casper_key"
+  fi
 fi
 casper_held=
 if [ -n "$casper_memory" ] && [ -f "$casper_memory" ]; then
@@ -642,6 +646,7 @@ wait $!]]
       local jailed = (os.getenv("CASPER_JAIL") or "") ~= "" and "1" or ""
       local done = casper.exec("sh", {
         "-c", BEFORE .. args.command .. AFTER, "sh", jailed, tostring(args.cwd or ""),
+        tostring(args.session or ""),
       })
 
       local out = done.out

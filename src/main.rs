@@ -322,7 +322,8 @@ fn run_call(call: &Call) -> Reply {
         casper::noted!("run: {} refused: it is turned off", call.tool);
         return Reply::refused(format!("no such tool: {}", call.tool));
     }
-    let Some(mut ran) = engine.call(&call.tool, &given(call)) else {
+    let session = casper::tools::session();
+    let Some(mut ran) = engine.call(&call.tool, &given(call, session.as_deref())) else {
         casper::noted!("run: {} refused: no such tool", call.tool);
         return Reply::refused(format!("no such tool: {}", call.tool));
     };
@@ -448,11 +449,18 @@ fn flag(args: &[String], name: &str) -> Option<String> {
     None
 }
 
-/// What the declaration is handed: the model's arguments, and what the person answered.
+/// What the declaration is handed: the model's arguments, what the person answered, and the
+/// [`casper::tools::session`] that called, never a `session` the call itself named.
 ///
 /// Merged rather than nested, so a declaration reads `args.answered` to know it is resuming.
-fn given(call: &Call) -> serde_json::Value {
+fn given(call: &Call, session: Option<&str>) -> serde_json::Value {
     let mut args = call.args.clone();
+    if let serde_json::Value::Object(fields) = &mut args {
+        fields.remove("session");
+        if let Some(session) = session {
+            fields.insert("session".to_owned(), session.into());
+        }
+    }
     let Some(answered) = &call.answered else {
         return args;
     };
@@ -644,6 +652,19 @@ mod tests {
                 .any(|row| row["door"] == "cli" && row["verb"] == "serve"),
             "a socket door needs serve to open it: {rows:?}"
         );
+    }
+
+    #[test]
+    fn a_session_the_call_names_is_never_the_one_handed_on() {
+        let call: Call = serde_json::from_value(serde_json::json!({
+            "tool": "shell", "args": { "command": "pwd", "session": "forged" }
+        }))
+        .expect("a call");
+        let ours = given(&call, Some("7-123"));
+        assert_eq!(ours["session"], "7-123");
+        assert_eq!(ours["command"], "pwd");
+        let none = given(&call, None);
+        assert!(none.get("session").is_none(), "{none}");
     }
 
     #[test]

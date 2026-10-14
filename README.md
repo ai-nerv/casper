@@ -29,7 +29,7 @@ casper surface <tool>        # hold rows on the harness's screen and draw into t
 | | |
 |---|---|
 | `read` `write` `edit` | read a file, write one, change one — a highlighted file or a coloured diff on screen |
-| `shell` | run a command, and remember where it ran |
+| `shell` | run a command, and remember where it ran for the session that called: the process that started casper, never a session a call names, and nothing remembered without one |
 | `web` | native Rust web search and bounded readable HTTP(S) page extraction, with source URLs |
 | `tools` | the manual for everything below: a tree the model walks, and a page unlocks its tool |
 | `screen` | an interactive program — a pager, an editor, `htop`, `git add -p` — in rows on the screen |
