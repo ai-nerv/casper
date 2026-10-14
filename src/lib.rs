@@ -10,6 +10,7 @@ pub mod jail;
 pub mod listing;
 pub mod lua;
 pub mod mcp;
+pub mod mcp_client;
 pub mod noted;
 pub mod paint;
 pub mod plugins;

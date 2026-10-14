@@ -35,6 +35,7 @@ async fn invoke(
     let mut child = command
         .arg(verb)
         .arg("--json")
+        .env(crate::mcp_client::NATIVE_ONLY, "1")
         .current_dir(root)
         .kill_on_drop(true)
         .stdin(std::process::Stdio::piped())

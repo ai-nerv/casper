@@ -37,6 +37,27 @@ pub struct Need {
 pub fn needs() -> Vec<Need> {
     vec![
         Need {
+            name: "mcp_catalog".into(),
+            kind: Kind::Table,
+            about: "startup MCP tool cards for permission-free manual lookup".into(),
+            required: false,
+            default: None,
+        },
+        Need {
+            name: "mcp_discovery_errors".into(),
+            kind: Kind::Table,
+            about: "non-sensitive registry discovery diagnostics for the MCP manual".into(),
+            required: false,
+            default: None,
+        },
+        Need {
+            name: "mcp_servers".into(),
+            kind: Kind::Table,
+            about: "named external MCP servers: command/args/env or url/headers; tools, needs and timeout_secs".into(),
+            required: false,
+            default: None,
+        },
+        Need {
             name: "web".into(),
             kind: Kind::Table,
             about: "HTTP search/fetch settings: allow_private, searxng, timeout_secs and max_bytes"

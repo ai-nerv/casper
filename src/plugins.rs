@@ -53,6 +53,14 @@ pub fn site_dir() -> Option<PathBuf> {
     data_home().map(|home| home.join("casper/site"))
 }
 
+/// The owner's MCP server definitions directory.
+#[must_use]
+pub fn mcp_dir() -> Option<PathBuf> {
+    data_home()
+        .filter(|home| home.is_absolute())
+        .map(|home| home.join("casper/mcp"))
+}
+
 /// `$XDG_DATA_HOME`, or `~/.local/share`.
 fn data_home() -> Option<PathBuf> {
     std::env::var_os("XDG_DATA_HOME")

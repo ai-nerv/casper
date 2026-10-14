@@ -167,7 +167,7 @@ do -- tools
 
   casper.tool("tools", {
     description = [[
-  The manual for tools you are not shown: terminal programs, this session, games. Call it with no
+  The manual for tools and external MCP servers: terminal programs, this session, games. Call it with no
   path for the groups, then with a group (`games`), then with a tool (`games/dino`) for its page,
   which also makes that tool callable from your next step. Every answer costs tokens: ask only for
   the branch the task needs, and only when it needs it.]],
@@ -183,12 +183,14 @@ do -- tools
 
     run = function(args)
       local path = (args.path or ""):gsub("^%s+", ""):gsub("%s+$", "")
+      if path == "mcp" or path:match("^mcp/") then return casper.mcp(path) end
       local group, tool = path:match("^([^/]+)/?(.*)$")
       if not group then
         local out = {}
         for _, branch in ipairs(MANUAL) do
           out[#out + 1] = branch.group .. " -- " .. branch.about
         end
+        out[#out + 1] = "mcp -- external MCP servers, available tools, and connection status"
         return { said = table.concat(out, "\n") }
       end
       for _, branch in ipairs(MANUAL) do

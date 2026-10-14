@@ -47,6 +47,11 @@ tool of your own goes in the same file.
 
 ## MCP
 
+Casper is also an **MCP client**: trusted `mcp_servers` settings connect to external servers
+over stdio or Streamable HTTP. Their discovered tools appear in `casper tools` and Magi as
+`mcp__<server>__<tool>`. Resources and prompts have namespaced bridge tools. This is generic;
+there is no Blender-specific executor. See [MCP_CLIENT.md](docs/MCP_CLIENT.md) for setup and tests.
+
 `casper mcp --root /path/to/project --tools=read,web` exposes configured tools using the
 official Rust MCP SDK over stdio. Disabled and hidden tools are not exposed. Tool failures are
 MCP error results, and cancelled or timed-out calls stop their worker processes.

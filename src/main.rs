@@ -136,6 +136,7 @@ fn main() -> std::process::ExitCode {
     );
     // Zero for anything casper said, refusals included. Non-zero only when the reply did not
     // reach the caller at all.
+    casper::mcp_client::shutdown();
     if delivered {
         std::process::ExitCode::SUCCESS
     } else {
@@ -296,8 +297,22 @@ fn tools() -> Reply {
         Ok(engine) => engine,
         Err(why) => return Reply::refused(why),
     };
-    let offered: Vec<_> = engine
-        .tools()
+    let mut available = engine.tools();
+    match casper::mcp_client::cards(casper::setup::told("mcp_servers")) {
+        Ok(cards) => {
+            for card in cards {
+                if available.iter().any(|native| native.name == card.name) {
+                    return Reply::refused(format!(
+                        "MCP tool name collides with a native tool: {}",
+                        card.name
+                    ));
+                }
+                available.push(card);
+            }
+        }
+        Err(why) => return Reply::refused(why),
+    }
+    let offered: Vec<_> = available
         .into_iter()
         .filter(|card| !casper::setup::is_off(&card.name) && !casper::setup::is_hidden(&card.name))
         .collect();
@@ -336,7 +351,16 @@ fn run_call(call: &Call) -> Reply {
         return Reply::refused(format!("no such tool: {}", call.tool));
     }
     engine.caller(casper::tools::session().as_deref());
-    let Some(mut ran) = engine.call(&call.tool, &given(call)) else {
+    let result = if call.tool.starts_with("mcp__") || call.tool.starts_with("mcp_") {
+        Some(casper::mcp_client::call(
+            casper::setup::told("mcp_servers"),
+            &call.tool,
+            &call.args,
+        ))
+    } else {
+        engine.call(&call.tool, &given(call))
+    };
+    let Some(mut ran) = result else {
         casper::noted!("run: {} refused: no such tool", call.tool);
         return Reply::refused(format!("no such tool: {}", call.tool));
     };
@@ -489,7 +513,13 @@ fn answer(ran: &Ran) -> Reply {
 
 /// An engine with the declarations loaded.
 fn loaded() -> Result<Engine, String> {
-    let mut engine = Engine::with_web_configuration(casper::setup::told("web").cloned());
+    let mut engine = Engine::with_configuration(Some(serde_json::json!({
+        "web":casper::setup::told("web"),
+        "mcp_servers":casper::setup::told("mcp_servers"),
+        "tools":casper::setup::told("tools"),
+        "mcp_discovery_errors":casper::setup::told("mcp_discovery_errors"),
+        "mcp_catalog":casper::setup::told("mcp_catalog"),
+    })));
 
     // The declarations are installed files, not strings in the binary, and the directory is named
     // rather than searched: a relative `config/` would load whichever checkout the working
