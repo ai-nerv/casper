@@ -137,6 +137,34 @@ fn call(args: Value, settings: Value, jail: Option<&str>) -> Value {
 }
 
 #[test]
+fn web_refuses_interactive_actions_without_making_a_request() {
+    let site = Site::start();
+    for action in [
+        "open",
+        "navigate",
+        "click",
+        "type",
+        "press",
+        "scroll",
+        "screenshot",
+    ] {
+        let ran = call(
+            json!({"action":action, "url":site.url}),
+            json!({"allow_private":true}),
+            None,
+        );
+        assert_eq!(ran["failed"], true, "{ran}");
+        assert!(
+            ran["said"]
+                .as_str()
+                .expect("error")
+                .contains("search or fetch")
+        );
+    }
+    assert_eq!(site.calls.load(Ordering::Relaxed), 0);
+}
+
+#[test]
 fn readable_pages_have_sources_links_unicode_paging_and_no_script_noise() {
     let site = Site::start();
     let ran = call(
