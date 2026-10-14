@@ -92,6 +92,19 @@ fn main() -> std::process::ExitCode {
             say(how, &reply)
         }
         "tools" => say(how, &tools()),
+        "image" => {
+            let reply = args
+                .get(1)
+                .ok_or_else(|| "image needs a file path".to_owned())
+                .and_then(|path| casper::images::jailed_file(path));
+            say(
+                how,
+                &match reply {
+                    Ok(image) => Reply::of(serde_json::to_value(image).unwrap_or_default()),
+                    Err(why) => Reply::refused(why),
+                },
+            )
+        }
         "run" => say(how, &ran()),
         "serve" => serve(how, &args),
         "needs" => say(how, &listing(needs())),
@@ -123,6 +136,7 @@ fn main() -> std::process::ExitCode {
     );
     // Zero for anything casper said, refusals included. Non-zero only when the reply did not
     // reach the caller at all.
+    casper::mcp_client::shutdown();
     if delivered {
         std::process::ExitCode::SUCCESS
     } else {
@@ -283,8 +297,22 @@ fn tools() -> Reply {
         Ok(engine) => engine,
         Err(why) => return Reply::refused(why),
     };
-    let offered: Vec<_> = engine
-        .tools()
+    let mut available = engine.tools();
+    match casper::mcp_client::cards(casper::setup::told("mcp_servers")) {
+        Ok(cards) => {
+            for card in cards {
+                if available.iter().any(|native| native.name == card.name) {
+                    return Reply::refused(format!(
+                        "MCP tool name collides with a native tool: {}",
+                        card.name
+                    ));
+                }
+                available.push(card);
+            }
+        }
+        Err(why) => return Reply::refused(why),
+    }
+    let offered: Vec<_> = available
         .into_iter()
         .filter(|card| !casper::setup::is_off(&card.name) && !casper::setup::is_hidden(&card.name))
         .collect();
@@ -323,7 +351,16 @@ fn run_call(call: &Call) -> Reply {
         return Reply::refused(format!("no such tool: {}", call.tool));
     }
     engine.caller(casper::tools::session().as_deref());
-    let Some(mut ran) = engine.call(&call.tool, &given(call)) else {
+    let result = if call.tool.starts_with("mcp__") || call.tool.starts_with("mcp_") {
+        Some(casper::mcp_client::call(
+            casper::setup::told("mcp_servers"),
+            &call.tool,
+            &call.args,
+        ))
+    } else {
+        engine.call(&call.tool, &given(call))
+    };
+    let Some(mut ran) = result else {
         casper::noted!("run: {} refused: no such tool", call.tool);
         return Reply::refused(format!("no such tool: {}", call.tool));
     };
@@ -476,7 +513,13 @@ fn answer(ran: &Ran) -> Reply {
 
 /// An engine with the declarations loaded.
 fn loaded() -> Result<Engine, String> {
-    let mut engine = Engine::with_web_configuration(casper::setup::told("web").cloned());
+    let mut engine = Engine::with_configuration(Some(serde_json::json!({
+        "web":casper::setup::told("web"),
+        "mcp_servers":casper::setup::told("mcp_servers"),
+        "tools":casper::setup::told("tools"),
+        "mcp_discovery_errors":casper::setup::told("mcp_discovery_errors"),
+        "mcp_catalog":casper::setup::told("mcp_catalog"),
+    })));
 
     // The declarations are installed files, not strings in the binary, and the directory is named
     // rather than searched: a relative `config/` would load whichever checkout the working
@@ -540,6 +583,7 @@ fn usage() -> bool {
         "casper — the tooling interface\n\
          \n\
          \x20 casper tools        every tool it offers, with schemas\n\
+         \x20 casper image PATH   read and resize a raster attachment\n\
          \x20 casper mcp          expose configured tools over MCP stdio\n\
          \x20 casper run          one call on stdin, one result on stdout\n\
          \x20 casper serve        bind a session's socket and answer on it\n\

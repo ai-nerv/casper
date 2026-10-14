@@ -40,6 +40,8 @@ pub struct Call {
 /// What a tool produced: two faces, either of which may be absent.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Ran {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<crate::images::Image>,
     /// What the model reads. Empty for a call that has not finished.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub said: String,
@@ -59,15 +61,6 @@ pub struct Ran {
     pub back: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub keep: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub images: Vec<Image>,
-}
-
-/// An inline image accompanying a tool's textual result.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Image {
-    pub data: String,
-    pub mime_type: String,
 }
 
 impl Ran {

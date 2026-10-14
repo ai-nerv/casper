@@ -26,6 +26,8 @@ pub struct Prepared {
     landlock: Option<landlock::RulesetCreated>,
     descriptors: Vec<std::os::fd::OwnedFd>,
     guard: Option<super::guard::Guard>,
+    /// Where a launcher's own arguments end: the `--` before the program, under bubblewrap.
+    separator: Option<usize>,
     _temporary: Option<Temporary>,
 }
 
@@ -49,6 +51,7 @@ impl Jail {
             landlock: None,
             descriptors: Vec::new(),
             guard: None,
+            separator: None,
             _temporary: None,
         };
         let refused = |why: &String| std::io::Error::other(why.clone());
@@ -95,6 +98,7 @@ impl Jail {
                 ]);
                 prepared.descriptors.push(descriptor);
             }
+            prepared.separator = Some(wrapped.len());
             wrapped.push("--".into());
             wrapped.push(program.into());
             wrapped.extend(args.iter().cloned());
@@ -147,6 +151,31 @@ impl Prepared {
             .unwrap_or_default()
     }
 
+    pub fn asynchronous(&mut self) -> tokio::process::Command {
+        self.command().into()
+    }
+
+    /// Hand `env` to the program and never to a launcher: under bubblewrap each pair becomes a
+    /// `--setenv` ahead of the program, so bubblewrap itself runs on the sanitised environment.
+    /// A loader variable (`LD_*`) and a name no environment can hold are dropped on every path.
+    pub fn inner(&mut self, env: &[(String, String)]) {
+        let carried = env.iter().filter(|(key, _)| {
+            !key.is_empty() && !key.starts_with("LD_") && !key.contains(['=', '\0'])
+        });
+        let Some(at) = self.separator else {
+            self.env
+                .extend(carried.map(|(key, value)| (key.into(), value.into())));
+            return;
+        };
+        let tail = self.args.split_off(at.min(self.args.len()));
+        for (key, value) in carried {
+            self.args
+                .extend(["--setenv".to_owned(), key.clone(), value.clone()]);
+        }
+        self.separator = Some(self.args.len());
+        self.args.extend(tail);
+    }
+
     /// Configure an ordinary child with the captured policy.
     pub fn command(&mut self) -> std::process::Command {
         let mut command = std::process::Command::new(&self.program);
@@ -181,5 +210,96 @@ impl Prepared {
             self.landlock.take(),
             std::mem::take(&mut self.descriptors),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    /// A program as `prepare` leaves it, with or without bubblewrap in front.
+    fn prepared(launcher: bool) -> Prepared {
+        let (program, args, separator) = if launcher {
+            (
+                "bwrap",
+                vec!["--unshare-pid", "--", "server", "--stdio"],
+                Some(1),
+            )
+        } else {
+            ("server", vec!["--stdio"], None)
+        };
+        Prepared {
+            program: program.into(),
+            args: args.into_iter().map(str::to_owned).collect(),
+            cwd: PathBuf::from("/"),
+            env: vec![("PATH".into(), "/usr/bin".into())],
+            clear: true,
+            filters: Vec::new(),
+            landlock: None,
+            descriptors: Vec::new(),
+            guard: None,
+            separator,
+            _temporary: None,
+        }
+    }
+
+    /// What an MCP server definition might name: one variable, two loader variables, one name no
+    /// environment holds, and a `PATH` of its own.
+    fn server() -> Vec<(String, String)> {
+        [
+            ("TOKEN", "fixture"),
+            ("LD_PRELOAD", "/tmp/evil.so"),
+            ("LD_LIBRARY_PATH", "/tmp"),
+            ("A=B", "c"),
+            ("PATH", "/opt/bin"),
+        ]
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .into()
+    }
+
+    #[test]
+    fn a_servers_environment_reaches_the_program_and_never_its_launcher() {
+        let mut prepared = prepared(true);
+        prepared.inner(&server());
+        let command = prepared.command();
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                "--unshare-pid",
+                "--setenv",
+                "TOKEN",
+                "fixture",
+                "--setenv",
+                "PATH",
+                "/opt/bin",
+                "--",
+                "server",
+                "--stdio"
+            ]
+        );
+        assert_eq!(
+            command.get_envs().collect::<Vec<_>>(),
+            [(OsStr::new("PATH"), Some(OsStr::new("/usr/bin")))],
+            "bubblewrap runs on the sanitised environment alone"
+        );
+    }
+
+    #[test]
+    fn without_a_launcher_the_program_takes_it_less_any_loader_variable() {
+        let mut prepared = prepared(false);
+        prepared.inner(&server());
+        let command = prepared.command();
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["--stdio"]);
+        let env: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+        assert_eq!(
+            env.get(OsStr::new("TOKEN")),
+            Some(&Some(OsStr::new("fixture")))
+        );
+        assert_eq!(
+            env.get(OsStr::new("PATH")),
+            Some(&Some(OsStr::new("/opt/bin")))
+        );
+        assert_eq!(env.len(), 2, "{env:?}");
     }
 }

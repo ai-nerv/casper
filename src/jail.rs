@@ -548,6 +548,61 @@ mod tests {
     }
 
     #[test]
+    fn a_servers_environment_is_set_inside_the_jail_and_never_on_its_launcher() {
+        let (dir, home) = (
+            Scratch::new("jail", "inner-env"),
+            Scratch::new("jail", "inner-env-home"),
+        );
+        let jail = Jail {
+            grants: Ok(Some(Grants::default())),
+            cwd: dir.to_path_buf(),
+            home: home.to_path_buf(),
+        };
+        let mut prepared = match jail.prepare("server", &[], None, &[], false) {
+            Ok(prepared) => prepared,
+            Err(why) => {
+                assert!(
+                    std::env::var_os("CASPER_REQUIRE_CONTAINMENT").is_none(),
+                    "required containment unavailable: {why}"
+                );
+                eprintln!("NOT VERIFIED: {why}");
+                return;
+            }
+        };
+        prepared.inner(&[
+            ("TOKEN".to_owned(), "fixture".to_owned()),
+            ("LD_PRELOAD".to_owned(), "/tmp/evil.so".to_owned()),
+        ]);
+        let command = prepared.command();
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let env: Vec<String> = command
+            .get_envs()
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !args.iter().chain(&env).any(|word| word.contains("LD_")),
+            "{args:?} {env:?}"
+        );
+        if which("bwrap").is_some() {
+            let program = args.iter().position(|arg| arg == "--");
+            let set = args
+                .windows(3)
+                .position(|three| three == ["--setenv", "TOKEN", "fixture"]);
+            assert!(set.is_some() && set < program, "{args:?}");
+            assert_eq!(
+                program.and_then(|at| args.get(at + 1)).map(String::as_str),
+                Some("server")
+            );
+            assert!(!env.iter().any(|key| key == "TOKEN"), "{env:?}");
+        } else {
+            assert!(env.iter().any(|key| key == "TOKEN"), "{env:?}");
+        }
+    }
+
+    #[test]
     fn a_profile_that_does_not_parse_is_a_refusal_and_not_the_floor() {
         for wanted in ["{not json", r#"{"reach":true,"wirte":["/"]}"#, "yes"] {
             let jail = Jail {

@@ -1,66 +1,94 @@
-# MCP and web implementation
+# MCP and web reading
 
-## Requirements
+## Scope
 
-- A native Rust MCP server exposes Casper's configured tool registry to external clients.
-- Preserve disabled/hidden tools, existing configuration, tool failures and jail grants.
-- Standard stdio transport, protocol negotiation, tool schemas, calls and cancellation.
-- Native Rust web search, readable page extraction, links and bounded/paged results.
-- Document configuration, client registration, network boundaries and runtime dependencies.
-- Test actual executable calls, SDK interoperability and HTTP fixtures.
+- A native Rust MCP stdio server exposes Casper's configured tool registry.
+- The native Rust `web` tool searches for sources or fetches and reads HTTP(S) pages.
+- Returned pages contain readable text, source URLs and followable links.
+- No website interaction, script execution, screenshots or additional runtime.
 
 ## Reference designs
 
-- [Pi package catalog](https://pi.dev/packages): discoverable optional tool extensions.
-- [Pi Web Access](https://github.com/nicobailon/pi-web-access): search/fetch separation,
-  bounded raw results, source URLs, explicit provider routing and SSRF checks.
-- [Official Rust MCP SDK](https://github.com/modelcontextprotocol/rust-sdk): transport,
-  protocol negotiation, validation and cancellation rather than a private JSON-RPC dialect.
+- [Pi package catalog](https://pi.dev/packages): optional tool extensions.
+- [Pi Web Access](https://github.com/nicobailon/pi-web-access): separate search/fetch actions,
+  bounded raw results, source URLs, provider routing and SSRF checks.
+- [Official Rust MCP SDK](https://github.com/modelcontextprotocol/rust-sdk): stdio transport,
+  protocol negotiation, tool schemas, calls and cancellation.
 
-## Implementation boundaries
+## MCP
 
-MCP is a new Casper transport, not a replacement for the family's socket protocol. It uses
-the official Rust SDK and invokes the same executable/configuration path as ordinary calls.
-Each call runs in its own cancellable child process. Stdout carries only MCP messages.
+Register an MCP client with:
 
-Web operations run natively in Rust. HTTP(S) destinations are validated and DNS resolutions
-pinned per redirect. Private destinations require trusted configuration, never a tool argument.
-Network access respects the jail's reach grant. Responses have time, redirect, byte and output
-limits. Extraction returns sources and followable links, not model-generated summaries.
-The HTTP destination policy conservatively excludes special-purpose IPv6 protocol/tunnelling
-and documentation ranges as well as private destinations; see the
+```json
+{"command":"casper","args":["mcp","--root","/path/to/project","--tools=read,web"]}
+```
+
+Install the executable and declarations with `oslo make install`. The server uses the same
+configured tools as ordinary Casper calls; disabled and hidden tools cannot be exposed.
+`--tools` restricts the exposed tools. `--timeout-ms` bounds calls, defaults to 60,000 and
+is capped at 600,000. At most eight workers run concurrently. Deadlines and cancellation
+include time spent waiting for a worker slot and stop the owned worker.
+
+Stdout carries only MCP messages. Tool failures become MCP error results. Terminal tools
+requiring interaction are refused rather than presented as completed operations.
+
+The server inherits its launch configuration and `CASPER_JAIL` grants; it adds no permissions.
+With `CASPER_JAIL` unset, each tool runs inside the conservative jail, and only an empty value
+turns isolation off. `--root` sets the working directory, not filesystem containment. Use jail grants for containment
+and the MCP client's approval controls for tool actions.
+
+## Search
+
+```json
+{"action":"search","query":"Rust memory systems","limit":5}
+```
+
+Returns titles, source URLs and snippets without making a model call. DuckDuckGo is the default.
+A trusted `web.searxng` endpoint enables SearXNG; the `provider` argument selects between the
+supported providers. Search results are untrusted data, not instructions.
+
+## Fetch and read
+
+```json
+{"action":"fetch","url":"https://example.com","max_chars":12000}
+```
+
+Returns the final URL, HTTP status, title, readable text, links, offset, total character count
+and `next_offset`. To read more, fetch the returned URL with `offset` set to `next_offset`.
+`max_chars` defaults to 12,000 and is capped at 50,000; offsets use Unicode characters.
+
+The HTTP client downloads page content and extracts text. It does not execute scripts.
+Pages whose content only appears after script execution may therefore return little text.
+Follow returned links with another fetch call; there is no click, input or submission action.
+
+## Configuration and network boundaries
+
+The trusted `web` configuration supports:
+
+- `allow_private`: default false; permits private destinations only when explicitly configured.
+- `timeout_secs`: default 20, bounded to 1..60.
+- `max_bytes`: default 2,000,000, bounded to 1,024..8,000,000.
+- `searxng`: the configured SearXNG endpoint.
+
+Network access requires the jail's `reach` grant. Tool arguments cannot change trusted settings.
+Only HTTP(S) URLs without embedded credentials are allowed. DNS resolutions are checked and
+pinned for each request and redirect. HTTPS downgrade redirects are refused. Downloads, redirect
+count, time and returned text are bounded; HTTP failures are reported rather than hidden.
+
+The destination policy conservatively rejects private and special-purpose IP ranges, including
+IPv6 protocol/tunnelling and documentation ranges; see the
 [IANA IPv6 special-purpose registry](https://www.iana.org/assignments/iana-ipv6-special-registry/).
+This is a conservative access policy, not an exact classifier of globally reachable addresses.
 
-## Acceptance evidence
+## Verification
 
-- Implemented: MCP stdio transport and native web search/fetch.
-- `oslo make verify`: passed the complete Casper gate, including all-target/all-feature
-  tests, Clippy, documentation, architectural checks, hermetic cleanup and family/role checks.
-- `oslo make test-mcp`: executable-level tests using the official Rust SDK client,
-  covering discovery, schemas, actual tool calls, failures, disabled tools, deadlines and cancellation.
-- `oslo make test-web`: four executable-level HTTP-fixture tests covering extraction,
-  Unicode paging, sources, redirects, download limits, private targets and jail grants.
+- `oslo make test-mcp`: real executable calls with official SDK and legacy JSON-RPC clients,
+  covering discovery, schemas, reads, errors, disabled/hidden tools, deadlines and cancellation.
+- `oslo make test-web`: real HTTP fixtures covering readable extraction, Unicode paging,
+  source links, redirects, response limits, HTTP failures, private targets and jail grants.
+- `oslo make verify`: all-target/all-feature suites, Clippy, docs and native architectural,
+  hermetic and family/role gates.
 
-## Using the implemented tools
-
-Install the executable and its declarations with `oslo make install`. Register an MCP
-client with command `casper` and arguments `mcp`, `--root`, `/path/to/project`.
-Use `--tools=read,web` to limit exposure and `--timeout-ms=60000` to set the call deadline.
-The server inherits the launch environment and configuration, including `CASPER_JAIL`;
-with `CASPER_JAIL` unset, each tool runs inside the conservative jail, and only an empty value
-turns isolation off. It does not grant additional permissions or expose a remote HTTP listener.
-`--root` sets the working directory, not filesystem containment. Use `CASPER_JAIL` for
-containment and the MCP client's approval controls for permitted tool actions.
-
-The `web` tool accepts `{"action":"search","query":"Rust memory systems"}` or
-`{"action":"fetch","url":"https://example.com","max_chars":12000}`.
-Fetch replies include source URLs, links and `next_offset` for another page of text.
-Search uses DuckDuckGo by default, or SearXNG when its endpoint is configured in the
-trusted `web.searxng` setting. Private addresses are refused unless trusted configuration
-sets `web.allow_private`; a tool argument cannot grant that access. Search-provider
-availability is external, and the fixture tests do not establish live-provider availability.
-Live smoke checks on this host also fetched the Rust homepage over HTTPS (including its redirect)
-and obtained three sourced DuckDuckGo search results without API keys or model calls. Those are
-observations of provider availability during testing, not a guarantee of future availability.
-
-MCP runs at most eight workers concurrently; deadlines and cancellation include time spent waiting for a slot.
+Live smoke checks also fetched the Rust homepage over HTTPS, followed its redirect and obtained
+three sourced DuckDuckGo results without API keys or model calls. These were observations during
+testing, not guarantees of future provider availability.

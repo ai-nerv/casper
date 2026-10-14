@@ -93,6 +93,12 @@ impl Engine {
     /// A VM with trusted native web settings supplied by the caller.
     #[must_use]
     pub fn with_web_configuration(configuration: Option<serde_json::Value>) -> Self {
+        Self::with_configuration(Some(serde_json::json!({"web":configuration})))
+    }
+
+    /// A VM with trusted native tool settings supplied by the caller.
+    #[must_use]
+    pub fn with_configuration(configuration: Option<serde_json::Value>) -> Self {
         let mut engine = Self {
             lua: Lua::full(),
             declared: Rc::new(RefCell::new(Declared::default())),
@@ -104,7 +110,7 @@ impl Engine {
     }
 
     /// Put `casper` in front of a declaration.
-    fn install(&mut self, web_configuration: Option<serde_json::Value>) {
+    fn install(&mut self, configuration: Option<serde_json::Value>) {
         let declared = Rc::clone(&self.declared);
         self.lua.enter(|ctx| {
             let casper = Table::new(&ctx);
@@ -168,8 +174,33 @@ impl Engine {
             casper.set(ctx, "dirs", crate::lua::dirs::table(ctx)).ok();
             casper.set(ctx, "seek", crate::lua::seek::table(ctx)).ok();
             casper
-                .set(ctx, "web", crate::lua::web::table(ctx, web_configuration))
+                .set(
+                    ctx,
+                    "web",
+                    crate::lua::web::table(
+                        ctx,
+                        configuration
+                            .as_ref()
+                            .and_then(|settings| settings.get("web"))
+                            .cloned(),
+                    ),
+                )
                 .ok();
+            let mcp = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
+                let path: String = stack.consume(ctx)?;
+                let settings = configuration.as_ref();
+                let result = crate::mcp_client::manual(
+                    settings.and_then(|settings| settings.get("mcp_servers")),
+                    &path,
+                    settings.and_then(|settings| settings.get("tools")),
+                    settings.and_then(|settings| settings.get("mcp_discovery_errors")),
+                    settings.and_then(|settings| settings.get("mcp_catalog")),
+                );
+                let result = serde_json::to_value(result).unwrap_or(serde_json::Value::Null);
+                stack.replace(ctx, crate::lua::convert::lua_from_json(ctx, &result));
+                Ok(CallbackReturn::Return)
+            });
+            casper.set(ctx, "mcp", mcp).ok();
             // A declaration cannot open a file, so a stub arrives as text and is `load`ed.
             let clients = Table::new(&ctx);
             for (name, source) in CLIENTS {
@@ -194,6 +225,9 @@ impl Engine {
                 .set(ctx, "tapped", crate::lua::keying::table(ctx))
                 .ok();
             casper.set(ctx, "exec", crate::lua::exec::table(ctx)).ok();
+            casper
+                .set(ctx, "image", crate::lua::images::table(ctx))
+                .ok();
             casper.set(ctx, "json", crate::lua::json::table(ctx)).ok();
             casper.set(ctx, "paint", crate::lua::paint::table(ctx)).ok();
 

@@ -211,6 +211,8 @@ make.recipe{
       end
     end
     print(("%d files -> %s"):format(copied, CONFIG))
+    local data = os.getenv("XDG_DATA_HOME") or (os.getenv("HOME") .. "/.local/share")
+    assert(oslo.run{ "mkdir", "-p", data .. "/casper/mcp" }.ok, "could not create the MCP directory")
     for _, file in ipairs(back) do
       print(("   <- %s was newer in %s, and came back"):format(file, CONFIG))
     end
@@ -280,7 +282,10 @@ make.recipe{ name = "test-web", desc = "native web extraction and network contai
              run = function() sh.cargo("test", "--test", "web") end }
 
 make.recipe{ name = "test-mcp", desc = "MCP client/server interoperability",
-             run = function() sh.cargo("test", "--test", "mcp") end }
+             run = function()
+               sh.cargo("test", "--lib", "mcp_client")
+               sh.cargo("test", "--test", "mcp", "--test", "mcp_client")
+             end }
 
 make.recipe{ name = "fmt-check", desc = "fail if anything is unformatted",
              run = function() sh.cargo("fmt", "--all", "--", "--check") end }

@@ -114,8 +114,16 @@ fn output_bytes_caps_what_the_model_reads() {
 
 #[test]
 fn every_declared_setting_is_read_by_something() {
-    // Settings are exercised here and by the network fixtures in tests/web.rs.
-    let covered = ["tools", "load", "output_bytes", "web"];
+    // Settings are exercised here and by tests/web.rs and tests/mcp_client.rs.
+    let covered = [
+        "tools",
+        "load",
+        "output_bytes",
+        "web",
+        "mcp_servers",
+        "mcp_catalog",
+        "mcp_discovery_errors",
+    ];
     for need in casper::setup::needs() {
         assert!(
             covered.contains(&need.name.as_str()),
@@ -123,4 +131,20 @@ fn every_declared_setting_is_read_by_something() {
             need.name
         );
     }
+}
+
+#[test]
+fn supplied_mcp_catalog_and_diagnostics_change_the_manual() {
+    let configured = serde_json::json!({
+        "mcp_servers":{"fixture":{"command":"/must/not/be/launched"}},
+        "mcp_catalog":[{"name":"mcp__fixture__inspect", "description":"Fixture inspection", "parameters":{"type":"object"}, "needs":"read"}],
+        "mcp_discovery_errors":["fixture connection unavailable"]
+    });
+    let reply = with(
+        &configured.to_string(),
+        &["run"],
+        Some(r#"{"tool":"tools","args":{"path":"mcp"}}"#),
+    );
+    assert!(reply.contains("mcp__fixture__inspect"), "{reply}");
+    assert!(reply.contains("fixture connection unavailable"), "{reply}");
 }

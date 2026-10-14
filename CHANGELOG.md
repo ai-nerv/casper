@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.7.0] - 2026-10-14
+
+### <!-- 0 -->⛰️  Features
+
+- A client for stdio and HTTP servers
+- Read and attach raster images
+- Set a server's env inside the jail
+
+### <!-- 3 -->📚 Documentation
+
+- A shared TMPDIR for screenshots
+- MCP and web reading, no browser
+
+### <!-- 6 -->🧪 Testing
+
+- Refuse interactive actions
+
 ## [0.6.2] - 2026-10-14
 
 ### <!-- 0 -->⛰️  Features

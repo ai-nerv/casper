@@ -10,11 +10,60 @@
 /// Cut with a line saying so rather than silently: output that stops mid-sentence reads as a crash.
 pub const MOST: usize = 256 * 1024;
 
+/// The standard output of one program, at most `limit` bytes, read within [`READING`].
+pub fn binary(program: &str, args: &[String], limit: usize) -> Result<Vec<u8>, String> {
+    binary_by(program, args, limit, READING)
+}
+
+/// [`binary`], with the reader's process group killed and reaped once `limit` has passed.
+fn binary_by(
+    program: &str,
+    args: &[String],
+    most: usize,
+    limit: Duration,
+) -> Result<Vec<u8>, String> {
+    let jail = crate::jail::Jail::from_env();
+    let mut prepared = jail
+        .prepare(program, args, None, &[], false)
+        .map_err(|e| format!("jail refused: {e}"))?;
+    let mut command = prepared.command();
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let mut child = command.spawn().map_err(|e| e.to_string())?;
+    let ([(bytes, past), _], code, overran) = drained(&mut child, limit, most);
+    let restored = prepared.restored();
+    if !restored.is_empty() {
+        return Err(restored.join("; "));
+    }
+    if overran {
+        return Err(format!(
+            "{program}: stopped after {}s, the most one read may take",
+            limit.as_secs()
+        ));
+    }
+    if past > 0 {
+        return Err("image exceeds the source byte limit".into());
+    }
+    if code != Some(0) {
+        let code = code.map_or_else(|| "killed".to_owned(), |c| c.to_string());
+        return Err(format!(
+            "{program}: file read refused or failed (exit {code})"
+        ));
+    }
+    Ok(bytes)
+}
+
 /// One read off a pipe.
 const CHUNK: usize = 8 * 1024;
 
 /// How long one program may run before its process group is killed.
 pub const DEADLINE: Duration = Duration::from_secs(60 * 60);
+
+/// How long one read through [`binary`] may take before its process group is killed: a file that
+/// never ends, such as a FIFO with no writer, is not waited on past this.
+pub const READING: Duration = Duration::from_secs(30);
 
 /// How long the pipes are still read once the program itself has exited: what a backgrounded
 /// grandchild holds open is not waited for past this.
@@ -95,7 +144,7 @@ fn fed_by(program: &str, args: &[String], input: Option<Vec<u8>>, limit: Duratio
             let _ = pipe.write_all(&bytes);
         });
     }
-    let (held, code, overran) = drained(&mut child, limit);
+    let (held, code, overran) = drained(&mut child, limit, MOST);
     let restored = prepared.restored();
     let [out, err] = held;
     crate::noted!(
@@ -130,13 +179,18 @@ fn fed_by(program: &str, args: &[String], input: Option<Vec<u8>>, limit: Duratio
     }
 }
 
-/// What one pipe gave: the first [`MOST`] bytes, and how many more there were.
+/// What one pipe gave: the first bytes it had room for, and how many more there were.
 type Kept = (Vec<u8>, usize);
 
-/// Read both pipes as they fill until the program has exited and its pipes have closed, or
-/// [`GRACE`] after it exited, whichever is first. Past `limit`, its whole process group is
-/// killed and the program reaped. Answers the two holds, the exit code, and whether it overran.
-fn drained(child: &mut std::process::Child, limit: Duration) -> ([Kept; 2], Option<i32>, bool) {
+/// Read both pipes as they fill, holding `most` bytes of each, until the program has exited and
+/// its pipes have closed, or [`GRACE`] after it exited, whichever is first. Past `limit`, its
+/// whole process group is killed and the program reaped. Answers the two holds, the exit code,
+/// and whether it overran.
+fn drained(
+    child: &mut std::process::Child,
+    limit: Duration,
+    most: usize,
+) -> ([Kept; 2], Option<i32>, bool) {
     let mut pipes: [Option<OwnedFd>; 2] = [
         child.stdout.take().map(OwnedFd::from),
         child.stderr.take().map(OwnedFd::from),
@@ -157,7 +211,7 @@ fn drained(child: &mut std::process::Child, limit: Duration) -> ([Kept; 2], Opti
         }
         let wait = until.saturating_duration_since(Instant::now()).min(TICK);
         if open {
-            read_ready(&mut pipes, &mut held, wait);
+            read_ready(&mut pipes, &mut held, wait, most);
         } else {
             std::thread::sleep(wait);
         }
@@ -171,9 +225,9 @@ fn drained(child: &mut std::process::Child, limit: Duration) -> ([Kept; 2], Opti
     (held, code, true)
 }
 
-/// Wait up to `wait` for either pipe to have something, and read what is there. A pipe at its
-/// end, or one that fails, is closed.
-fn read_ready(pipes: &mut [Option<OwnedFd>; 2], held: &mut [Kept; 2], wait: Duration) {
+/// Wait up to `wait` for either pipe to have something, and read what is there, holding `most`
+/// bytes of each. A pipe at its end, or one that fails, is closed.
+fn read_ready(pipes: &mut [Option<OwnedFd>; 2], held: &mut [Kept; 2], wait: Duration, most: usize) {
     use rustix::event::{PollFd, PollFlags, Timespec};
     let readable = PollFlags::IN | PollFlags::HUP | PollFlags::ERR;
     let ready: Vec<bool> = {
@@ -199,7 +253,7 @@ fn read_ready(pipes: &mut [Option<OwnedFd>; 2], held: &mut [Kept; 2], wait: Dura
             Err(rustix::io::Errno::INTR) => {}
             Ok(0) | Err(_) => *pipe = None,
             Ok(read) => {
-                let room = MOST.saturating_sub(kept.0.len()).min(read);
+                let room = most.saturating_sub(kept.0.len()).min(read);
                 kept.0.extend(buffer.iter().take(room));
                 kept.1 += read - room;
             }
@@ -311,6 +365,46 @@ mod tests {
         assert_eq!(done.code, -1);
         assert!(done.err.contains("stopped after"), "{}", done.err);
         let pid = done.err.lines().next().unwrap_or_default().to_owned();
+        let gone = Instant::now() + Duration::from_secs(5);
+        while alive(&pid) && Instant::now() < gone {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!alive(&pid), "the backgrounded {pid} outlived the deadline");
+    }
+
+    #[test]
+    fn a_reader_that_never_finishes_is_killed_at_its_deadline() {
+        let dir = crate::scratch::Scratch::new("running", "reader");
+        let fifo = dir.join("never.png");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo");
+        assert!(made.success(), "{made}");
+        let pidfile = dir.join("pid");
+        let script = format!("sleep 20 & echo $! > '{}'; sleep 20", pidfile.display());
+        let path = fifo.display().to_string();
+        for (program, args) in [
+            (
+                "head",
+                vec!["-c".to_owned(), "32".to_owned(), "--".to_owned(), path],
+            ),
+            ("sh", vec!["-c".to_owned(), script]),
+        ] {
+            let began = Instant::now();
+            let read = binary_by(program, &args, 32, Duration::from_millis(300));
+            assert!(
+                began.elapsed() < Duration::from_secs(5),
+                "{program}: {:?}",
+                began.elapsed()
+            );
+            assert!(
+                read.as_ref()
+                    .is_err_and(|why| why.contains("stopped after")),
+                "{program}: {read:?}"
+            );
+        }
+        let pid = std::fs::read_to_string(&pidfile).expect("a pid");
         let gone = Instant::now() + Duration::from_secs(5);
         while alive(&pid) && Instant::now() < gone {
             std::thread::sleep(Duration::from_millis(20));
