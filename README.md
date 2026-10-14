@@ -157,6 +157,13 @@ levels. A large or uninspectable store produces a refusal, never silently reduce
 The fallback gives each command private temporary storage unless trusted shared storage was
 specified; it does not grant the whole host `/tmp`.
 
+The two backends answer the same probes the same way, with two named differences. On the Landlock
+path no Unix socket opens at all, since no mount namespace hides the runtime directory there. And
+Landlock cannot carve a read-only file out of a writable tree: `.magi.lua`, `.balthasar.lua`,
+`.git/config` and `.git/hooks` stay writable beneath the workspace and each write grant, where
+bubblewrap binds them read-only. What Landlock does keep read-only is everything outside the
+writable roots, such as the home directory's dotfiles and the person's configuration.
+
 `oslo make test-containment` uses synthetic credentials and local listeners to exercise both
 backends, ordinary/PTY execution, terminal input/resize, and pinned Rust toolchain discovery.
 Set `CASPER_REQUIRE_CONTAINMENT=1` to reject missing backend coverage. Real `casper surface`
