@@ -87,6 +87,10 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) -> String {
         )
         .expect("compiler input");
     }
+    if variant == "git-init" {
+        let git = installed("git").expect("git unavailable");
+        std::os::unix::fs::symlink(git, dir.join("work/git")).expect("git fixture");
+    }
     if variant == "replaced-grant" {
         std::fs::create_dir(dir.join("allowed")).expect("original grant");
         std::os::unix::fs::symlink(dir.join("allowed"), dir.join("grant")).expect("grant alias");
@@ -352,6 +356,10 @@ fn contained_child() {
         persistence::window(&root);
         return;
     }
+    if variant == "git-init" {
+        persistence::created(&root);
+        return;
+    }
     let mut script = probe(&root);
     if variant == "late-stores" {
         script = format!(
@@ -536,6 +544,13 @@ fn landlock_puts_back_what_the_next_unjailed_program_runs_and_says_so() {
 #[test]
 fn landlock_lets_a_reader_see_the_change_until_the_command_has_ended() {
     fixture("command", false, "window");
+}
+
+#[test]
+fn what_did_not_exist_may_be_created_on_both_paths_so_git_init_works() {
+    for bubblewrap in [false, true] {
+        fixture("command", bubblewrap, "git-init");
+    }
 }
 
 #[test]

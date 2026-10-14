@@ -1,8 +1,9 @@
 //! The Landlock path's stand-in for bubblewrap's read-only binds beneath a writable root.
 //!
-//! Each protected path is read before a command runs and put back once it has ended: what changed
-//! is restored, what appeared is removed, what went is recreated. Nothing is followed through a
-//! link, and a restored file is written beside its place and renamed into it.
+//! Each protected path that exists when a command starts is read, and put back once it has ended:
+//! what changed is restored, what went is recreated, and a kept directory loses what appeared in
+//! it. A path that did not exist may be created, as under bubblewrap. Nothing is followed through
+//! a link, and a restored file is written beside its place and renamed into it.
 
 use rustix::fs::{AtFlags, FileType, Mode, OFlags, ResolveFlags};
 use rustix::io::Errno;
@@ -49,11 +50,11 @@ struct Kept {
     was: State,
 }
 
-/// Every protected path beneath the writable roots, as it stood before a command.
+/// Every protected path that exists beneath the writable roots, as it stood before a command.
 pub(super) struct Guard(Vec<Kept>);
 
 impl Guard {
-    /// Read each `(root, name)`, or refuse naming the one that cannot be kept.
+    /// Read each `(root, name)` that exists, or refuse naming the one that cannot be kept.
     pub(super) fn take<'a>(
         cwd: &Path,
         paths: impl Iterator<Item = (&'a Path, &'static str)>,
@@ -71,6 +72,9 @@ impl Guard {
                 .display()
                 .to_string();
             let was = read(&root, name, &shown)?;
+            if was == State::Absent {
+                continue;
+            }
             kept.push(Kept {
                 root,
                 name,
@@ -273,28 +277,16 @@ fn opened_dir(dir: BorrowedFd<'_>, name: &OsStr) -> std::io::Result<OwnedFd> {
 
 /// Make the protected path hold what it held before the command.
 fn put_back(kept: &Kept, said: &mut Vec<String>) -> std::io::Result<()> {
-    let absent = kept.was == State::Absent;
-    let base = kept.shown.strip_suffix(kept.name).unwrap_or_default();
     let (parents, last) = split(kept.name);
-    let mut walked = PathBuf::new();
     let mut dir = opened_root(&kept.root)?;
     for part in parents {
-        walked.push(part);
         match kind(dir.as_fd(), part)? {
             Some(FileType::Directory) => {}
-            None if absent => return Ok(()),
             None => rustix::fs::mkdirat(&dir, part, Mode::from_raw_mode(0o755))?,
-            Some(_) if !absent => {
+            Some(_) => {
                 remove(dir.as_fd(), part, 0)?;
                 rustix::fs::mkdirat(&dir, part, Mode::from_raw_mode(0o755))?;
             }
-            Some(FileType::Symlink) => {
-                remove(dir.as_fd(), part, 0)?;
-                let shown = format!("{base}{}", walked.display());
-                said.push(notice(&State::Absent, &shown));
-                return Ok(());
-            }
-            Some(_) => return Ok(()),
         }
         dir = opened_dir(dir.as_fd(), part)?;
     }
@@ -502,14 +494,13 @@ mod tests {
     }
 
     #[test]
-    fn what_a_command_changed_created_or_removed_is_put_back_and_named() {
+    fn what_a_command_changed_or_removed_is_put_back_and_named() {
         let (dir, work) = checkout("changed");
         let outside = dir.join("outside");
         std::fs::write(&outside, "OUTSIDE\n").expect("outside");
         let guard = guarded(&work);
         std::fs::write(work.join(".magi.lua"), "bad\n").expect("modify");
         std::fs::remove_file(work.join(".git/config")).expect("delete");
-        std::fs::write(work.join(".balthasar.lua"), "bad\n").expect("create");
         std::fs::remove_file(work.join(".git/hooks/pre-commit")).expect("unlink");
         std::os::unix::fs::symlink(&outside, work.join(".git/hooks/pre-commit")).expect("link");
         std::fs::write(work.join(".git/hooks/post-checkout"), "bad\n").expect("new hook");
@@ -519,11 +510,9 @@ mod tests {
             let line = format!("restored {file}: a jailed command may not change it");
             assert!(said.contains(&line), "{line}: {said}");
         }
-        for file in [".balthasar.lua", ".git/hooks/post-checkout"] {
-            assert!(!work.join(file).exists(), "{file}");
-            let line = format!("removed {file}: a jailed command may not create it");
-            assert!(said.contains(&line), "{line}: {said}");
-        }
+        assert!(!work.join(".git/hooks/post-checkout").exists(), "{said}");
+        let line = "removed .git/hooks/post-checkout: a jailed command may not create it";
+        assert!(said.contains(line), "{said}");
         assert_eq!(
             std::fs::read_to_string(&outside).expect("outside"),
             "OUTSIDE\n"
@@ -571,19 +560,25 @@ mod tests {
     }
 
     #[test]
-    fn a_repository_made_where_there_was_none_loses_what_the_jail_keeps() {
+    fn what_did_not_exist_when_the_command_started_may_be_created() {
         let dir = Scratch::new("guard", "fresh");
         let work = dir.join("work");
         std::fs::create_dir(&work).expect("work");
         let guard = guarded(&work);
         std::fs::create_dir_all(work.join(".git/hooks")).expect("init");
-        for file in [".git/config", ".git/HEAD", ".git/hooks/pre-commit"] {
-            std::fs::write(work.join(file), "bad\n").expect("init");
+        for file in [
+            ".git/config",
+            ".git/HEAD",
+            ".git/hooks/pre-commit",
+            ".magi.lua",
+            ".balthasar.lua",
+        ] {
+            std::fs::write(work.join(file), "made\n").expect("made");
         }
-        let said = guard.restore().join("\n");
-        assert_eq!(listed(&work.join(".git")), ["HEAD"], "{said}");
-        assert!(said.contains("removed .git/hooks: a jailed command may not create it"));
-        assert!(said.contains("removed .git/config: a jailed command may not create it"));
+        assert!(guard.restore().is_empty(), "nothing is put back");
+        assert_eq!(listed(&work), [".balthasar.lua", ".git", ".magi.lua"]);
+        assert_eq!(listed(&work.join(".git")), ["HEAD", "config", "hooks"]);
+        assert_eq!(listed(&work.join(".git/hooks")), ["pre-commit"]);
     }
 
     #[test]

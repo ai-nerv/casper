@@ -125,6 +125,20 @@ pub(super) fn check(root: &Path, mode: &str, sealed: bool) {
     }
 }
 
+/// A protected path that did not exist when the command started may be created: `git init` makes
+/// a repository and a project config appears, and both stay.
+pub(super) fn created(root: &Path) {
+    let file = ".magi.lua";
+    let script = format!("./git init -q && echo made > {file}");
+    let done = casper::running::run("/bin/sh", &["-c".into(), script]);
+    assert_eq!(done.code, 0, "{} {}", done.err, done.out);
+    let work = root.join("work");
+    assert!(work.join(".git/config").is_file(), "{}", done.err);
+    assert!(work.join(".git/hooks").is_dir(), "{}", done.err);
+    let made = std::fs::read_to_string(work.join(file)).unwrap_or_default();
+    assert_eq!(made, "made\n", "{}", done.err);
+}
+
 /// A reader beside a Landlock-jailed command sees its change to a protected file while it runs;
 /// the file is put back only once the command has ended.
 pub(super) fn window(root: &Path) {
