@@ -26,8 +26,13 @@ async fn invoke(
     verb: &str,
     call: Option<Value>,
 ) -> Result<crate::wire::Reply, String> {
-    let mut child = crate::jail::worker(root)
-        .map_err(|why| format!("Casper worker could not be prepared: {why}"))?
+    let mut command = crate::jail::worker(root)
+        .map_err(|why| format!("Casper worker could not be prepared: {why}"))?;
+    // No jail named is the floor here, since no harness is asking anyone before a tool runs.
+    if std::env::var_os(crate::jail::WANTED).is_none() {
+        command.env(crate::jail::WANTED, "1");
+    }
+    let mut child = command
         .arg(verb)
         .arg("--json")
         .current_dir(root)

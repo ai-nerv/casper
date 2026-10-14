@@ -22,6 +22,7 @@ fn command(dir: &Scratch) -> tokio::process::Command {
     command_for(dir, "read,web")
 }
 
+/// The MCP server over `dir`, with the jail explicitly off: these are tests of the transport.
 fn command_for(dir: &Scratch, tools: &str) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_casper"));
     command
@@ -33,11 +34,49 @@ fn command_for(dir: &Scratch, tools: &str) -> tokio::process::Command {
         .env("XDG_RUNTIME_DIR", &**dir)
         .env("CASPER_CONFIGURE", "{}")
         .kill_on_drop(true)
-        .env_remove("CASPER_JAIL");
+        .env("CASPER_JAIL", "");
     if tools != "*" {
         command.arg(format!("--tools={tools}"));
     }
     command
+}
+
+/// A shell call over MCP that writes outside its working directory, and whether the write landed.
+async fn escaped(jail: Option<&str>) -> bool {
+    let dir = fixture();
+    std::fs::create_dir_all(dir.join("work")).expect("work directory");
+    let mut command = command_for(&dir, "shell");
+    command
+        .current_dir(dir.join("work"))
+        .env("HOME", dir.join("home"));
+    match jail {
+        Some(jail) => command.env("CASPER_JAIL", jail),
+        None => command.env_remove("CASPER_JAIL"),
+    };
+    let client =
+        ().serve(TokioChildProcess::new(command).expect("transport"))
+            .await
+            .expect("MCP initializes");
+    let arguments = json!({"command": "echo out > ../escaped; echo in > inside"});
+    let ran = client
+        .call_tool(
+            CallToolRequestParams::new("shell")
+                .with_arguments(arguments.as_object().expect("arguments").clone()),
+        )
+        .await
+        .expect("MCP tools/call");
+    client.cancel().await.expect("client closes");
+    assert!(dir.join("work/inside").exists(), "{ran:?}");
+    dir.join("escaped").exists()
+}
+
+#[tokio::test]
+async fn mcp_with_no_jail_named_runs_tools_inside_the_floor() {
+    assert!(!escaped(None).await, "an MCP tool wrote outside its root");
+    assert!(
+        escaped(Some("")).await,
+        "an explicit jail setting still wins"
+    );
 }
 
 #[tokio::test]
