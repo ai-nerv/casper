@@ -109,8 +109,11 @@ fn drawn(carries: &[bool]) -> String {
 /// Whether the entry at `nth` is the last child of its parent. The listing is a pre-order walk, so
 /// the next row at the same depth or shallower is either a sibling or an ancestor's sibling.
 fn last(entries: &[Entry], nth: usize) -> bool {
-    let depth = entries[nth].depth();
-    entries[nth + 1..]
+    let Some((entry, after)) = entries.get(nth..).and_then(<[Entry]>::split_first) else {
+        return true;
+    };
+    let depth = entry.depth();
+    after
         .iter()
         .find(|next| next.depth() <= depth)
         .is_none_or(|next| next.depth() < depth)
