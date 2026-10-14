@@ -1,6 +1,8 @@
 //! The hexe and oslo client libraries casper lends a declaration: the family's frame cap on both
 //! directions, and no path built from `$UID`.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use casper::lua::engine::Engine;
 use casper::scratch::Scratch;
 use std::process::{Command, Stdio};

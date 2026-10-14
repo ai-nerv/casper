@@ -1,6 +1,8 @@
 //! What each shipped file tool says to show once its result is elided, how to get the result back,
 //! and that a failure is never elided. `shell`'s own are in `shell.rs`, where a command runs alone.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use casper::lua::engine::Engine;
 use casper::scratch::Scratch;
 use casper::tools::Ran;

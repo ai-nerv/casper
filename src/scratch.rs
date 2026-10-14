@@ -26,7 +26,11 @@ impl Scratch {
     }
 
     /// A private temporary directory beneath the supplied root.
+    ///
+    /// # Panics
+    /// If the directory cannot be created.
     #[must_use]
+    #[allow(clippy::expect_used)]
     pub fn in_dir(root: &Path, prefix: &str, name: &str) -> Self {
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = root.join(format!("{prefix}-{}-{n}-{name}", std::process::id()));

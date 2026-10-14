@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use casper::scratch::Scratch;
 use rmcp::{ServiceExt, model::CallToolRequestParams, transport::TokioChildProcess};
 use serde_json::json;

@@ -6,6 +6,8 @@
 //! command to stop leaking processes (see `tests/tied.rs`), so the status is checked in both
 //! directions and so is the `cd` that has to survive to the next call.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use casper::scratch::Scratch;
 use std::process::{Command, Stdio};
 

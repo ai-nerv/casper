@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use casper::scratch::Scratch;
 use serde_json::{Value, json};
 use std::io::{Read, Write};

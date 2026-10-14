@@ -4,6 +4,8 @@
 //! end its children on the way. The signal is cleared across `fork`, so the command under casper
 //! and the command under that are checked separately from casper itself.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use casper::scratch::Scratch;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};

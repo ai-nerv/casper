@@ -5,6 +5,8 @@
 //! whose body decodes as a call is re-framed in its own encoding with the key added and `verbs`
 //! asked as `tools`; every other case goes as it is.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use casper::framing::{self, MOST, Wire};
 use casper::scratch::Scratch;
 use std::io::{ErrorKind, Write};

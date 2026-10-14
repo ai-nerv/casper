@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
