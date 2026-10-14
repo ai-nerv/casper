@@ -403,7 +403,9 @@ make.recipe{
   run = function()
     local where = "target/x86_64-unknown-linux-musl/release/casper"
     if not oslo.fs.exists(where) then where = "target/release/casper" end
-    local ran = oslo.run{ "scripts/gate-family.sh", where  }
+    -- `serve` is probed live: bound in the gate's own runtime directory, its key handed first.
+    local ran = oslo.run{ "env", "GATE_SERVE_STDIN=" .. ("5e"):rep(32), "scripts/gate-family.sh",
+                          where, "serve", "--at", "{run}/casper/gate.sock" }
     assert(ran.ok, "gate-family failed")
   end,
 }
