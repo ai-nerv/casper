@@ -197,3 +197,21 @@ make build
 # anywhere else
 oslo make build
 ```
+
+## Nix
+
+Each release tag publishes a static build for x86_64 and aarch64 Linux to the `ai-nerv` cache,
+with `config/` under `share/casper/`. casper reads its declarations from `$XDG_CONFIG_HOME/casper`,
+so copy `share/casper/config/` there, as `make install` does from a checkout.
+
+```sh
+cachix use ai-nerv
+nix run github:ai-nerv/casper -- verbs
+nix build github:ai-nerv/casper
+```
+
+The flake names the cache itself, so `--accept-flake-config` does the same as `cachix use`. In
+another flake, take `inputs.casper.packages.${system}.default`, and configure the cache on the
+consuming machine: an input's `nixConfig` is not inherited.
+
+Here, `make nix-build` builds it into `result/`, and `make nix-check` checks the flake.
