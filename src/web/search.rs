@@ -35,7 +35,7 @@ pub(crate) fn run(request: &Request, settings: &Settings) -> Result<Value, Strin
             let found = http::fetch(url.as_str(), settings)?;
             let value: Value = serde_json::from_str(&found.body)
                 .map_err(|why| format!("SearXNG did not return JSON: {why}"))?;
-            value["results"].as_array().ok_or("SearXNG response has no results")?.iter().filter_map(|result| {
+            value.get("results").and_then(Value::as_array).ok_or("SearXNG response has no results")?.iter().filter_map(|result| {
                 let url = Url::parse(result["url"].as_str()?).ok()?;
                 if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty() || url.password().is_some() { return None; }
                 Some(json!({"url": url.as_str(), "title": result["title"].as_str().unwrap_or_default(),
@@ -44,7 +44,7 @@ pub(crate) fn run(request: &Request, settings: &Settings) -> Result<Value, Strin
         }
         "duckduckgo" => {
             let mut url =
-                Url::parse("https://html.duckduckgo.com/html/").expect("fixed search URL");
+                Url::parse("https://html.duckduckgo.com/html/").map_err(|why| why.to_string())?;
             url.query_pairs_mut().append_pair("q", query);
             let found = http::fetch(url.as_str(), settings)?;
             let html = Html::parse_document(&found.body);
