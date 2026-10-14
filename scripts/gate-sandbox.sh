@@ -86,6 +86,48 @@ for quiet in print warn; do
   fi
 done
 
+# ---- what a VM may dial or list is the family's, and every chunk runs under a budget ----------
+# Comments and test items stripped, so the names below are the code and not a note about it.
+code() {
+  awk '
+    /^[ \t]*#\[cfg\(test\)\]/ { skipping = 1; depth = 0; started = 0 }
+    skipping {
+      n = gsub(/\{/, "{"); depth += n
+      n = gsub(/\}/, "}"); depth -= n
+      if (n > 0 || depth > 0) started = 1
+      if (started && depth <= 0) skipping = 0
+      next
+    }
+    { sub(/\/\/.*$/, ""); print }
+  ' "$1"
+}
+
+STREAM="$ROOT/lua/stream.rs"
+for needed in 'const FAMILY' 'is_socket()' 'meta.uid()' 'canonicalize(' 'socket_peercred('; do
+  if ! code "$STREAM" | grep -qF "$needed"; then
+    echo "gate-sandbox: $STREAM no longer checks \`$needed\` before a VM dials" >&2
+    fail=1
+  fi
+done
+dials=$(code "$STREAM" | grep -c 'UnixStream::connect(' || true)
+if [ "$dials" -ne 1 ] || ! code "$STREAM" | grep -qF 'UnixStream::connect(&real)'; then
+  echo "gate-sandbox: $STREAM dials something other than the path dialable() answered" >&2
+  fail=1
+fi
+
+FS="$ROOT/lua/fs.rs"
+lists=$(code "$FS" | grep -c 'read_dir(' || true)
+if ! code "$FS" | grep -qF 'listable_in(' || [ "$lists" -ne 1 ] \
+   || ! code "$FS" | grep -qF 'read_dir(&real)'; then
+  echo "gate-sandbox: $FS lists a directory listable_in() did not answer" >&2
+  fail=1
+fi
+
+if ! code "$ENGINE" | grep -qF 'metered(' || code "$ENGINE" | grep -qE '\.execute::<|\.finish\('; then
+  echo "gate-sandbox: $ENGINE runs a chunk outside the instruction budget" >&2
+  fail=1
+fi
+
 # ---- the other half of the boundary is not here, and that is deliberate ------------------------
 # A file under `site/pack/` arrived from somewhere else and runs once somebody has said it may.
 # That used to be three greps in this file — `Self::Installed`, `needs_acknowledging()`,
