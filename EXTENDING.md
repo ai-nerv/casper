@@ -74,6 +74,13 @@ What you use instead:
 person is asked, the answer is remembered, and `magi.confine` applies. Both answer `nil, why`
 rather than raising, so a refusal is something to handle rather than something that breaks a turn.
 
+casper and melchior refuse a few more things. `debug` is gone, because it reaches past every
+other refusal. A precompiled chunk is refused, as a file or as a string handed to `load`: only
+source is loaded. `setmetatable` refuses a metatable carrying `__gc`, because no finalizer ever
+runs. A chunk is stopped once the VM holds more memory than its ceiling, the way it is stopped
+once it runs too long. A value handed back as JSON may not contain itself, nest too deeply or grow
+past a size limit, and each of those is an error that says which.
+
 A file that raises costs itself and nothing else. Your package failing is reported on stderr and
 skipped; the program's own configuration failing is fatal, because a config that will not parse
 has not expressed an intention.
