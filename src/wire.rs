@@ -9,8 +9,8 @@
 //! `n` its length; a sibling that unpacks a list reads a bare value as nothing at all. A refusal
 //! is a reply, not a dropped connection. An event's tag key is `event` in both directions, and
 //! `scripts/gate-wire.sh` refuses any other. Two doors: [`CLI_VERBS`] on the command line, and
-//! [`SOCKET_VERBS`] on a bound socket. `run` is on both — over the socket it is no remote shell,
-//! because the jail is the coordinator's, set on `serve`'s spawn, never the call's.
+//! [`SOCKET_VERBS`] on a bound socket. `run` is on both — over the socket it runs inside the jail
+//! set on `serve`'s spawn, never one the call names, and only for a call carrying `serve`'s key.
 
 use serde::{Deserialize, Serialize};
 
@@ -158,7 +158,7 @@ pub const CLI_VERBS: &[(&str, &str)] = &[
 ];
 
 /// Every verb casper answers on its socket: the tool surface, kept open across a session's calls.
-/// `run` is no remote shell here — the jail is `serve`'s spawn, not the call's. See [`crate::serving`].
+/// `run` runs inside the jail `serve` was spawned with, not the call's. See [`crate::serving`].
 pub const SOCKET_VERBS: &[(&str, &str)] = &[
     (
         "tools",
@@ -238,8 +238,7 @@ mod tests {
             known("serve"),
             "casper advertises socket verbs, so it must answer `serve` to bind one"
         );
-        // The socket is not a remote shell: `run` on it is safe because the jail is the coordinator's,
-        // set on `serve`'s spawn, never the call's. This is the invariant `serving` rests on.
+        // `run` on the socket runs inside the coordinator's jail, set on `serve`'s spawn.
         assert!(
             SOCKET_VERBS.iter().any(|(name, _)| *name == "run"),
             "the tool surface is what the socket is for"

@@ -1,8 +1,9 @@
 //! casper's socket door: the same `tools` and `run`, on a socket a coordinator holds open across a
 //! session's calls. The trust is not the caller's — `casper serve` is spawned with the session's
 //! jail in its environment ([`crate::jail`]), so every call runs inside walls the coordinator set
-//! at spawn, never ones a caller named, and a peer of another user is turned away. This is why the
-//! socket is not a remote shell: what `run` runs, it runs jailed, and the jail is the spawner's.
+//! at spawn, never ones a caller named, and a peer of another user is turned away. A call is
+//! answered only with the key the coordinator wrote on `serve`'s standard input. With the jail off,
+//! `run` runs commands as the person, as far as their own shell would.
 
 use crate::wire::{Call, Reply};
 use std::io::ErrorKind;
@@ -275,9 +276,7 @@ impl Drop for Slot {
     }
 }
 
-/// Whether the peer runs as this user. A socket that would run commands for anyone is exactly the
-/// remote shell the family refuses; one that answers only its own user, with the spawner's jail, is
-/// not.
+/// Whether the peer runs as this user. A peer of another user is never answered.
 #[must_use]
 fn ours(stream: &UnixStream) -> bool {
     use std::os::fd::AsFd;

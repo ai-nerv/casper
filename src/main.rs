@@ -7,8 +7,9 @@
 //! ```
 //!
 //! casper answers on two doors: the command line, and a socket a coordinator binds with `serve`
-//! and holds open across a session. The socket is not a remote shell — what `run` runs, it runs
-//! inside the jail `serve` was spawned with, never one a call named. See [`casper::serving`].
+//! and holds open across a session. What `run` runs on the socket, it runs inside the jail `serve`
+//! was spawned with, never one a call named, and only for a call carrying `serve`'s key. See
+//! [`casper::serving`].
 //!
 //! Every verb prints the wire shape, and a refusal is `{"ok":false,…}` with a zero exit. JSON by
 //! default, CBOR with `--cbor`: one shape, two encodings.
