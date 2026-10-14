@@ -23,6 +23,9 @@ use std::rc::Rc;
 /// The most instructions one chunk, tool call or surface frame may run.
 const BUDGET: u64 = 100_000_000;
 
+/// The most memory the VM may hold, checked between slices.
+const CEILING: usize = 256 << 20;
+
 /// Where declared tools' functions live, out of reach of a config that did not declare them.
 const TOOLS: &str = "__casper_tools";
 
@@ -94,6 +97,7 @@ impl Engine {
             lua: Lua::full(),
             declared: Rc::new(RefCell::new(Declared::default())),
         };
+        engine.lua.set_memory_limit(Some(CEILING));
         crate::lua::sandbox::apply(&mut engine.lua);
         engine.install(configuration);
         engine
@@ -265,6 +269,14 @@ impl Engine {
                 self.lua.enter(|ctx| ctx.fetch(executor).stop(&ctx));
                 return Err("a declaration cannot wait on a future here".to_owned());
             }
+            if let Some(ceiling) = self.over_ceiling() {
+                self.lua.enter(|ctx| ctx.fetch(executor).stop(&ctx));
+                crate::noted!("lua: stopped over {ceiling} bytes of memory");
+                return Err(format!(
+                    "held more than its {} MiB of memory and was stopped",
+                    ceiling >> 20
+                ));
+            }
             if finished {
                 return Ok(());
             }
@@ -276,6 +288,16 @@ impl Engine {
                 ));
             }
         }
+    }
+
+    /// The ceiling, when the VM still holds more than it after a full collection.
+    fn over_ceiling(&mut self) -> Option<usize> {
+        let ceiling = self.lua.memory_limit()?;
+        if self.lua.total_memory() <= ceiling {
+            return None;
+        }
+        self.lua.gc_collect();
+        (self.lua.total_memory() > ceiling).then_some(ceiling)
     }
 
     /// What has been declared so far.
@@ -613,6 +635,30 @@ mod tests {
         assert!(ran.failed && ran.said.contains("budget"), "{ran:?}");
         let ran = engine.call("ok", &serde_json::Value::Null).expect("ran");
         assert_eq!(ran.said, "fine");
+    }
+
+    #[test]
+    fn the_shipped_declarations_fit_well_inside_the_memory_ceiling() {
+        let mut engine = declaring(include_str!("../../config/tools.lua"));
+        engine.lua.gc_collect();
+        let held = engine.lua.total_memory();
+        assert!(held * 32 < CEILING, "{held} bytes held against {CEILING}");
+    }
+
+    #[test]
+    fn a_tool_that_hoards_memory_fails_and_the_engine_still_answers() {
+        let mut engine = declaring(
+            r#"casper.tool("hoard", { run = function()
+                 local kept, piece = {}, string.rep("x", 1 << 16)
+                 for at = 1, 1 << 20 do kept[at] = piece .. at end
+               end })
+               casper.tool("ok", { run = function() return "fine" end })"#,
+        );
+        let ran = engine.call("hoard", &serde_json::Value::Null).expect("ran");
+        assert!(ran.failed && ran.said.contains("MiB of memory"), "{ran:?}");
+        let ran = engine.call("ok", &serde_json::Value::Null).expect("ran");
+        assert_eq!(ran.said, "fine");
+        assert!(engine.lua.total_memory() < CEILING);
     }
 
     #[test]
