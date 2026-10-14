@@ -97,7 +97,7 @@ pub struct Screen {
     /// The one dialect difference the emulator does not speak. See [`rewriting`].
     fixing: rewriting::Rewriting,
     named: String,
-    _jail: crate::jail::Prepared,
+    jail: crate::jail::Prepared,
 }
 
 impl Screen {
@@ -155,7 +155,7 @@ impl Screen {
             ),
             fixing: rewriting::Rewriting::new(),
             named: spec.command.clone(),
-            _jail: prepared,
+            jail: prepared,
         })
     }
 
@@ -233,9 +233,18 @@ impl Screen {
     /// What the model is told once it has ended.
     ///
     /// The status and the screen it left behind, trimmed of the blank rows a full-screen program
-    /// pads itself out with.
+    /// pads itself out with, then what the jail put back.
     #[must_use]
     pub fn epitaph(&mut self) -> String {
+        let mut said = self.left();
+        for line in self.jail.restored() {
+            said.push('\n');
+            said.push_str(&line);
+        }
+        said
+    }
+
+    fn left(&mut self) -> String {
         let status = match self.child.try_wait() {
             Ok(Some(status)) => status.code().map_or_else(
                 || format!("`{}` was killed", self.named),
@@ -266,6 +275,7 @@ impl Screen {
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let _ = self.jail.restored();
     }
 }
 

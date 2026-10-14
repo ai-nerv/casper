@@ -25,6 +25,7 @@ pub struct Prepared {
     filters: Vec<seccompiler::BpfProgram>,
     landlock: Option<landlock::RulesetCreated>,
     descriptors: Vec<std::os::fd::OwnedFd>,
+    guard: Option<super::guard::Guard>,
     _temporary: Option<Temporary>,
 }
 
@@ -47,6 +48,7 @@ impl Jail {
             filters: Vec::new(),
             landlock: None,
             descriptors: Vec::new(),
+            guard: None,
             _temporary: None,
         };
         let refused = |why: &String| std::io::Error::other(why.clone());
@@ -109,6 +111,8 @@ impl Jail {
                     std::io::Error::other("required Landlock protection unavailable")
                 })?,
             );
+            let persistent = super::persistent(&self.cwd, grants);
+            prepared.guard = Some(super::guard::Guard::take(&self.cwd, persistent)?);
         }
         Ok(prepared)
     }
@@ -133,6 +137,16 @@ fn scope(bwrap: &Path) -> std::io::Result<Option<landlock::RulesetCreated>> {
 }
 
 impl Prepared {
+    /// On the Landlock path, put back what the command changed beneath its writable roots that
+    /// bubblewrap would have bound read-only, one line for each. Call once it has ended.
+    #[must_use]
+    pub fn restored(&self) -> Vec<String> {
+        self.guard
+            .as_ref()
+            .map(super::guard::Guard::restore)
+            .unwrap_or_default()
+    }
+
     /// Configure an ordinary child with the captured policy.
     pub fn command(&mut self) -> std::process::Command {
         let mut command = std::process::Command::new(&self.program);
