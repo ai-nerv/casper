@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 mod command;
 mod credentials;
 mod filter;
+mod guard;
 mod policy;
 mod temporary;
 pub use command::Prepared;
@@ -100,6 +101,17 @@ impl Jail {
 /// unjailed `git`, `magi` or `balthasar` would run.
 const PERSISTENT: &[&str] = &[".git/hooks", ".git/config", ".magi.lua", ".balthasar.lua"];
 
+/// Each writable root with each [`PERSISTENT`] name: bound read-only by bubblewrap where it exists,
+/// kept by [`guard`] on the Landlock path.
+fn persistent<'a>(
+    cwd: &'a Path,
+    grants: &'a Grants,
+) -> impl Iterator<Item = (&'a Path, &'static str)> + 'a {
+    std::iter::once(cwd)
+        .chain(grants.write.iter().map(PathBuf::as_path))
+        .flat_map(|root| PERSISTENT.iter().map(move |name| (root, *name)))
+}
+
 /// The bubblewrap arguments: the conservative floor, widened by whatever the session's [`Grants`]
 /// carried. In order, because bubblewrap applies them in order and a later mount wins.
 #[must_use]
@@ -135,12 +147,10 @@ fn profile(cwd: &Path, grants: &Grants) -> Vec<String> {
         bind(&mut a, "--bind", writable);
     }
     // A writable checkout keeps its `.git`, but not what the next unjailed program would run.
-    for root in std::iter::once(cwd).chain(grants.write.iter().map(PathBuf::as_path)) {
-        for name in PERSISTENT {
-            let path = root.join(name);
-            if path.exists() {
-                bind(&mut a, "--ro-bind", &path);
-            }
+    for (root, name) in persistent(cwd, grants) {
+        let path = root.join(name);
+        if path.exists() {
+            bind(&mut a, "--ro-bind", &path);
         }
     }
     // No network unless a reach grant asked for it; a tool command talks to no socket otherwise,

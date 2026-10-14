@@ -16,10 +16,11 @@ pub(super) const EXPECTED: &[(&str, bool, bool)] = &[
     ("write-workspace", true, true),
     ("write-git-directory", true, true),
     ("write-tmp", true, true),
-    ("write-project-config", false, true),
-    ("write-memory-config", false, true),
-    ("write-git-config", false, true),
-    ("write-git-hook", false, true),
+    ("write-project-config", false, false),
+    ("write-memory-config", false, false),
+    ("write-git-config", false, false),
+    ("write-git-hook", false, false),
+    ("change-seen-while-running", false, true),
     ("tcp-loopback", true, true),
     ("udp-loopback", true, true),
     ("netlink-route", true, true),
@@ -34,15 +35,27 @@ pub(super) const EXPECTED: &[(&str, bool, bool)] = &[
 ];
 
 /// The probes the two backends answer differently, each for a reason the README names: Landlock
-/// opens no Unix socket, having no mount namespace to hide the runtime directory, and cannot seal
-/// a file beneath a writable root.
-pub(super) const DIFFERENT: &[&str] = &[
-    "write-project-config",
-    "write-memory-config",
-    "write-git-config",
-    "write-git-hook",
-    "unix-socket",
+/// opens no Unix socket, having no mount namespace to hide the runtime directory, and puts a
+/// protected file back only once the command has ended.
+pub(super) const DIFFERENT: &[&str] = &["change-seen-while-running", "unix-socket"];
+
+/// The probes judged once the command has ended: whether the write each tried is still there.
+const KEPT: &[(&str, &str)] = &[
+    ("write-project-config", ".magi.lua"),
+    ("write-memory-config", ".balthasar.lua"),
+    ("write-git-config", ".git/config"),
+    ("write-git-hook", ".git/hooks/pre-commit"),
 ];
+
+/// The verdicts for [`KEPT`], read from the workspace after the command.
+pub(super) fn kept(work: &std::path::Path) -> String {
+    KEPT.iter()
+        .map(|(name, file)| {
+            let held = std::fs::read_to_string(work.join(file)).unwrap_or_default();
+            format!("{name} {}\n", held != "ORIGINAL\n")
+        })
+        .collect()
+}
 
 fn readable(path: &str) -> bool {
     std::fs::read(path).is_ok()
@@ -84,6 +97,9 @@ fn verdict(name: &str) -> bool {
         "write-memory-config" => writable(".balthasar.lua", false),
         "write-git-config" => writable(".git/config", false),
         "write-git-hook" => writable(".git/hooks/pre-commit", false),
+        "change-seen-while-running" => {
+            std::fs::read_to_string(".magi.lua").is_ok_and(|held| held != "ORIGINAL\n")
+        }
         "tcp-loopback" => std::net::TcpListener::bind("127.0.0.1:0")
             .and_then(|held| std::net::TcpStream::connect(held.local_addr()?))
             .is_ok(),
@@ -120,7 +136,9 @@ fn probe() {
     }
     let lines: String = EXPECTED
         .iter()
-        .map(|(name, _, _)| format!("{name} {}\n", verdict(name)))
+        .map(|(name, _, _)| (name, verdict(name)))
+        .filter(|(name, _)| KEPT.iter().all(|(kept, _)| kept != *name))
+        .map(|(name, allowed)| format!("{name} {allowed}\n"))
         .collect();
     std::fs::write("verdicts", lines).expect("verdicts");
 }

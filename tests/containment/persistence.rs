@@ -46,10 +46,14 @@ fn script(root: &Path) -> String {
     script
 }
 
-/// Try every file from inside the jail. Outside the writable roots each stays as it was; beneath
-/// them each stays only when `sealed`, which the bubblewrap path is and the Landlock path is not.
+fn original(path: &Path) -> bool {
+    std::fs::read_to_string(path).ok().as_deref() == Some("ORIGINAL\n")
+}
+
+/// Try every file from inside the jail; each stays as it was. Beneath the writable roots the
+/// bubblewrap path seals them, and the Landlock path puts them back and says so in the result.
 pub(super) fn check(root: &Path, mode: &str, sealed: bool) {
-    if mode == "screen" {
+    let said = if mode == "screen" {
         let mut screen = casper::pty::Screen::open(
             &casper::pty::Spec {
                 command: "/bin/sh".into(),
@@ -65,28 +69,99 @@ pub(super) fn check(root: &Path, mode: &str, sealed: bool) {
             assert!(Instant::now() < deadline, "screen did not exit");
             std::thread::sleep(Duration::from_millis(10));
         }
+        let said = screen.epitaph();
         screen.close();
+        said
+    } else if mode == "socket" {
+        let replies = super::socket::replies(root, &script(root));
+        for reply in &replies {
+            assert_eq!(reply["result"][0]["failed"] == true, !sealed, "{reply}");
+        }
+        let said =
+            |reply: &serde_json::Value| reply["result"][0]["said"].as_str().map(str::to_owned);
+        replies
+            .iter()
+            .filter_map(said)
+            .collect::<Vec<_>>()
+            .join("\n")
     } else {
         let done = casper::running::run("/bin/sh", &["-c".into(), script(root)]);
-        assert_eq!(done.code, 0, "{} {}", done.err, done.out);
-    }
+        let code = if sealed { 0 } else { 1 };
+        assert_eq!(done.code, code, "{} {}", done.err, done.out);
+        done.err
+    };
     assert_eq!(
         std::fs::read_to_string(root.join("work/report"))
             .expect("probe ran")
             .trim(),
         "CONTAINED"
     );
-    let original =
-        |path: &Path| std::fs::read_to_string(path).ok().as_deref() == Some("ORIGINAL\n");
-    for file in outside(root) {
+    let [dotfile, gitconfig, tools, coordinator] = outside(root);
+    for file in [dotfile, gitconfig, coordinator] {
         assert!(
             original(&file),
             "{} changed inside the jail",
             file.display()
         );
     }
+    let declared = if mode == "socket" {
+        super::socket::DECLARATION
+    } else {
+        "ORIGINAL\n"
+    };
+    let held = std::fs::read_to_string(&tools).unwrap_or_default();
+    assert_eq!(
+        held,
+        declared,
+        "{} changed inside the jail",
+        tools.display()
+    );
     for file in FILES {
-        let kept = original(&root.join("work").join(file));
-        assert_eq!(kept, sealed, "{file} kept={kept}, sealed={sealed}");
+        assert!(original(&root.join("work").join(file)), "{file}: {said}");
+        let named = said.contains(&format!(
+            "restored {file}: a jailed command may not change it"
+        ));
+        assert_eq!(named, !sealed, "{file}: {said}");
     }
+}
+
+/// A protected path that did not exist when the command started may be created: `git init` makes
+/// a repository and a project config appears, and both stay.
+pub(super) fn created(root: &Path) {
+    let file = ".magi.lua";
+    let script = format!("./git init -q && echo made > {file}");
+    let done = casper::running::run("/bin/sh", &["-c".into(), script]);
+    assert_eq!(done.code, 0, "{} {}", done.err, done.out);
+    let work = root.join("work");
+    assert!(work.join(".git/config").is_file(), "{}", done.err);
+    assert!(work.join(".git/hooks").is_dir(), "{}", done.err);
+    let made = std::fs::read_to_string(work.join(file)).unwrap_or_default();
+    assert_eq!(made, "made\n", "{}", done.err);
+}
+
+/// A reader beside a Landlock-jailed command sees its change to a protected file while it runs;
+/// the file is put back only once the command has ended.
+pub(super) fn window(root: &Path) {
+    let file = ".magi.lua";
+    let work = root.join("work");
+    let watched = work.clone();
+    let reader = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !watched.join("ready").exists() {
+            assert!(Instant::now() < deadline, "the command never wrote");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let seen = std::fs::read_to_string(watched.join(file)).unwrap_or_default();
+        std::fs::write(watched.join("release"), "").expect("release");
+        seen
+    });
+    let script = format!(
+        "echo CHANGED > {file}; : > ready; while [ ! -e release ]; do /bin/sleep 0.01; done"
+    );
+    let done = casper::running::run("/bin/sh", &["-c".into(), script]);
+    let seen = reader.join().expect("reader");
+    assert_eq!(seen, "CHANGED\n", "the reader saw the change: {}", done.err);
+    assert!(original(&work.join(file)), "{}", done.err);
+    let named = format!("restored {file}: a jailed command may not change it");
+    assert!(done.err.contains(&named), "{}", done.err);
 }

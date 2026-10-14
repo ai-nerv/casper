@@ -33,7 +33,8 @@ pub struct Done {
     pub out: String,
     /// Its standard error, bounded.
     pub err: String,
-    /// Its exit status, or `-1` when it could not be started at all.
+    /// Its exit status, or `-1` when it could not be started at all. A success whose change to a
+    /// protected file the jail put back is `1`, and `err` says what was put back.
     pub code: i64,
 }
 
@@ -95,6 +96,7 @@ fn fed_by(program: &str, args: &[String], input: Option<Vec<u8>>, limit: Duratio
         });
     }
     let (held, code, overran) = drained(&mut child, limit);
+    let restored = prepared.restored();
     let [out, err] = held;
     crate::noted!(
         "exec: {asked} jailed={} → exit {} in {}ms, {} bytes out, {} err",
@@ -111,10 +113,20 @@ fn fed_by(program: &str, args: &[String], input: Option<Vec<u8>>, limit: Duratio
             limit.as_secs()
         ));
     }
+    let mut code = code.map_or(-1, i64::from);
+    if !restored.is_empty() {
+        if !err.is_empty() && !err.ends_with('\n') {
+            err.push('\n');
+        }
+        err.push_str(&restored.join("\n"));
+        if code == 0 {
+            code = 1;
+        }
+    }
     Done {
         out: said(&out.0, out.1),
         err,
-        code: code.map_or(-1, i64::from),
+        code,
     }
 }
 
