@@ -231,8 +231,14 @@ impl Engine {
     /// Run one chunk, stopped once it has spent its instruction budget.
     ///
     /// # Errors
-    /// When it will not compile, raises, or runs past its budget.
+    /// When it is precompiled or will not compile, raises, or runs past its budget or ceiling.
     pub fn run(&mut self, source: &str, file: &str) -> Result<(), LuaError> {
+        if crate::lua::sandbox::precompiled(source.as_bytes()) {
+            return Err(LuaError::Syntax {
+                file: file.to_owned(),
+                message: crate::lua::sandbox::PRECOMPILED.to_owned(),
+            });
+        }
         let executor = self
             .lua
             .try_enter(|ctx| {

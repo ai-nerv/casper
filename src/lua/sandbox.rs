@@ -3,7 +3,10 @@
 //! transport. Removed here rather than never installed, so what the next luna release adds is
 //! reachable until this list is extended.
 
-use luna::{Callback, CallbackReturn, Context, Lua, Value};
+use luna::{Callback, CallbackReturn, Context, Function, IntoValue, Lua, Value};
+
+/// What a precompiled chunk is told, wherever it is handed in.
+pub const PRECOMPILED: &str = "a precompiled chunk is refused: only Lua source is loaded";
 
 /// Globals a config must not have: the ones that spawn, that write outside the `Ops` seam where
 /// path checking lives, or that end the process.
@@ -39,7 +42,32 @@ pub fn apply(lua: &mut Lua) {
         for name in QUIETENED {
             ctx.set_global(name, quiet(ctx, name));
         }
+        if let Value::Function(load) = ctx.get_global_value("load") {
+            ctx.set_global("load", textual(ctx, load));
+        }
     });
+}
+
+/// Whether `source` is a precompiled chunk: every Lua binary signature opens with an escape, and
+/// no source text can.
+#[must_use]
+pub fn precompiled(source: &[u8]) -> bool {
+    source.first() == Some(&0x1b)
+}
+
+/// `load`, refusing a precompiled chunk whatever mode it names, then handing over to the original.
+fn textual<'gc>(ctx: Context<'gc>, load: Function<'gc>) -> Callback<'gc> {
+    Callback::from_fn_with(&ctx, load, |load, ctx, _exec, stack| {
+        if let Value::String(chunk) = stack.get(0) {
+            if precompiled(chunk.as_bytes()) {
+                return Err(PRECOMPILED.into_value(ctx).into());
+            }
+        }
+        Ok(CallbackReturn::Call {
+            function: *load,
+            then: None,
+        })
+    })
 }
 
 /// A `print` that goes to the debug log, and nowhere at all when nobody turned one on.
@@ -110,6 +138,27 @@ mod tests {
     fn a_config_cannot_load_arbitrary_files() {
         for expression in ["dofile", "loadfile", "require", "package"] {
             assert_eq!(probe(expression), "nil", "{expression} is still reachable");
+        }
+    }
+
+    #[test]
+    fn load_refuses_a_precompiled_chunk_whatever_mode_it_names() {
+        let dumped = "string.dump(load('return 1'))";
+        for chunk in [dumped, "'\\27Lua\\84\\0'"] {
+            for mode in ["nil", "'b'", "'bt'"] {
+                let said = probe(&format!("select(2, pcall(load, {chunk}, 'chunk', {mode}))"));
+                assert!(said.contains("precompiled"), "{chunk} as {mode}: {said}");
+            }
+        }
+        assert_eq!(probe("load('return 41 + 1')()"), "42");
+    }
+
+    #[test]
+    fn a_precompiled_declaration_is_refused_before_it_is_compiled() {
+        for source in ["\u{1b}Lua\u{54}\0", "\u{1b}Luna\0"] {
+            let why = Engine::new().run(source, "tools.lua").expect_err("refused");
+            assert!(why.to_string().contains("tools.lua"), "{why}");
+            assert!(why.to_string().contains("precompiled"), "{why}");
         }
     }
 
