@@ -1,5 +1,103 @@
 # Changelog
 
+## [0.6.0] - 2026-10-14
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Hide a userdata's metatable
+- Remove debug from the declaration VM
+- Bound Lua-to-JSON by nodes and cycles
+- Refuse __gc metatables
+- Refuse precompiled chunks
+- Hold every VM under a memory ceiling
+- Hand the session as casper.session
+- Runtime dir by the private-dir rule
+- Refuse a call from a newer family
+- Rustls 0.23.46, yoke-derive 0.8.4
+- Remember the directory per session
+- Private log file, arguments only counted
+- Allow only network socket families
+- Refuse a newer family; close on bad reply
+- Reach hexe and oslo sockets by name
+- Private runtime dir, lock, stale rule
+- Cap frames, never build paths from UID
+- A deadline, group kill and pipe grace
+- Keyed calls, a thread each, deadlines
+- One 16 MiB cap, on read and write
+- Keep cwd memory per project, as data
+- List only the family's socket directories
+- Run tools in the jail floor by default
+- Deny family config and credential stores
+- Refuse a CASPER_JAIL that does not parse
+- Reach opens the network, not local sockets
+- Let the family's contract names through
+- Drop string escapes and controls
+- Bind project config files read-only
+- Put an instruction budget on every VM
+- Dial only the family's own sockets
+
+### <!-- 2 -->🚜 Refactor
+
+- No panics on input
+- No panics on input
+- No panics on input
+- No panics on held output
+- No panics on input
+- No panics on input
+- No panics on bind arguments
+- No panics on frame bounds
+
+### <!-- 3 -->📚 Documentation
+
+- The three VMs and getmetatable
+- The memory key and socket families
+- Name the new sandbox refusals
+- One contract in all four
+- One text across the family
+- Install from the ai-nerv Nix cache
+- Only the clients ride in the binary
+- Say what bounds the socket
+- What bounds the socket door
+- The serve key, reach, and mcp's floor
+- The socket is keyed; unjailed, a shell
+- Drop a link to a private item
+- Frames, sockets, deadlines, callers
+
+### <!-- 5 -->🎨 Styling
+
+- Keep the cut note to one line
+
+### <!-- 6 -->🧪 Testing
+
+- Hold a one-slice chunk to the ceiling
+- One gate-family in all four
+- Sweep what a caller left by its dir
+- Hold the VM's names to an allowlist
+- Wire gate checks the cap and dir rule
+- Probe a live serve for refusals
+- Hold both backends to one verdict table
+- Retry a busy refusal, not panic on it
+- A bind that names no path is refused
+- Run the family corpus against serve
+- Sandbox gate checks dial, list, budget
+- Fail, not skip, when containment is required
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Pin actions by commit
+- Publish tagged builds to ai-nerv
+
+### Build
+
+- Enable flakes for the dev shell
+- Cargo deny and audit in verify and CI
+- Read the version from Cargo.toml
+- A static package with its config
+- Nix-build, nix-check, download check
+- Deny expect and indexing outside tests
+- Audit in verify where installed
+- Turn overflow checks on
+
 ## [0.5.6] - 2026-10-14
 
 ### <!-- 9 -->◀️ Revert
