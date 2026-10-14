@@ -120,6 +120,7 @@ fn text(value: &Value<'_>) -> String {
 #[cfg(test)]
 mod tests {
     use crate::lua::engine::Engine;
+    use std::collections::BTreeSet;
 
     /// What one expression evaluates to inside a fresh engine.
     fn probe(expression: &str) -> String {
@@ -195,6 +196,62 @@ mod tests {
         assert_eq!(probe(&format!("(function() {kept} end)()")), "7");
         let locked = "setmetatable(setmetatable({}, { __metatable = 1 }), {})";
         assert!(probe(&format!("select(2, pcall(function() {locked} end))")).contains("protected"));
+    }
+
+    /// Every name a fresh declaration VM holds, two tables deep: globals, their fields, and those
+    /// fields' fields. A luna bump or a new `casper.*` that adds one fails here until it is listed.
+    const ALLOWED: &str = "
+        _G _VERSION assert collectgarbage error getmetatable ipairs load next pairs pcall print
+        rawequal rawget rawlen rawset select setmetatable tonumber tostring type warn xpcall
+        __casper_screens __casper_surfaces __casper_tools __stream __stream.connect
+        casper casper.ask casper.clients casper.clients.hexe casper.clients.oslo casper.dirs
+        casper.dirs.list casper.dirs.tree casper.exec casper.fs casper.fs.ls casper.json
+        casper.json.decode casper.json.encode casper.paint casper.paint.ansi casper.paint.code
+        casper.paint.diff casper.paint.plain casper.seek casper.stream casper.stream.connect
+        casper.surface casper.tapped casper.tool casper.web casper.wonder
+        coroutine coroutine.close coroutine.continue coroutine.create coroutine.isyieldable
+        coroutine.resume coroutine.running coroutine.status coroutine.wrap coroutine.yield
+        coroutine.yieldto
+        debug debug.gethook debug.getinfo debug.getlocal debug.getmetatable debug.getupvalue
+        debug.sethook debug.setlocal debug.setmetatable debug.setupvalue debug.traceback
+        math math.abs math.acos math.asin math.atan math.ceil math.cos math.deg math.exp
+        math.floor math.fmod math.huge math.log math.max math.maxinteger math.min math.mininteger
+        math.modf math.pi math.rad math.random math.randomseed math.sin math.sqrt math.tan
+        math.tointeger math.type math.ult
+        os os.clock os.date os.difftime os.getenv os.time
+        string string.byte string.char string.dump string.find string.format string.gmatch
+        string.gsub string.len string.lower string.match string.pack string.packsize string.rep
+        string.reverse string.sub string.unpack string.upper
+        table table.clear table.concat table.freeze table.insert table.interceptall
+        table.isfrozen table.move table.pack table.remove table.sort table.unpack
+        utf8 utf8.char utf8.charpattern utf8.codepoint utf8.codes utf8.len utf8.offset
+    ";
+
+    #[test]
+    fn the_names_a_declaration_can_reach_are_exactly_the_allowlist() {
+        let walk = "local names = {}
+            local function walk(held, prefix, depth)
+              for key, value in pairs(held) do
+                local name = prefix .. tostring(key)
+                names[#names + 1] = name
+                if type(value) == 'table' and value ~= _G and depth < 2 then
+                  walk(value, name .. '.', depth + 1)
+                end
+              end
+            end
+            walk(_G, '', 0)
+            table.sort(names)
+            casper.answer = table.concat(names, ' ')";
+        let mut engine = Engine::new();
+        engine.run(walk, "walk.lua").expect("run");
+        engine.harvest();
+        let answer = engine.setting("answer").expect("walked");
+        let found: BTreeSet<&str> = answer.as_str().unwrap_or_default().split(' ').collect();
+        let allowed: BTreeSet<&str> = ALLOWED.split_whitespace().collect();
+        let added: Vec<_> = found.difference(&allowed).collect();
+        let gone: Vec<_> = allowed.difference(&found).collect();
+        assert!(added.is_empty(), "reachable and not allowed: {added:?}");
+        assert!(gone.is_empty(), "allowed and no longer there: {gone:?}");
     }
 
     #[test]
