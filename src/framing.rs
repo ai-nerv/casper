@@ -149,9 +149,9 @@ pub fn read_frame_by<S: Timed>(
     let mut body = Vec::with_capacity(want.min(CHUNK));
     let mut chunk = vec![0_u8; want.min(CHUNK)];
     while body.len() < want {
-        let room = (want - body.len()).min(CHUNK);
-        filled(from, &mut chunk[..room], first)?;
-        body.extend_from_slice(&chunk[..room]);
+        chunk.truncate(want - body.len());
+        filled(from, &mut chunk, first)?;
+        body.extend_from_slice(&chunk);
     }
     Ok(body)
 }
@@ -159,9 +159,9 @@ pub fn read_frame_by<S: Timed>(
 /// Fill `buffer` by `deadline`.
 fn filled<S: Timed>(from: &mut S, buffer: &mut [u8], deadline: Instant) -> std::io::Result<()> {
     let mut at = 0;
-    while at < buffer.len() {
+    while let Some(rest) = buffer.get_mut(at..).filter(|rest| !rest.is_empty()) {
         from.read_by(left(deadline)?)?;
-        match from.read(&mut buffer[at..]) {
+        match from.read(rest) {
             Ok(0) => return Err(ErrorKind::UnexpectedEof.into()),
             Ok(read) => at += read,
             Err(why) if why.kind() == ErrorKind::Interrupted => {}
@@ -178,9 +178,9 @@ pub fn write_frame_by<S: Timed>(to: &mut S, body: &[u8], whole: Duration) -> std
     let deadline = Instant::now() + whole;
     for part in [&len.to_be_bytes()[..], body] {
         let mut at = 0;
-        while at < part.len() {
+        while let Some(rest) = part.get(at..).filter(|rest| !rest.is_empty()) {
             to.write_by(left(deadline)?)?;
-            match to.write(&part[at..]) {
+            match to.write(rest) {
                 Ok(0) => return Err(ErrorKind::WriteZero.into()),
                 Ok(wrote) => at += wrote,
                 Err(why) if why.kind() == ErrorKind::Interrupted => {}
