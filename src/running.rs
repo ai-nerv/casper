@@ -54,7 +54,7 @@ pub fn fed(program: &str, args: &[String], input: Option<Vec<u8>>) -> Done {
 fn fed_by(program: &str, args: &[String], input: Option<Vec<u8>>, limit: Duration) -> Done {
     let began = Instant::now();
     let jail = crate::jail::Jail::from_env();
-    let asked = crate::noted::short(&format!("{program} {}", args.join(" ")));
+    let asked = crate::noted::command(program, args.len());
     let mut prepared = match jail.prepare(program, args, None, &[], false) {
         Ok(prepared) => prepared,
         Err(why) => {

@@ -1,6 +1,8 @@
 //! What casper did, step by step, for whoever is watching. Off unless `$CASPER_DEBUG_LOG` or the
 //! family's shared `$NERV_LOG` names a file. Every line is stamped with the time, the program and
-//! its pid, so one file can hold the whole family's steps in the order they happened.
+//! its pid, so one file can hold the whole family's steps in the order they happened. The file is
+//! this user's alone: created `0600`, tightened to it when looser, never written when another
+//! user owns it. A command is logged by its program's name and its argument count.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -40,13 +42,67 @@ pub fn note(args: std::fmt::Arguments<'_>) {
 /// under this edition and `unsafe` is denied here, so no test can set the variable.
 pub fn note_to(path: &std::path::Path, args: std::fmt::Arguments<'_>) {
     use std::io::Write;
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
+    if let Some(mut file) = private(path) {
         let _ = writeln!(file, "{args}");
     }
+}
+
+/// What becomes of a log once it is open.
+#[derive(Debug, PartialEq, Eq)]
+enum Kept {
+    /// Written as it is: this user's own `0600` file, or a terminal or pipe, which holds nothing.
+    AsItIs,
+    /// This user's file with group or other permissions, made `0600` before a line lands.
+    Tightened,
+    /// Another user's file, which is never written.
+    Refused,
+}
+
+fn kept(regular: bool, owner: u32, mode: u32, me: u32) -> Kept {
+    if !regular {
+        Kept::AsItIs
+    } else if owner != me {
+        Kept::Refused
+    } else if mode & 0o077 != 0 {
+        Kept::Tightened
+    } else {
+        Kept::AsItIs
+    }
+}
+
+/// `path` opened to append, created `0600`, and only once [`kept`] allows it.
+fn private(path: &std::path::Path) -> Option<std::fs::File> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    let me = rustix::process::getuid().as_raw();
+    match kept(meta.file_type().is_file(), meta.uid(), meta.mode(), me) {
+        Kept::AsItIs => Some(file),
+        Kept::Tightened => file
+            .set_permissions(std::fs::Permissions::from_mode(0o600))
+            .ok()
+            .map(|()| file),
+        Kept::Refused => None,
+    }
+}
+
+/// What a log says of a command: the program's name and how many arguments it had, never what
+/// they were.
+#[must_use]
+pub fn command(program: &str, args: usize) -> String {
+    let name = std::path::Path::new(program)
+        .file_name()
+        .map_or_else(|| program.into(), |name| name.to_string_lossy());
+    format!(
+        "{} with {args} argument{}",
+        short(&name),
+        if args == 1 { "" } else { "s" }
+    )
 }
 
 /// One line as the log holds it: `2026-09-15T14:03:07.123Z casper[42] area: message`.
@@ -105,9 +161,49 @@ macro_rules! noted {
 
 #[cfg(test)]
 mod tests {
-    use super::{FAMILY, VARIABLE, note_to, short, stamped};
+    use super::{FAMILY, Kept, VARIABLE, command, kept, note_to, short, stamped};
     use crate::scratch::{Scratch, ScratchFile};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::time::{Duration, UNIX_EPOCH};
+
+    fn mode(path: &std::path::Path) -> u32 {
+        std::fs::metadata(path).expect("stat").mode() & 0o777
+    }
+
+    #[test]
+    fn a_new_log_is_made_for_its_owner_alone() {
+        let at = log("private");
+        note_to(&at, format_args!("one line"));
+        assert_eq!(mode(&at), 0o600);
+    }
+
+    #[test]
+    fn a_looser_log_of_this_users_is_tightened_before_a_line_lands() {
+        let at = log("loose");
+        std::fs::write(&at, "before\n").expect("a loose log");
+        std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        note_to(&at, format_args!("after"));
+        assert_eq!(mode(&at), 0o600);
+        assert_eq!(
+            std::fs::read_to_string(&at).ok().as_deref(),
+            Some("before\nafter\n")
+        );
+    }
+
+    #[test]
+    fn another_users_log_is_refused_and_a_terminal_or_pipe_left_as_it_is() {
+        assert_eq!(kept(true, 0, 0o600, 1000), Kept::Refused);
+        assert_eq!(kept(true, 1000, 0o640, 1000), Kept::Tightened);
+        assert_eq!(kept(true, 1000, 0o600, 1000), Kept::AsItIs);
+        assert_eq!(kept(false, 0, 0o620, 1000), Kept::AsItIs);
+    }
+
+    #[test]
+    fn a_command_is_logged_by_its_name_and_count_and_never_its_arguments() {
+        assert_eq!(command("/usr/bin/sh", 2), "sh with 2 arguments");
+        assert_eq!(command("shell", 1), "shell with 1 argument");
+        assert_eq!(command("bat", 0), "bat with 0 arguments");
+    }
 
     /// A log of this test's own, in a directory removed when the test returns *or* unwinds.
     fn log(name: &str) -> ScratchFile {

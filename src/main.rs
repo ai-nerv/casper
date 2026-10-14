@@ -329,9 +329,8 @@ fn run_call(call: &Call) -> Reply {
     // What the model reads is capped; what the person is shown is not.
     ran.said = casper::setup::bounded(ran.said);
     casper::noted!(
-        "run: {} {} jailed={} → {} in {}ms, {} bytes; brief={:?} back={:?} keep={}",
-        call.tool,
-        casper::noted::short(&call.args.to_string()),
+        "run: {} jailed={} → {} in {}ms, {} bytes; brief {} bytes, back {} bytes, keep={}",
+        casper::noted::command(&call.tool, arguments(&call.args)),
         casper::jail::Jail::from_env().on(),
         if ran.failed {
             "failed"
@@ -342,11 +341,21 @@ fn run_call(call: &Call) -> Reply {
         },
         began.elapsed().as_millis(),
         ran.said.len(),
-        ran.brief.as_deref().unwrap_or_default(),
-        ran.back.as_deref().unwrap_or_default(),
+        ran.brief.as_ref().map_or(0, String::len),
+        ran.back.as_ref().map_or(0, String::len),
         ran.keep
     );
     answer(&ran)
+}
+
+/// How many arguments a tool call carries: the fields of an object, the items of a list.
+fn arguments(args: &serde_json::Value) -> usize {
+    match args {
+        serde_json::Value::Object(fields) => fields.len(),
+        serde_json::Value::Array(items) => items.len(),
+        serde_json::Value::Null => 0,
+        _ => 1,
+    }
 }
 
 /// Bind a session's socket and answer `tools` and `run` on it until it closes. The jail every call

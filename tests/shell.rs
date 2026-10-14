@@ -186,6 +186,27 @@ fn a_remembered_directory_is_never_read_as_shell() {
     assert!(!project.join("ran").exists() && !project.join(name).join("ran").exists());
 }
 
+#[test]
+fn a_log_names_the_tool_and_counts_its_arguments_and_never_says_them() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let alone = Alone::new("logged");
+    let log = alone.dir.join("casper.log");
+    std::fs::write(&log, "").expect("a log");
+    std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+    let secret = "SYNTHETIC_ARGUMENT_SECRET";
+    let call = serde_json::json!({"tool": "shell", "args": {"command": format!(": {secret}")}});
+    alone.asking_in(
+        &call.to_string(),
+        None,
+        &[("CASPER_DEBUG_LOG", log.clone().into())],
+    );
+    let held = std::fs::read_to_string(&log).expect("the log");
+    assert!(!held.contains(secret), "{held}");
+    assert!(held.contains("run: shell with 1 argument "), "{held}");
+    assert!(held.contains("exec: sh with 5 arguments "), "{held}");
+    assert_eq!(std::fs::metadata(&log).expect("stat").mode() & 0o777, 0o600);
+}
+
 /// A directory of links to the programs the shell script needs, and no `bwrap` among them.
 fn without_bubblewrap(alone: &Alone) -> std::ffi::OsString {
     let bin = alone.dir.join("bin");
