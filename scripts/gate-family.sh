@@ -298,8 +298,12 @@ live() {
 
 if [ "$#" -gt 0 ]; then
   live "$@"
-else
+elif printf '%s' "$verbs" | grep -q '"door":"socket"'; then
   say "a live socket" "not probed: no serve command named"
+else
+  # A program with no socket verbs serves no family socket. magi's one socket is its host socket,
+  # its own CBOR protocol for a front end (FAMILY.md), so a family frame is not its to refuse.
+  say "a live socket" "skipped: $name serves no family socket, only its own front-end protocol"
 fi
 
 echo
