@@ -124,7 +124,7 @@ make.recipe{ name = "family-path", desc = "the binary selected by the build reci
 -- **The binary, not the library.** casper is a program: the library exists so the tests can
 -- reach inside it, and nobody runs an rlib. This built `--lib` for a while, inherited from the
 -- scaffold, and the cost was not an error -- it was `make build` succeeding and leaving the
--- previous binary in place, so a change to `config/tools.lua` (which rides in the binary through
+-- previous binary in place, so a change to `config/clients/` (which rides in the binary through
 -- `include_str!`) was absent from the thing you then ran.
 --
 -- Release, because this is the binary somebody runs. `make debug` is for iterating.
