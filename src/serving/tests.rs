@@ -151,9 +151,14 @@ fn past_the_limit_a_connection_is_told_busy_and_a_freed_slot_is_reused() {
     assert!(framing::read_frame(&mut turned).is_err(), "closed after");
     held.pop();
     let deadline = Instant::now() + Duration::from_secs(5);
+    let body = Wire::Json.encode(&keyed("tools")).expect("encode");
     loop {
-        let reply = ask(&mut dial(&path), Wire::Json, keyed("tools"));
-        if reply.ok {
+        let mut stream = dial(&path);
+        let answered = framing::write_frame(&mut stream, &body)
+            .and_then(|()| framing::read_frame(&mut stream))
+            .ok()
+            .and_then(|got| framing::decode::<Reply>(&got).ok());
+        if answered.is_some_and(|reply| reply.ok) {
             break;
         }
         assert!(Instant::now() < deadline, "the slot never came back");
