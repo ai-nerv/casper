@@ -18,8 +18,17 @@ use std::time::Duration;
 /// us allocate for it before a byte of it has arrived.
 const MAX_RECV: usize = 16 * 1024 * 1024;
 
-/// The family's socket directories, by name: `<runtime>/<name>` or `<tmp>/<name>-<uid>`.
-const FAMILY: &[&str] = &["magi", "casper", "melchior", "memory", "balthasar"];
+/// The socket directories a declaration may reach, by name: `<runtime>/<name>` or
+/// `<tmp>/<name>-<uid>`. The family's, then hexe's and oslo's (`onix`), whose clients casper lends.
+const FAMILY: &[&str] = &[
+    "magi",
+    "casper",
+    "melchior",
+    "memory",
+    "balthasar",
+    "hexe",
+    "onix",
+];
 
 /// A connected socket, shared between the handle's methods.
 type Handle = Rc<RefCell<Option<UnixStream>>>;
@@ -246,6 +255,20 @@ mod tests {
         std::fs::write(root.join("magi/file"), "x").expect("file");
         for name in ["magi/link", "magi/up/bus", "magi/file", "magi/absent"] {
             assert_eq!(dialable_in(&root.join(name), &roots), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn the_multiplexer_and_shell_casper_lends_clients_for_are_reachable() {
+        let uid = rustix::process::getuid().as_raw();
+        let roots = roots();
+        for name in ["hexe", "onix"] {
+            assert!(
+                roots
+                    .iter()
+                    .any(|root| root.ends_with(format!("{name}-{uid}"))),
+                "{name} missing from {roots:?}"
+            );
         }
     }
 
