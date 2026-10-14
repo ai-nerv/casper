@@ -1,10 +1,12 @@
-//! The one path a tool call takes, on either door: the declarations loaded fresh, the tool run in
-//! this process's jail, what the model reads capped, and one line noted.
+//! The one path a tool call takes, on either door and from inside an `execute` script: the
+//! declarations loaded fresh, the tool run in this process's jail, what the model reads capped,
+//! and one line noted.
 
 use crate::lua::engine::Engine;
-use crate::tools::{Call, Ran};
+use crate::tools::{Call, Card, Ran};
+use luna::{Callback, CallbackReturn, Value};
 
-/// An engine with the declarations loaded.
+/// An engine with the declarations loaded, and `casper.python` lent to them.
 ///
 /// # Errors
 /// When there are no declarations to load.
@@ -16,6 +18,7 @@ pub fn loaded() -> Result<Engine, String> {
         "mcp_discovery_errors":crate::setup::told("mcp_discovery_errors"),
         "mcp_catalog":crate::setup::told("mcp_catalog"),
     })));
+    engine.lend("python", python);
 
     // The declarations are installed files, not strings in the binary, and the directory is named
     // rather than searched: a relative `config/` would load whichever checkout the working
@@ -77,11 +80,21 @@ fn aside(args: std::fmt::Arguments<'_>) {
     let _ = err.write_fmt(args).and_then(|()| err.write_all(b"\n"));
 }
 
-/// Run one call, from the door it arrived on.
+/// The declared tools a model is shown: neither off nor hidden.
+#[must_use]
+pub fn offered(engine: &Engine) -> Vec<Card> {
+    engine
+        .tools()
+        .into_iter()
+        .filter(|card| !crate::setup::is_off(&card.name) && !crate::setup::is_hidden(&card.name))
+        .collect()
+}
+
+/// Run one call, from the door it arrived on or from inside the tool named `inside`.
 ///
 /// # Errors
 /// The refusal, when there is no such tool or it is turned off.
-pub fn ran(call: &Call) -> Result<Ran, String> {
+pub fn ran(call: &Call, inside: Option<&str>) -> Result<Ran, String> {
     let began = std::time::Instant::now();
     let mut engine = loaded()?;
     // Off means gone, not merely unlisted: a model can guess at a tool it was never told about.
@@ -106,8 +119,9 @@ pub fn ran(call: &Call) -> Result<Ran, String> {
     // What the model reads is capped; what the person is shown is not.
     ran.said = crate::setup::bounded(ran.said);
     crate::noted!(
-        "run: {} jailed={} → {} in {}ms, {} bytes; brief {} bytes, back {} bytes, keep={}",
+        "run: {}{} jailed={} → {} in {}ms, {} bytes; brief {} bytes, back {} bytes, keep={}",
         crate::noted::command(&call.tool, arguments(&call.args)),
+        inside.map_or_else(String::new, |tool| format!(" inside {tool}")),
         crate::jail::Jail::from_env().on(),
         if ran.failed {
             "failed"
@@ -149,4 +163,45 @@ fn given(call: &Call) -> serde_json::Value {
         other => *other = serde_json::json!({ "answered": answered }),
     }
     args
+}
+
+/// `casper.python(code, { timeout = n })`: run a script whose tool calls take [`ran`], and answer
+/// in the wire's shape.
+fn python(ctx: luna::Context<'_>) -> Callback<'_> {
+    Callback::from_fn(&ctx, |ctx, _exec, mut stack| {
+        let (code, options): (Value, Value) = stack.consume(ctx)?;
+        let code = match code {
+            Value::String(code) => String::from_utf8_lossy(code.as_bytes()).into_owned(),
+            _ => String::new(),
+        };
+        let timeout = match options {
+            Value::Table(options) => match options.get_value(ctx, "timeout") {
+                Value::Integer(seconds) => Some(seconds),
+                Value::Number(seconds) => Some(seconds as i64),
+                _ => None,
+            },
+            _ => None,
+        };
+        let ran = match loaded() {
+            Ok(engine) => {
+                let cards = offered(&engine);
+                let run = |call: &Call| ran(call, Some(crate::scripting::TOOL));
+                crate::scripting::run(
+                    &code,
+                    timeout,
+                    &crate::scripting::Host {
+                        cards: &cards,
+                        run: &run,
+                        abandoned: &crate::serving::abandoned,
+                    },
+                )
+            }
+            Err(why) => Ran::failed(why),
+        };
+        let ran = serde_json::to_value(&ran).unwrap_or_else(|why| {
+            serde_json::json!({ "said": format!("the result cannot be described: {why}"), "failed": true })
+        });
+        stack.replace(ctx, crate::lua::convert::lua_from_json(ctx, &ran));
+        Ok(CallbackReturn::Return)
+    })
 }

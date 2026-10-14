@@ -54,6 +54,7 @@
               lockFile = ./Cargo.lock;
               outputHashes = {
                 "luna-0.5.0" = "sha256-YJsEKm7UykhqNQjhLPBgpmCHQZQhDLFVAENSD43SyAw=";
+                "monty-0.0.23" = "sha256-NUhHd3x0hA+qpQ7wQ30kiynn4M+5XWQrX/fG2zgnlwg=";
               };
             };
             cargoBuildFlags = [

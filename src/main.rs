@@ -303,10 +303,11 @@ fn tools() -> Reply {
         }
         Err(why) => return Reply::refused(why),
     }
-    let offered: Vec<_> = available
+    let mut offered: Vec<_> = available
         .into_iter()
         .filter(|card| !casper::setup::is_off(&card.name) && !casper::setup::is_hidden(&card.name))
         .collect();
+    casper::scripting::describe(&mut offered);
     casper::noted!("tools: {} offered", offered.len());
     match serde_json::to_value(offered) {
         Ok(cards) => listing(cards),
@@ -330,7 +331,7 @@ fn ran() -> Reply {
 /// socket. The jail it runs in is this process's, so a socket call runs inside the walls `serve`
 /// was spawned with, never ones the call named.
 fn run_call(call: &Call) -> Reply {
-    match casper::calling::ran(call) {
+    match casper::calling::ran(call, None) {
         Ok(ran) => answer(&ran),
         Err(why) => Reply::refused(why),
     }

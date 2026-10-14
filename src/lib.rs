@@ -18,6 +18,7 @@ pub mod plugins;
 pub mod pty;
 pub mod running;
 pub mod scratch;
+pub mod scripting;
 pub mod seeking;
 pub mod serving;
 pub mod setup;

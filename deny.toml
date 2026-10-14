@@ -25,6 +25,9 @@ allow = [
   "Unicode-3.0",
   "MPL-2.0",
   "CDLA-Permissive-2.0",
+  # Under monty: foldhash, through hashbrown, and unicode_names2's Unicode data.
+  "Zlib",
+  "Unicode-DFS-2016",
 ]
 confidence-threshold = 0.9
 
@@ -36,4 +39,4 @@ wildcards = "deny"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = ["https://github.com/onix-os/luna"]
+allow-git = ["https://github.com/onix-os/luna", "https://github.com/pydantic/monty.git"]
