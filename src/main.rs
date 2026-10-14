@@ -14,7 +14,6 @@
 //! Every verb prints the wire shape, and a refusal is `{"ok":false,…}` with a zero exit. JSON by
 //! default, CBOR with `--cbor`: one shape, two encodings.
 
-use casper::lua::engine::Engine;
 use casper::tools::{Call, Ran};
 use casper::wire::{CLI_VERBS, Reply, SOCKET_VERBS};
 
@@ -198,14 +197,6 @@ fn say(how: As, reply: &Reply) -> bool {
     }
 }
 
-/// Say something to a person on stderr, without letting it end the process: `eprintln!` panics
-/// when the write fails, and the panic would cost the reply being assembled.
-fn aside(args: std::fmt::Arguments<'_>) {
-    use std::io::Write;
-    let mut err = std::io::stderr().lock();
-    let _ = err.write_fmt(args).and_then(|()| err.write_all(b"\n"));
-}
-
 /// Acknowledge every installed package, so its declarations may run. Nothing installed is an
 /// empty answer rather than a refusal.
 fn acknowledged() -> Reply {
@@ -293,7 +284,7 @@ fn described() -> serde_json::Value {
 
 /// Every tool, as a card.
 fn tools() -> Reply {
-    let engine = match loaded() {
+    let engine = match casper::calling::loaded() {
         Ok(engine) => engine,
         Err(why) => return Reply::refused(why),
     };
@@ -339,60 +330,9 @@ fn ran() -> Reply {
 /// socket. The jail it runs in is this process's, so a socket call runs inside the walls `serve`
 /// was spawned with, never ones the call named.
 fn run_call(call: &Call) -> Reply {
-    let began = std::time::Instant::now();
-    let mut engine = match loaded() {
-        Ok(engine) => engine,
-        Err(why) => return Reply::refused(why),
-    };
-    // Off means gone, not merely unlisted: a model can guess at a tool it was never told about.
-    // `hidden` is the setting that means hidden, and it still runs.
-    if casper::setup::is_off(&call.tool) {
-        casper::noted!("run: {} refused: it is turned off", call.tool);
-        return Reply::refused(format!("no such tool: {}", call.tool));
-    }
-    engine.caller(casper::tools::session().as_deref());
-    let result = if call.tool.starts_with("mcp__") || call.tool.starts_with("mcp_") {
-        Some(casper::mcp_client::call(
-            casper::setup::told("mcp_servers"),
-            &call.tool,
-            &call.args,
-        ))
-    } else {
-        engine.call(&call.tool, &given(call))
-    };
-    let Some(mut ran) = result else {
-        casper::noted!("run: {} refused: no such tool", call.tool);
-        return Reply::refused(format!("no such tool: {}", call.tool));
-    };
-    // What the model reads is capped; what the person is shown is not.
-    ran.said = casper::setup::bounded(ran.said);
-    casper::noted!(
-        "run: {} jailed={} → {} in {}ms, {} bytes; brief {} bytes, back {} bytes, keep={}",
-        casper::noted::command(&call.tool, arguments(&call.args)),
-        casper::jail::Jail::from_env().on(),
-        if ran.failed {
-            "failed"
-        } else if ran.waiting() {
-            "asking"
-        } else {
-            "ok"
-        },
-        began.elapsed().as_millis(),
-        ran.said.len(),
-        ran.brief.as_ref().map_or(0, String::len),
-        ran.back.as_ref().map_or(0, String::len),
-        ran.keep
-    );
-    answer(&ran)
-}
-
-/// How many arguments a tool call carries: the fields of an object, the items of a list.
-fn arguments(args: &serde_json::Value) -> usize {
-    match args {
-        serde_json::Value::Object(fields) => fields.len(),
-        serde_json::Value::Array(items) => items.len(),
-        serde_json::Value::Null => 0,
-        _ => 1,
+    match casper::calling::ran(call) {
+        Ok(ran) => answer(&ran),
+        Err(why) => Reply::refused(why),
     }
 }
 
@@ -486,92 +426,12 @@ fn flag(args: &[String], name: &str) -> Option<String> {
     None
 }
 
-/// What the declaration is handed: the model's arguments, and what the person answered.
-///
-/// Merged rather than nested, so a declaration reads `args.answered` to know it is resuming.
-fn given(call: &Call) -> serde_json::Value {
-    let mut args = call.args.clone();
-    let Some(answered) = &call.answered else {
-        return args;
-    };
-    match &mut args {
-        serde_json::Value::Object(fields) => {
-            fields.insert("answered".to_owned(), serde_json::json!(answered));
-        }
-        other => *other = serde_json::json!({ "answered": answered }),
-    }
-    args
-}
-
 /// One result, as a reply.
 fn answer(ran: &Ran) -> Reply {
     match serde_json::to_value(ran) {
         Ok(value) => Reply::of(value),
         Err(why) => Reply::refused(format!("the result cannot be described: {why}")),
     }
-}
-
-/// An engine with the declarations loaded.
-fn loaded() -> Result<Engine, String> {
-    let mut engine = Engine::with_configuration(Some(serde_json::json!({
-        "web":casper::setup::told("web"),
-        "mcp_servers":casper::setup::told("mcp_servers"),
-        "tools":casper::setup::told("tools"),
-        "mcp_discovery_errors":casper::setup::told("mcp_discovery_errors"),
-        "mcp_catalog":casper::setup::told("mcp_catalog"),
-    })));
-
-    // The declarations are installed files, not strings in the binary, and the directory is named
-    // rather than searched: a relative `config/` would load whichever checkout the working
-    // directory happened to be in.
-    let known = casper::setup::config_dir()
-        .map(|dir| casper::acknowledged::recorded(&casper::acknowledged::manifest_in(&dir)))
-        .unwrap_or_default();
-
-    let files = casper::setup::layers();
-    if files.is_empty() {
-        return Err(format!(
-            "no declarations in {}: run `oslo make install` in casper's checkout to put them there",
-            casper::setup::config_dir()
-                .map(|dir| dir.display().to_string())
-                .unwrap_or_else(|| "the config directory".to_owned())
-        ));
-    }
-
-    // The registry replaces by name, so the order is the precedence: `tools.lua`, `plugin/`,
-    // installed packages, `after/plugin/`, then a coordinator's own file. A layer that will not
-    // run is named on stderr and does not stop the others.
-    casper::noted!("setup: {} declaration files", files.len());
-    for (path, trust) in files {
-        match std::fs::read_to_string(&path) {
-            Ok(source) => {
-                if trust.needs_acknowledging()
-                    && !casper::acknowledged::cleared(&known, &path, &source)
-                {
-                    casper::noted!("setup: {} held until acknowledged", path.display());
-                    aside(format_args!(
-                        "casper: {}; run `casper acknowledge` to clear it",
-                        casper::acknowledged::Held {
-                            path: path.clone(),
-                            known: casper::acknowledged::seen(&known, &path),
-                        }
-                    ));
-                    continue;
-                }
-                if let Err(why) = engine.run(&source, &path.to_string_lossy()) {
-                    casper::noted!("setup: {} will not run: {why}", path.display());
-                    aside(format_args!("casper: {}: {why}", path.display()));
-                }
-            }
-            Err(why) => {
-                casper::noted!("setup: {} cannot be read: {why}", path.display());
-                aside(format_args!("casper: {}: {why}", path.display()));
-            }
-        }
-    }
-
-    engine.harvest();
-    Ok(engine)
 }
 
 /// What a person gets for asking, and whether they got it. Written rather than printed for the
@@ -603,7 +463,7 @@ fn usage() -> bool {
 /// Hold a tool's rows, exchanging frames until it is finished. Nothing is printed in the reply
 /// shape here: this is a stream of frames, not a call.
 fn held(tool: &str) -> bool {
-    let Ok(mut engine) = loaded() else {
+    let Ok(mut engine) = casper::calling::loaded() else {
         return casper::surface::nothing_to_draw();
     };
     casper::surface::hold(tool, &mut engine)
