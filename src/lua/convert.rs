@@ -3,65 +3,138 @@
 
 use luna::{Table, Value};
 use serde_json::{Map, Number};
+use std::collections::HashSet;
+
+/// The deepest one conversion may nest tables.
+pub const DEEPEST: usize = 32;
+
+/// The most values one conversion may write, keys included.
+pub const NODES: usize = 1_000_000;
+
+/// The most string bytes one conversion may write, keys included.
+pub const BYTES: usize = 64 << 20;
 
 /// A Lua value as JSON.
 ///
 /// Lua does not distinguish a list from a map: a table whose keys are exactly `1..n` becomes an
 /// array, anything else an object.
-#[must_use]
+///
+/// # Errors
+/// When the value holds a function or a key that is not a name, holds itself, nests deeper than
+/// [`DEEPEST`], or comes to more than [`NODES`] values or [`BYTES`] of text.
 pub fn json_from_lua<'gc>(
     ctx: luna::Context<'gc>,
     value: Value<'gc>,
-    depth: usize,
-) -> Option<serde_json::Value> {
-    // Bounded: a config is user input and a cyclic table is a stack overflow, not an error.
-    if depth > 32 {
-        return None;
-    }
-    Some(match value {
-        Value::Nil => serde_json::Value::Null,
-        Value::Boolean(b) => serde_json::Value::Bool(b),
-        Value::Integer(i) => serde_json::Value::Number(i.into()),
-        Value::Number(f) => Number::from_f64(f).map_or(serde_json::Value::Null, Into::into),
-        Value::String(s) => serde_json::Value::String(String::from_utf8_lossy(s.as_bytes()).into()),
-        Value::Table(t) => table_to_json(ctx, t, depth)?,
-        // A function cannot cross the boundary; registrars keep those separately.
-        _ => return None,
-    })
+) -> Result<serde_json::Value, String> {
+    Ok(Walk::new(ctx, false)
+        .value(value)?
+        .unwrap_or(serde_json::Value::Null))
 }
 
-fn table_to_json<'gc>(
+/// One conversion's running totals, and the tables it is inside.
+struct Walk<'gc> {
     ctx: luna::Context<'gc>,
-    table: Table<'gc>,
-    depth: usize,
-) -> Option<serde_json::Value> {
-    let entries: Vec<(Value<'gc>, Value<'gc>)> = table.iter(ctx).collect();
+    nodes: usize,
+    bytes: usize,
+    open: HashSet<Table<'gc>>,
+    /// Drop what cannot be described, rather than refuse the whole value.
+    dropping: bool,
+}
 
-    let is_list = !entries.is_empty()
-        && entries
-            .iter()
-            .enumerate()
-            .all(|(index, (key, _))| matches!(key, Value::Integer(i) if *i == index as i64 + 1));
-
-    if is_list {
-        let mut out = Vec::with_capacity(entries.len());
-        for (_, value) in entries {
-            out.push(json_from_lua(ctx, value, depth + 1)?);
+impl<'gc> Walk<'gc> {
+    fn new(ctx: luna::Context<'gc>, dropping: bool) -> Self {
+        Self {
+            ctx,
+            nodes: 0,
+            bytes: 0,
+            open: HashSet::new(),
+            dropping,
         }
-        return Some(serde_json::Value::Array(out));
     }
 
-    let mut out = Map::new();
-    for (key, value) in entries {
-        let name = match key {
-            Value::String(s) => String::from_utf8_lossy(s.as_bytes()).into_owned(),
-            Value::Integer(i) => i.to_string(),
-            // A key that is not a name cannot be written down, so the whole table is refused.
-            _ => return None,
-        };
-        out.insert(name, json_from_lua(ctx, value, depth + 1)?);
+    /// One value, or `None` for one that is dropped.
+    fn value(&mut self, value: Value<'gc>) -> Result<Option<serde_json::Value>, String> {
+        self.spend()?;
+        Ok(Some(match value {
+            Value::Nil => serde_json::Value::Null,
+            Value::Boolean(b) => serde_json::Value::Bool(b),
+            Value::Integer(i) => serde_json::Value::Number(i.into()),
+            Value::Number(f) => Number::from_f64(f).map_or(serde_json::Value::Null, Into::into),
+            Value::String(s) => serde_json::Value::String(self.text(s)?),
+            Value::Table(t) => return self.table(t),
+            _ if self.dropping => return Ok(None),
+            other => return Err(format!("a {} cannot be described", other.type_name())),
+        }))
     }
-    Some(serde_json::Value::Object(out))
+
+    fn spend(&mut self) -> Result<(), String> {
+        self.nodes += 1;
+        if self.nodes > NODES {
+            return Err(format!("more than {NODES} values"));
+        }
+        Ok(())
+    }
+
+    fn text(&mut self, text: luna::String<'gc>) -> Result<String, String> {
+        self.bytes += text.as_bytes().len();
+        if self.bytes > BYTES {
+            return Err(format!("more than {} MiB of text", BYTES >> 20));
+        }
+        Ok(String::from_utf8_lossy(text.as_bytes()).into_owned())
+    }
+
+    fn table(&mut self, table: Table<'gc>) -> Result<Option<serde_json::Value>, String> {
+        if self.open.len() >= DEEPEST {
+            return Err(format!("nested deeper than {DEEPEST} tables"));
+        }
+        if !self.open.insert(table) {
+            return Err("a table holds itself".to_owned());
+        }
+        // One past what the budget has left, so an over-wide table is refused unread.
+        let room = NODES.saturating_sub(self.nodes) + 1;
+        let entries: Vec<(Value<'gc>, Value<'gc>)> = table.iter(self.ctx).take(room).collect();
+        let out = self.entries(entries);
+        self.open.remove(&table);
+        out.map(Some)
+    }
+
+    fn entries(
+        &mut self,
+        entries: Vec<(Value<'gc>, Value<'gc>)>,
+    ) -> Result<serde_json::Value, String> {
+        let is_list = !entries.is_empty()
+            && entries.iter().enumerate().all(
+                |(index, (key, _))| matches!(key, Value::Integer(i) if *i == index as i64 + 1),
+            );
+
+        if is_list {
+            let mut out = Vec::with_capacity(entries.len());
+            for (_, value) in entries {
+                out.extend(self.value(value)?);
+            }
+            return Ok(serde_json::Value::Array(out));
+        }
+
+        let mut out = Map::new();
+        for (key, value) in entries {
+            self.spend()?;
+            let name = match key {
+                Value::String(s) => self.text(s)?,
+                Value::Integer(i) => i.to_string(),
+                _ if self.dropping => continue,
+                other => {
+                    return Err(format!(
+                        "a key of type {} cannot be described",
+                        other.type_name()
+                    ));
+                }
+            };
+            if let Some(json) = self.value(value)? {
+                out.insert(name, json);
+            }
+        }
+        Ok(serde_json::Value::Object(out))
+    }
 }
 
 /// Read a declaration out of a Lua table.
@@ -115,45 +188,92 @@ pub fn lua_from_json<'gc>(ctx: luna::Context<'gc>, value: &serde_json::Value) ->
 /// A Lua table as JSON, dropping anything that cannot be described.
 ///
 /// [`json_from_lua`] refuses a whole table containing a function; a tool spec holds its `run`
-/// beside describable fields, so this one drops rather than refuses.
-#[must_use]
+/// beside describable fields, so this one drops rather than refuses. `None` when nothing is left.
+///
+/// # Errors
+/// When the value holds itself, nests deeper than [`DEEPEST`], or comes to more than [`NODES`]
+/// values or [`BYTES`] of text.
 pub fn declaration_from_lua<'gc>(
     ctx: luna::Context<'gc>,
     value: Value<'gc>,
-    depth: usize,
-) -> Option<serde_json::Value> {
-    if depth > 32 {
-        return None;
+) -> Result<Option<serde_json::Value>, String> {
+    Walk::new(ctx, true).value(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BYTES, NODES};
+    use crate::lua::engine::Engine;
+
+    /// What a tool answers, after `body` built a value and handed it to `casper.json.encode`.
+    fn encoded(body: &str) -> String {
+        let mut engine = Engine::new();
+        let source = format!(
+            "casper.tool('t', {{ run = function()\n{body}\n\
+             local text, why = casper.json.encode(value)\n\
+             return text or ('refused: ' .. why) end }})"
+        );
+        engine.run(&source, "test.lua").expect("declared");
+        engine
+            .call("t", &serde_json::Value::Null)
+            .expect("ran")
+            .said
     }
-    let Value::Table(table) = value else {
-        return json_from_lua(ctx, value, depth);
-    };
 
-    let entries: Vec<(Value<'gc>, Value<'gc>)> = table.iter(ctx).collect();
-    let is_list = !entries.is_empty()
-        && entries
-            .iter()
-            .enumerate()
-            .all(|(index, (key, _))| matches!(key, Value::Integer(i) if *i == index as i64 + 1));
+    #[test]
+    fn a_value_that_holds_itself_is_refused_by_name() {
+        let said = encoded("local value = { a = { b = {} } }; value.a.b.c = value");
+        assert_eq!(said, "refused: a table holds itself");
 
-    if is_list {
-        let items: Vec<serde_json::Value> = entries
-            .into_iter()
-            .filter_map(|(_, value)| declaration_from_lua(ctx, value, depth + 1))
-            .collect();
-        return Some(serde_json::Value::Array(items));
+        let mut engine = Engine::new();
+        engine
+            .run(
+                "casper.tool('t', { run = function() local t = { said = 'x' }; t.t = t; return t end })",
+                "test.lua",
+            )
+            .expect("declared");
+        let ran = engine.call("t", &serde_json::Value::Null).expect("ran");
+        assert!(ran.failed && ran.said.contains("holds itself"), "{ran:?}");
     }
 
-    let mut out = serde_json::Map::new();
-    for (key, value) in entries {
-        let name = match key {
-            Value::String(s) => String::from_utf8_lossy(s.as_bytes()).into_owned(),
-            Value::Integer(i) => i.to_string(),
-            _ => continue,
+    #[test]
+    fn a_table_shared_twice_is_written_twice_and_is_not_a_cycle() {
+        let said = encoded("local s = { 1 }; local value = { s, { s } }");
+        assert_eq!(said, "[[1],[[1]]]");
+    }
+
+    #[test]
+    fn a_table_wider_than_the_budget_is_refused() {
+        let said = encoded(&format!(
+            "local value = {{}}; for at = 1, {} do value[at] = true end",
+            NODES + 1
+        ));
+        assert_eq!(said, format!("refused: more than {NODES} values"));
+    }
+
+    #[test]
+    fn sharing_that_multiplies_past_either_budget_is_refused() {
+        let said = encoded("local value = { 0 }; for _ = 1, 30 do value = { value, value } end");
+        assert_eq!(said, format!("refused: more than {NODES} values"));
+
+        let said = encoded(&format!(
+            "local s, value = string.rep('x', 1 << 20), {{}}; for at = 1, {} do value[at] = s end",
+            (BYTES >> 20) + 1
+        ));
+        assert_eq!(
+            said,
+            format!("refused: more than {} MiB of text", BYTES >> 20)
+        );
+    }
+
+    #[test]
+    fn nesting_past_the_deepest_is_refused_and_up_to_it_is_written() {
+        let nested = |depth: usize| {
+            encoded(&format!(
+                "local value = {{}}; for _ = 2, {depth} do value = {{ value }} end"
+            ))
         };
-        if let Some(json) = declaration_from_lua(ctx, value, depth + 1) {
-            out.insert(name, json);
-        }
+        assert!(nested(32).starts_with("[[[["), "{}", nested(32));
+        assert_eq!(nested(33), "refused: nested deeper than 32 tables");
     }
-    Some(serde_json::Value::Object(out))
 }

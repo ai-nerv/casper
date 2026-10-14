@@ -335,11 +335,18 @@ impl Engine {
             return Some(Ran::failed(why.to_string()));
         }
 
-        let mut out = None;
-        self.lua.enter(|ctx| {
-            out = crate::lua::convert::json_from_lua(ctx, ctx.get_global_value(RESULT), 0);
-        });
-        let out = out.filter(|value| !value.is_null())?;
+        let out = self
+            .lua
+            .enter(|ctx| crate::lua::convert::json_from_lua(ctx, ctx.get_global_value(RESULT)));
+        let out = match out {
+            Ok(serde_json::Value::Null) => return None,
+            Ok(out) => out,
+            Err(why) => {
+                return Some(Ran::failed(format!(
+                    "{name} answered something unreadable: {why}"
+                )));
+            }
+        };
         // A tool may answer in the wire's shape, or with a bare string when text is all it has.
         let mut ran = match out {
             serde_json::Value::String(said) => Ran::said(said),
@@ -398,11 +405,7 @@ impl Engine {
              if type(open) == 'function' then {DREW} = open({ARGS}, {EVENT}) end"
         );
         self.run(&source, "screen.lua").ok()?;
-        let mut out = None;
-        self.lua.enter(|ctx| {
-            out = crate::lua::convert::json_from_lua(ctx, ctx.get_global_value(DREW), 0);
-        });
-        out.filter(|value| !value.is_null())
+        self.drew()
     }
 
     /// Open a tool's surface and hold it.
@@ -448,11 +451,17 @@ impl Engine {
         if self.run(&source, "surface.lua").is_err() {
             return None;
         }
-        let mut out = None;
-        self.lua.enter(|ctx| {
-            out = crate::lua::convert::json_from_lua(ctx, ctx.get_global_value(DREW), 0);
-        });
-        out.filter(|value| !value.is_null())
+        self.drew()
+    }
+
+    /// What a surface or screen handed back, when it is something that can be described.
+    fn drew(&mut self) -> Option<serde_json::Value> {
+        let out = self
+            .lua
+            .enter(|ctx| crate::lua::convert::json_from_lua(ctx, ctx.get_global_value(DREW)));
+        out.inspect_err(|why| crate::noted!("lua: a frame cannot be described: {why}"))
+            .ok()
+            .filter(|value| !value.is_null())
     }
 
     /// Settings assigned onto `casper`, read back after the chunk ran.
@@ -467,7 +476,7 @@ impl Engine {
                 let Value::String(name) = key else { continue };
                 let name = String::from_utf8_lossy(name.as_bytes()).into_owned();
                 // A registrar is a function and cannot be described; anything else is a setting.
-                if let Some(json) = crate::lua::convert::json_from_lua(ctx, value, 0) {
+                if let Ok(json) = crate::lua::convert::json_from_lua(ctx, value) {
                     declared.settings.insert(name, json);
                 }
             }
@@ -497,7 +506,8 @@ fn card<'gc>(ctx: luna::Context<'gc>, name: &str, spec: Table<'gc>) -> Option<Ca
         name: name.to_owned(),
         description: text("description").unwrap_or_default(),
         // A tool with no schema takes no arguments, which is a real thing to be.
-        parameters: crate::lua::convert::json_from_lua(ctx, spec.get_value(ctx, "parameters"), 0)
+        parameters: crate::lua::convert::json_from_lua(ctx, spec.get_value(ctx, "parameters"))
+            .ok()
             .filter(|value| !value.is_null())
             .unwrap_or_else(|| serde_json::json!({"type": "object"})),
         needs: text("needs"),

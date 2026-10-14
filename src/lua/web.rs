@@ -3,9 +3,9 @@ use luna::{Callback, CallbackReturn, Value};
 pub fn table(ctx: luna::Context<'_>, configuration: Option<serde_json::Value>) -> Callback<'_> {
     Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
         let args: Value = stack.consume(ctx)?;
-        let args =
-            crate::lua::convert::json_from_lua(ctx, args, 0).unwrap_or(serde_json::Value::Null);
-        let result = match crate::web::run(args, configuration.as_ref()) {
+        let ran = crate::lua::convert::json_from_lua(ctx, args)
+            .and_then(|args| crate::web::run(args, configuration.as_ref()));
+        let result = match ran {
             Ok(value) => {
                 serde_json::json!({"said": value.to_string(), "brief": "web sources", "keep": true})
             }
