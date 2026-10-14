@@ -260,7 +260,7 @@ impl Engine {
     }
 
     /// Step `executor` to the end in slices, stopping it once `budget` instructions are spent.
-    /// A `__gc` handler is never run: it would be Lua outside any budget.
+    /// No `__gc` handler runs: the sandbox refuses a metatable carrying one.
     fn metered(&mut self, executor: &StashedExecutor, budget: u64) -> Result<(), String> {
         const SLICE: i32 = 4096;
         let mut spent: u64 = 0;
