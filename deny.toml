@@ -1,0 +1,39 @@
+# The dependency policy `cargo deny check` holds the lockfile to, in `make verify` and in CI.
+
+[graph]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-gnu",
+  "aarch64-unknown-linux-musl",
+]
+all-features = true
+
+[advisories]
+yanked = "deny"
+ignore = [
+  { id = "RUSTSEC-2025-0141", reason = "bincode 1 is unmaintained; every syntect release, 5.3.0 the newest, still needs it" },
+  { id = "RUSTSEC-2025-0057", reason = "fxhash is unmaintained; scraper 0.24's selectors needs it, and only scraper 0.26 drops it" },
+]
+
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "ISC",
+  "BSD-3-Clause",
+  "Unicode-3.0",
+  "MPL-2.0",
+  "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/onix-os/luna"]
