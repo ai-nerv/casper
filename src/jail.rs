@@ -28,6 +28,7 @@ pub const WANTED: &str = "CASPER_JAIL";
 /// What the session's grants add to the conservative floor, read off [`WANTED`] as JSON so casper
 /// need not know how magi keeps its ledger.
 #[derive(Debug, Default, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Grants {
     /// Directories a call may write, beyond the working directory.
     #[serde(default)]
@@ -43,16 +44,15 @@ pub struct Grants {
 }
 
 impl Grants {
-    /// What [`WANTED`] carried: nothing when off, the floor for `1`, or a widened set from JSON.
-    /// Anything unparseable is the floor, never wider.
-    fn read() -> Option<Self> {
-        match std::env::var(WANTED).ok()?.trim() {
-            "" => None,
-            "1" => Some(Self::default()),
-            json => Some(serde_json::from_str(json).unwrap_or_else(|why| {
-                crate::noted!("jail: {WANTED} is not a profile ({why}); using the floor");
-                Self::default()
-            })),
+    /// What [`WANTED`] carried: nothing when off or absent, the floor for `1`, or a widened set
+    /// from JSON. Anything else is a refusal naming why.
+    fn read(wanted: Option<&str>) -> Result<Option<Self>, String> {
+        match wanted.map(str::trim) {
+            None | Some("") => Ok(None),
+            Some("1") => Ok(Some(Self::default())),
+            Some(json) => serde_json::from_str(json)
+                .map(Some)
+                .map_err(|why| format!("{WANTED} is not a jail profile: {why}")),
         }
     }
 }
@@ -60,7 +60,7 @@ impl Grants {
 /// The jail one command runs inside: whether it is on, and the paths it is built around. Read from
 /// this process's environment for both the command and socket doors. Calls do not supply grants.
 pub struct Jail {
-    grants: Option<Grants>,
+    grants: Result<Option<Grants>, String>,
     cwd: PathBuf,
     home: PathBuf,
 }
@@ -70,8 +70,9 @@ impl Jail {
     /// it inherited, the home it carries.
     #[must_use]
     pub fn from_env() -> Self {
+        let wanted = std::env::var_os(WANTED).map(|v| v.to_string_lossy().into_owned());
         Self {
-            grants: Grants::read(),
+            grants: Grants::read(wanted.as_deref()),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
             home: std::env::var_os("HOME")
                 .map(PathBuf::from)
@@ -79,14 +80,18 @@ impl Jail {
         }
     }
 
-    /// Whether a coordinator asked for a jail at all.
+    /// Whether a coordinator asked for a jail at all. A profile that did not parse is one asked
+    /// for, and refuses every command.
     #[must_use]
     pub const fn on(&self) -> bool {
-        self.grants.is_some()
+        !matches!(self.grants, Ok(None))
     }
 
     pub fn allows_network(&self) -> bool {
-        self.grants.as_ref().is_none_or(|grants| grants.reach)
+        match &self.grants {
+            Ok(grants) => grants.as_ref().is_none_or(|grants| grants.reach),
+            Err(_) => false,
+        }
     }
 }
 
@@ -504,6 +509,24 @@ mod tests {
         let command = prepared.command();
         assert_eq!(command.get_program(), "sh");
         assert_eq!(command.get_args().collect::<Vec<_>>(), ["-c", "echo hi"]);
+    }
+
+    #[test]
+    fn a_profile_that_does_not_parse_is_a_refusal_and_not_the_floor() {
+        for wanted in ["{not json", r#"{"reach":true,"wirte":["/"]}"#, "yes"] {
+            let jail = Jail {
+                grants: Grants::read(Some(wanted)),
+                cwd: PathBuf::from("/"),
+                home: PathBuf::new(),
+            };
+            assert!(jail.on() && !jail.allows_network(), "{wanted}");
+            let refused = jail.prepare("true", &[], None, &[], false).err();
+            let why = refused.map(|why| why.to_string()).unwrap_or_default();
+            assert!(why.contains("not a jail profile"), "{wanted}: {why}");
+        }
+        assert!(matches!(Grants::read(None), Ok(None)));
+        assert!(matches!(Grants::read(Some(" ")), Ok(None)));
+        assert!(matches!(Grants::read(Some("1")), Ok(Some(_))));
     }
 
     #[test]

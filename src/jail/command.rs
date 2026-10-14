@@ -49,7 +49,8 @@ impl Jail {
             descriptors: Vec::new(),
             _temporary: None,
         };
-        let Some(grants) = &self.grants else {
+        let refused = |why: &String| std::io::Error::other(why.clone());
+        let Some(grants) = self.grants.as_ref().map_err(refused)? else {
             return Ok(prepared);
         };
         let protected = policy::protected(&self.home)?;
