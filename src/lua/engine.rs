@@ -81,36 +81,23 @@ impl Engine {
     /// A VM with the standard library trimmed and `casper` installed.
     #[must_use]
     pub fn new() -> Self {
-        Self::with_network_configuration(None, None)
+        Self::with_web_configuration(None)
     }
 
     /// A VM with trusted native web settings supplied by the caller.
     #[must_use]
     pub fn with_web_configuration(configuration: Option<serde_json::Value>) -> Self {
-        Self::with_network_configuration(configuration, None)
-    }
-
-    /// A VM with trusted native web and browser settings supplied by the caller.
-    #[must_use]
-    pub fn with_network_configuration(
-        configuration: Option<serde_json::Value>,
-        browser: Option<serde_json::Value>,
-    ) -> Self {
         let mut engine = Self {
             lua: Lua::full(),
             declared: Rc::new(RefCell::new(Declared::default())),
         };
         crate::lua::sandbox::apply(&mut engine.lua);
-        engine.install(configuration, browser);
+        engine.install(configuration);
         engine
     }
 
     /// Put `casper` in front of a declaration.
-    fn install(
-        &mut self,
-        web_configuration: Option<serde_json::Value>,
-        browser_configuration: Option<serde_json::Value>,
-    ) {
+    fn install(&mut self, web_configuration: Option<serde_json::Value>) {
         let declared = Rc::clone(&self.declared);
         self.lua.enter(|ctx| {
             let casper = Table::new(&ctx);
@@ -175,13 +162,6 @@ impl Engine {
             casper.set(ctx, "seek", crate::lua::seek::table(ctx)).ok();
             casper
                 .set(ctx, "web", crate::lua::web::table(ctx, web_configuration))
-                .ok();
-            casper
-                .set(
-                    ctx,
-                    "browse",
-                    crate::lua::browse::table(ctx, browser_configuration),
-                )
                 .ok();
             // A declaration cannot open a file, so a stub arrives as text and is `load`ed.
             let clients = Table::new(&ctx);

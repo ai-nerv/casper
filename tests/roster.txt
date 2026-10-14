@@ -1,0 +1,18 @@
+# Every tool casper ships, one per line. Editing this list is how a tool is added or removed.
+birdy
+dino
+doom
+edit
+games
+hexe
+ls
+oslo
+read
+screen
+sese
+session
+shell
+tools
+tree
+web
+write

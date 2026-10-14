@@ -3,7 +3,6 @@
 //! is trimmed to one way of running a program.
 
 pub mod ask;
-pub mod browse;
 pub mod convert;
 pub mod dirs;
 pub mod engine;
