@@ -22,8 +22,9 @@ const REMOVED: &[(&str, &str)] = &[
     ("os", "setlocale"),
 ];
 
-/// Globals removed entirely. `io` goes wholesale: a tool that needs a file has `Ops`.
-const REMOVED_TABLES: &[&str] = &["io", "package", "dofile", "loadfile", "require"];
+/// Globals removed entirely. `io` goes wholesale: a tool that needs a file has `Ops`. `debug`
+/// goes too: it reaches past the guards below and into the frames the budget meters.
+const REMOVED_TABLES: &[&str] = &["io", "package", "dofile", "loadfile", "require", "debug"];
 
 /// Globals replaced rather than taken away, because a declaration writing a diagnostic is
 /// reasonable and where luna sends it is not: `print` writes to stdout, which carries the reply
@@ -47,9 +48,6 @@ pub fn apply(lua: &mut Lua) {
         }
         guard(ctx, ctx.globals(), "load", binary);
         guard(ctx, ctx.globals(), "setmetatable", finalized);
-        if let Value::Table(debug) = ctx.get_global_value("debug") {
-            guard(ctx, debug, "setmetatable", finalized);
-        }
     });
 }
 
@@ -185,13 +183,9 @@ mod tests {
     }
 
     #[test]
-    fn a_metatable_carrying_gc_is_refused_by_either_setter() {
-        for setter in ["setmetatable", "debug.setmetatable"] {
-            let said = probe(&format!(
-                "select(2, pcall({setter}, {{}}, {{ __gc = function() end }}))"
-            ));
-            assert!(said.contains("__gc"), "{setter}: {said}");
-        }
+    fn a_metatable_carrying_gc_is_refused_and_any_other_is_taken() {
+        let said = probe("select(2, pcall(setmetatable, {}, { __gc = function() end }))");
+        assert!(said.contains("__gc"), "{said}");
         let kept = "local t = {}; return setmetatable(t, { __index = { x = 7 } }) == t and t.x";
         assert_eq!(probe(&format!("(function() {kept} end)()")), "7");
         let locked = "setmetatable(setmetatable({}, { __metatable = 1 }), {})";
@@ -212,8 +206,6 @@ mod tests {
         coroutine coroutine.close coroutine.continue coroutine.create coroutine.isyieldable
         coroutine.resume coroutine.running coroutine.status coroutine.wrap coroutine.yield
         coroutine.yieldto
-        debug debug.gethook debug.getinfo debug.getlocal debug.getmetatable debug.getupvalue
-        debug.sethook debug.setlocal debug.setmetatable debug.setupvalue debug.traceback
         math math.abs math.acos math.asin math.atan math.ceil math.cos math.deg math.exp
         math.floor math.fmod math.huge math.log math.max math.maxinteger math.min math.mininteger
         math.modf math.pi math.rad math.random math.randomseed math.sin math.sqrt math.tan

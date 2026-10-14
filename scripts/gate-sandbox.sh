@@ -56,15 +56,15 @@ fi
 # ---- the removals are still the removals --------------------------------------------------------
 # Field by field, because losing one is losing a specific thing: `execute` and `popen` are the
 # spawn, `remove`/`rename`/`tmpname` are writes that go round the `Ops` seam where path checking
-# lives, `exit` ends the process from inside a config file, and `io` goes wholesale because every
-# remaining member of it opens a file.
+# lives, `exit` ends the process from inside a config file, `io` goes wholesale because every
+# remaining member of it opens a file, and `debug` because it reaches past the guards.
 for gone in execute exit remove rename tmpname; do
   if ! grep -q "\"$gone\"" "$SANDBOX"; then
     echo "gate-sandbox: os.$gone is no longer removed from the VM" >&2
     fail=1
   fi
 done
-for gone in io package dofile loadfile require; do
+for gone in io package dofile loadfile require debug; do
   if ! grep -q "\"$gone\"" "$SANDBOX"; then
     echo "gate-sandbox: the global \`$gone\` is no longer removed from the VM" >&2
     fail=1

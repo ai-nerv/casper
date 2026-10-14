@@ -678,6 +678,39 @@ mod tests {
     }
 
     #[test]
+    fn no_route_past_the_guard_enrols_an_object_for_a_finalizer() {
+        let mut engine = declaring(
+            r#"casper.tool("enrol", { run = function()
+                 local gc = { __gc = function() end }
+                 local routes = {
+                   function(t) return setmetatable(t, gc) end,
+                   function(t) return debug.setmetatable(t, gc) end,
+                   function(t) local _, set = debug.getupvalue(setmetatable, 1); return set(t, gc) end,
+                   function(t) return rawget(_G, "setmetatable")(t, gc) end,
+                 }
+                 local took = 0
+                 for _, route in ipairs(routes) do
+                   for _ = 1, 5000 do
+                     if pcall(route, { string.rep("x", 1024) }) then took = took + 1 end
+                   end
+                 end
+                 return tostring(took)
+               end })"#,
+        );
+        engine.lua.gc_collect();
+        let before = engine.lua.total_memory();
+        let ran = engine.call("enrol", &serde_json::Value::Null).expect("ran");
+        assert_eq!(ran.said, "0", "{ran:?}");
+        engine.lua.gc_collect();
+        engine.lua.gc_collect();
+        let after = engine.lua.total_memory();
+        assert!(
+            after < before + (1 << 20),
+            "{before} bytes before, {after} after"
+        );
+    }
+
+    #[test]
     fn a_surface_frame_that_loops_ends_the_surface() {
         let mut engine = declaring(
             r#"casper.tool("s", { surface = function() return function() while true do end end end })"#,
