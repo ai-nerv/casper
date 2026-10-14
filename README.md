@@ -161,12 +161,13 @@ The two backends answer the same probes the same way, with two named differences
 path no Unix socket opens at all, since no mount namespace hides the runtime directory there. And
 Landlock cannot carve a read-only file out of a writable tree, so where bubblewrap binds
 `.magi.lua`, `.balthasar.lua`, `.git/config` and `.git/hooks` read-only beneath the workspace and
-each write grant, casper reads them before each command and afterwards puts back whatever it
-changed, created or removed, failing the command and naming each one; one over 1 MiB, or reached
-through a link, refuses the command instead. Until the command ends a reader can see its change, a
-process it leaves running is not watched after it, and the person's own edit to one of them in
-the meantime is put back too. What Landlock does keep read-only is everything outside the
-writable roots, such as the home directory's dotfiles and the person's configuration.
+each write grant, casper reads the files that exist when the command starts and afterwards puts
+back whatever it changed or removed, a new hook included, failing the command and naming each one;
+one over 1 MiB, or reached through a link, refuses the command instead. On both paths one that did
+not exist may be created. Until the command ends a reader can see its change, a process it leaves
+running is not watched after it, and the person's own edit to one of them in the meantime is put
+back too. What Landlock does keep read-only is everything outside the writable roots, such as the
+home directory's dotfiles and the person's configuration.
 
 `oslo make test-containment` uses synthetic credentials and local listeners to exercise both
 backends, ordinary/PTY execution, terminal input/resize, and pinned Rust toolchain discovery.
