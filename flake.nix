@@ -30,7 +30,14 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
           lib = pkgs.lib;
-          casper = pkgs.pkgsStatic.rustPlatform.buildRustPackage {
+          # rustc 1.95, the floor monty sets, for the static target: this nixpkgs ships 1.94.
+          toolchain =
+            (rust-overlay.lib.mkRustBin { } pkgs.pkgsStatic.buildPackages).stable."1.95.0".minimal;
+          rustPlatform = pkgs.pkgsStatic.makeRustPlatform {
+            cargo = toolchain;
+            rustc = toolchain;
+          };
+          casper = rustPlatform.buildRustPackage {
             pname = "casper";
             inherit (manifest.package) version;
             src = lib.fileset.toSource {
@@ -199,8 +206,8 @@
           libxi
           libxrandr
         ];
-        # The same version the workspace siblings pin, so a lint that fails there fails here.
-        rust = pkgs.rust-bin.stable."1.94.0".default.override {
+        # One release past what the workspace siblings pin: monty, behind `execute`, needs 1.95.
+        rust = pkgs.rust-bin.stable."1.95.0".default.override {
           extensions = [ "rust-src" ];
         };
       in
