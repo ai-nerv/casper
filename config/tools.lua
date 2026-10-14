@@ -580,24 +580,32 @@ do -- shell
   -- actually gets used.
   -- The script around a command. The directory is remembered per session, the one casper hands
   -- in as `args.session`, and within it per directory the shell starts in: under the jail in the
-  -- jail's own `$TMPDIR`, off it in this user's runtime directory, and only in a directory this
-  -- user owns. No session, no memory. What it reads back reaches `cd` as a variable, never as
-  -- text in the script, and so does everything else handed in.
+  -- jail's own `$TMPDIR`, off it in casper's runtime directory, chosen and made by the family's
+  -- private-directory rule. No session, no memory. What it reads back reaches `cd` as a variable,
+  -- never as text in the script, and so does everything else handed in.
   local BEFORE = [[
 casper_jailed=$1 casper_asked=$2 casper_session=$3; shift 3
 case "$casper_session" in *[!0-9-]*) casper_session= ;; esac
+casper_private() {
+  [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] &&
+    case "$(ls -ld "$1")" in drwx------*) ;; *) false ;; esac
+}
 casper_memory=
 if [ -n "$casper_session" ]; then
   casper_key="$casper_session-$(pwd -P | cksum | cut -d' ' -f1)"
   if [ -n "$casper_jailed" ]; then
     casper_base="${TMPDIR:-/tmp}/casper-shell-cwd"
-  elif [ -n "$XDG_RUNTIME_DIR" ] && [ -d "$XDG_RUNTIME_DIR" ] && [ -O "$XDG_RUNTIME_DIR" ]; then
-    casper_base="$XDG_RUNTIME_DIR/casper/shell-cwd"
   else
-    casper_base="${TMPDIR:-/tmp}/casper-$(id -u)/shell-cwd"
+    casper_runtime="${TMPDIR:-/tmp}/casper-$(id -u)"
+    case "$XDG_RUNTIME_DIR" in
+      /*) casper_private "$XDG_RUNTIME_DIR" && casper_runtime="$XDG_RUNTIME_DIR/casper" ;;
+    esac
+    (umask 077 && mkdir -p "$casper_runtime") 2>/dev/null
+    casper_base="$casper_runtime/shell-cwd"
+    casper_private "$casper_runtime" || casper_base=
   fi
-  mkdir -p "$casper_base" 2>/dev/null && chmod 700 "$casper_base" 2>/dev/null
-  if [ -O "$casper_base" ] && [ -O "${casper_base%/*}" ]; then
+  [ -z "$casper_base" ] || (umask 077 && mkdir -p "$casper_base") 2>/dev/null
+  if [ -n "$casper_base" ] && casper_private "$casper_base" && [ -O "${casper_base%/*}" ]; then
     casper_memory="$casper_base/$casper_key"
   fi
 fi

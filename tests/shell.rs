@@ -223,6 +223,36 @@ fn a_session_the_call_names_joins_no_other() {
 }
 
 #[test]
+fn the_runtime_directory_a_shell_makes_is_private_and_a_loose_one_is_not_used() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let mode = |dir: &std::path::Path| std::fs::metadata(dir).map(|meta| meta.mode() & 0o777).ok();
+    let alone = Alone::new("private");
+    let project = alone.project("p");
+    alone.shell_in(&project, &[], "cd sub");
+    assert_eq!(mode(&alone.dir.join("casper")), Some(0o700));
+    assert_eq!(mode(&alone.dir.join("casper/shell-cwd")), Some(0o700));
+    let (loose, tmp) = (alone.dir.join("loose"), alone.dir.join("tmp"));
+    for dir in [&loose, &tmp] {
+        std::fs::create_dir(dir).expect("fixture");
+    }
+    std::fs::set_permissions(&loose, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let env = [
+        ("XDG_RUNTIME_DIR", loose.clone().into_os_string()),
+        ("TMPDIR", tmp.clone().into_os_string()),
+    ];
+    alone.shell_in(&project, &env, "cd sub");
+    assert!(
+        !loose.join("casper").exists(),
+        "a loose runtime directory was used"
+    );
+    let uid = std::fs::metadata(&tmp).expect("tmp").uid();
+    assert_eq!(
+        mode(&tmp.join(format!("casper-{uid}/shell-cwd"))),
+        Some(0o700)
+    );
+}
+
+#[test]
 fn with_no_session_nothing_is_remembered() {
     let mut engine = casper::lua::engine::Engine::new();
     engine
@@ -275,7 +305,7 @@ fn without_bubblewrap(alone: &Alone) -> std::ffi::OsString {
     let bin = alone.dir.join("bin");
     std::fs::create_dir_all(&bin).expect("bin");
     let path = std::env::var_os("PATH").expect("PATH");
-    for tool in ["sh", "cksum", "cut", "id", "mkdir", "chmod", "cat"] {
+    for tool in ["sh", "cksum", "cut", "id", "mkdir", "ls", "cat"] {
         let found = std::env::split_paths(&path)
             .map(|dir| dir.join(tool))
             .find(|candidate| candidate.is_file())
