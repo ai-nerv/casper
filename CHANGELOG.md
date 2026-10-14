@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.6.2] - 2026-10-14
+
+### <!-- 0 -->⛰️  Features
+
+- Put back what Landlock cannot seal
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Let what did not exist be created
+
+### <!-- 3 -->📚 Documentation
+
+- Files that exist when it starts
+- The Landlock path's restore guard
+- The model role's spend cap
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Landlock restore guard
+
 ## [0.6.1] - 2026-10-14
 
 ### <!-- 1 -->🐛 Bug Fixes
