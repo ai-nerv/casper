@@ -7,8 +7,9 @@
 //! that runs a program is as bounded as the first.
 //!
 //! [`Jail::prepare`] captures the child environment and required protections for ordinary and
-//! terminal children. Without bubblewrap, Landlock restricts filesystem and process access and
-//! seccomp blocks ungranted sockets. Missing required protections refuse the spawn.
+//! terminal children. Without bubblewrap, Landlock restricts filesystem and process access. On
+//! both paths seccomp blocks ungranted sockets and opens only the network's address families.
+//! Missing required protections refuse the spawn.
 
 use std::path::{Path, PathBuf};
 
@@ -28,6 +29,7 @@ pub const WANTED: &str = "CASPER_JAIL";
 /// What the session's grants add to the conservative floor, read off [`WANTED`] as JSON so casper
 /// need not know how magi keeps its ledger.
 #[derive(Debug, Default, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Grants {
     /// Directories a call may write, beyond the working directory.
     #[serde(default)]
@@ -43,16 +45,15 @@ pub struct Grants {
 }
 
 impl Grants {
-    /// What [`WANTED`] carried: nothing when off, the floor for `1`, or a widened set from JSON.
-    /// Anything unparseable is the floor, never wider.
-    fn read() -> Option<Self> {
-        match std::env::var(WANTED).ok()?.trim() {
-            "" => None,
-            "1" => Some(Self::default()),
-            json => Some(serde_json::from_str(json).unwrap_or_else(|why| {
-                crate::noted!("jail: {WANTED} is not a profile ({why}); using the floor");
-                Self::default()
-            })),
+    /// What [`WANTED`] carried: nothing when off or absent, the floor for `1`, or a widened set
+    /// from JSON. Anything else is a refusal naming why.
+    fn read(wanted: Option<&str>) -> Result<Option<Self>, String> {
+        match wanted.map(str::trim) {
+            None | Some("") => Ok(None),
+            Some("1") => Ok(Some(Self::default())),
+            Some(json) => serde_json::from_str(json)
+                .map(Some)
+                .map_err(|why| format!("{WANTED} is not a jail profile: {why}")),
         }
     }
 }
@@ -60,7 +61,7 @@ impl Grants {
 /// The jail one command runs inside: whether it is on, and the paths it is built around. Read from
 /// this process's environment for both the command and socket doors. Calls do not supply grants.
 pub struct Jail {
-    grants: Option<Grants>,
+    grants: Result<Option<Grants>, String>,
     cwd: PathBuf,
     home: PathBuf,
 }
@@ -70,8 +71,9 @@ impl Jail {
     /// it inherited, the home it carries.
     #[must_use]
     pub fn from_env() -> Self {
+        let wanted = std::env::var_os(WANTED).map(|v| v.to_string_lossy().into_owned());
         Self {
-            grants: Grants::read(),
+            grants: Grants::read(wanted.as_deref()),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
             home: std::env::var_os("HOME")
                 .map(PathBuf::from)
@@ -79,16 +81,24 @@ impl Jail {
         }
     }
 
-    /// Whether a coordinator asked for a jail at all.
+    /// Whether a coordinator asked for a jail at all. A profile that did not parse is one asked
+    /// for, and refuses every command.
     #[must_use]
     pub const fn on(&self) -> bool {
-        self.grants.is_some()
+        !matches!(self.grants, Ok(None))
     }
 
     pub fn allows_network(&self) -> bool {
-        self.grants.as_ref().is_none_or(|grants| grants.reach)
+        match &self.grants {
+            Ok(grants) => grants.as_ref().is_none_or(|grants| grants.reach),
+            Err(_) => false,
+        }
     }
 }
+
+/// Paths beneath a writable bind that stay read-only on the bubblewrap path: what the next
+/// unjailed `git`, `magi` or `balthasar` would run.
+const PERSISTENT: &[&str] = &[".git/hooks", ".git/config", ".magi.lua", ".balthasar.lua"];
 
 /// The bubblewrap arguments: the conservative floor, widened by whatever the session's [`Grants`]
 /// carried. In order, because bubblewrap applies them in order and a later mount wins.
@@ -124,10 +134,14 @@ fn profile(cwd: &Path, grants: &Grants) -> Vec<String> {
     for writable in &grants.write {
         bind(&mut a, "--bind", writable);
     }
-    // A writable checkout keeps its `.git`, but not the hooks the next `git` would run.
-    let hooks = cwd.join(".git/hooks");
-    if hooks.exists() {
-        bind(&mut a, "--ro-bind", &hooks);
+    // A writable checkout keeps its `.git`, but not what the next unjailed program would run.
+    for root in std::iter::once(cwd).chain(grants.write.iter().map(PathBuf::as_path)) {
+        for name in PERSISTENT {
+            let path = root.join(name);
+            if path.exists() {
+                bind(&mut a, "--ro-bind", &path);
+            }
+        }
     }
     // No network unless a reach grant asked for it; a tool command talks to no socket otherwise,
     // so the runtime directory is not bound in — a jailed child session's siblings are magi's to
@@ -141,9 +155,9 @@ fn profile(cwd: &Path, grants: &Grants) -> Vec<String> {
     a
 }
 
-/// The syscalls no jailed command ever needs and that a hostile one would reach for: reading
-/// another process's memory, and `io_uring`, which can open files and sockets without the syscalls
-/// the rest of the jail watches. Denied with `EPERM`, so a program that probes them is told no.
+/// The syscalls no jailed command ever needs and that a hostile one would reach for: another
+/// process's memory, `io_uring`, the kernel keyring, BPF, perf, userfaultfd, namespaces, mounts,
+/// and kernel modules. Denied with `EPERM`, so a program that probes them is told no.
 const FORBIDDEN: &[i64] = &[
     libc::SYS_ptrace,
     libc::SYS_process_vm_readv,
@@ -151,12 +165,112 @@ const FORBIDDEN: &[i64] = &[
     libc::SYS_io_uring_setup,
     libc::SYS_io_uring_enter,
     libc::SYS_io_uring_register,
+    libc::SYS_keyctl,
+    libc::SYS_add_key,
+    libc::SYS_request_key,
+    libc::SYS_bpf,
+    libc::SYS_perf_event_open,
+    libc::SYS_userfaultfd,
+    libc::SYS_unshare,
+    libc::SYS_setns,
+    libc::SYS_mount,
+    libc::SYS_umount2,
+    libc::SYS_pivot_root,
+    libc::SYS_kexec_load,
+    libc::SYS_kexec_file_load,
+    libc::SYS_init_module,
+    libc::SYS_finit_module,
+    libc::SYS_delete_module,
 ];
 
+/// What `personality` may still be asked: the query and the ordinary Linux personas.
+const PERSONAS: &[u64] = &[0, 0x8, 0x2_0000, 0x2_0008, 0xffff_ffff];
+
+/// The syscalls an ungranted network loses. With it, `socket` takes [`filter::families`].
+const UNREACHED: &[i64] = &[
+    libc::SYS_socket,
+    libc::SYS_connect,
+    libc::SYS_sendto,
+    libc::SYS_sendmsg,
+    libc::SYS_sendmmsg,
+];
+
+/// A syscall and the rules under which a filter answers it: any one rule matching, or always when
+/// there are none.
+type Rules = Vec<(
+    i64,
+    Vec<Result<seccompiler::SeccompRule, seccompiler::BackendError>>,
+)>;
+
+/// One rule: every condition on the syscall's arguments, compared as 32-bit values.
+fn rule(
+    conditions: &[(u8, seccompiler::SeccompCmpOp, u64)],
+) -> Result<seccompiler::SeccompRule, seccompiler::BackendError> {
+    use seccompiler::{SeccompCmpArgLen, SeccompCondition, SeccompRule};
+    conditions
+        .iter()
+        .map(|(arg, op, value)| {
+            SeccompCondition::new(*arg, SeccompCmpArgLen::Dword, op.clone(), *value)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .and_then(SeccompRule::new)
+}
+
+/// The jail's `EPERM` filter: [`FORBIDDEN`], `clone` into a new user namespace, an unusual
+/// `personality`, and the network unless `reach`.
+fn filter(reach: bool) -> seccompiler::BpfProgram {
+    use seccompiler::SeccompCmpOp as Op;
+    let newuser = libc::CLONE_NEWUSER as u64;
+    let personas: Vec<_> = PERSONAS.iter().map(|p| (0, Op::Ne, *p)).collect();
+    let mut rules: Rules = vec![
+        (
+            libc::SYS_clone,
+            vec![rule(&[(0, Op::MaskedEq(newuser), newuser)])],
+        ),
+        (libc::SYS_personality, vec![rule(&personas)]),
+    ];
+    rules.extend(FORBIDDEN.iter().map(|nr| (*nr, Vec::new())));
+    if !reach {
+        rules.extend(UNREACHED.iter().map(|nr| (*nr, Vec::new())));
+    }
+    built(rules, libc::EPERM)
+}
+
+/// `rules` compiled to answer `errno`, or an empty program, which the caller refuses, when one
+/// rule will not build.
+fn built(rules: Rules, errno: i32) -> seccompiler::BpfProgram {
+    let built: Result<std::collections::BTreeMap<_, _>, _> = rules
+        .into_iter()
+        .map(|(nr, list)| {
+            list.into_iter()
+                .collect::<Result<Vec<_>, _>>()
+                .map(|l| (nr, l))
+        })
+        .collect();
+    built.map_or_else(
+        |why| {
+            crate::noted!("jail: a seccomp rule could not be built ({why}); none is armed");
+            seccompiler::BpfProgram::default()
+        },
+        |rules| compile(rules, errno),
+    )
+}
+
 /// A seccomp program that allows everything but `forbid`, each of which answers `EPERM`.
+#[cfg(test)]
 fn deny(forbid: &[i64]) -> seccompiler::BpfProgram {
+    compile(
+        forbid.iter().map(|nr| (*nr, Vec::new())).collect(),
+        libc::EPERM,
+    )
+}
+
+/// `rules` as a program answering `errno` on a match and allowing everything else.
+fn compile(
+    rules: std::collections::BTreeMap<i64, Vec<seccompiler::SeccompRule>>,
+    errno: i32,
+) -> seccompiler::BpfProgram {
     use seccompiler::{SeccompAction, SeccompFilter, TargetArch};
-    let rules = forbid.iter().map(|nr| (*nr, Vec::new())).collect();
     let arch = if cfg!(target_arch = "aarch64") {
         TargetArch::aarch64
     } else {
@@ -165,7 +279,7 @@ fn deny(forbid: &[i64]) -> seccompiler::BpfProgram {
     SeccompFilter::new(
         rules,
         SeccompAction::Allow,
-        SeccompAction::Errno(libc::EPERM as u32),
+        SeccompAction::Errno(errno.unsigned_abs()),
         arch,
     )
     .and_then(std::convert::TryInto::try_into)
@@ -173,6 +287,29 @@ fn deny(forbid: &[i64]) -> seccompiler::BpfProgram {
         crate::noted!("jail: the seccomp filter could not be built ({why}); none is armed");
         seccompiler::BpfProgram::default()
     })
+}
+
+/// The jail's `ENOSYS` filter: `clone3`, whose flags seccomp cannot read, so the C library falls
+/// back to `clone`; and on x86-64 every x32 call.
+fn absent() -> seccompiler::BpfProgram {
+    use seccompiler::sock_filter;
+    const LOAD_NR: u16 = 0x20;
+    const JEQ: u16 = 0x15;
+    const JGE: u16 = 0x35;
+    const RET: u16 = 0x06;
+    const X32: u32 = 0x4000_0000;
+    let at = |code, jt, jf, k| sock_filter { code, jt, jf, k };
+    let enosys = libc::SECCOMP_RET_ERRNO | libc::ENOSYS as u32;
+    let mut program = vec![at(LOAD_NR, 0, 0, 0)];
+    if cfg!(target_arch = "x86_64") {
+        program.push(at(JGE, 2, 0, X32));
+    }
+    program.extend([
+        at(JEQ, 1, 0, libc::SYS_clone3 as u32),
+        at(RET, 0, 0, libc::SECCOMP_RET_ALLOW),
+        at(RET, 0, 0, enosys),
+    ]);
+    program
 }
 
 /// System directories readable in both backends, subject to credential-overlap validation.
@@ -199,10 +336,28 @@ pub(super) fn read_floor() -> Vec<PathBuf> {
         .collect()
 }
 
+/// The bubblewrap path's Landlock ruleset: no filesystem or network rule, only the abstract Unix
+/// socket namespace scoped to the jail. `None` when the kernel cannot scope it.
+fn scoped() -> Option<landlock::RulesetCreated> {
+    use landlock::{CompatLevel, Compatible, Ruleset, RulesetAttr, Scope};
+    Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
+        .scope(Scope::AbstractUnixSocket)
+        .ok()?
+        .create()
+        .ok()
+}
+
 /// A Landlock ruleset from the grants: read across the system directories, write at `cwd`, each
 /// granted directory and the scratch devices, TCP denied unless a reach grant, signals scoped to
-/// this domain. Every requested right must be supported by the running kernel.
-fn ruleset(cwd: &Path, grants: &Grants, protected: &[PathBuf]) -> Option<landlock::RulesetCreated> {
+/// this domain. `/dev/tty` only for a screen, whose terminal is its own. Every requested right
+/// must be supported by the running kernel.
+fn ruleset(
+    cwd: &Path,
+    grants: &Grants,
+    protected: &[PathBuf],
+    terminal: bool,
+) -> Option<landlock::RulesetCreated> {
     use landlock::{
         ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
         RulesetAttr, RulesetCreatedAttr, Scope,
@@ -232,13 +387,11 @@ fn ruleset(cwd: &Path, grants: &Grants, protected: &[PathBuf]) -> Option<landloc
         let fd = policy::validated_fd(&dir, protected).ok()?;
         created = created.add_rule(PathBeneath::new(fd, all)).ok()?;
     }
-    for device in [
-        "/dev/null",
-        "/dev/zero",
-        "/dev/random",
-        "/dev/urandom",
-        "/dev/tty",
-    ] {
+    let tty = terminal.then_some("/dev/tty");
+    for device in ["/dev/null", "/dev/zero", "/dev/random", "/dev/urandom"]
+        .into_iter()
+        .chain(tty)
+    {
         if let Ok(fd) = PathFd::new(device) {
             created = created
                 .add_rule(PathBeneath::new(
@@ -299,6 +452,41 @@ mod tests {
     }
 
     #[test]
+    fn what_the_next_unjailed_program_runs_is_bound_read_only_under_every_writable_root() {
+        let dir = Scratch::new("jail", "persistent");
+        let (work, other) = (dir.join("work"), dir.join("other"));
+        for path in [work.join(".git/hooks"), other.clone()] {
+            std::fs::create_dir_all(path).expect("mkdir");
+        }
+        for file in [".git/config", ".magi.lua", ".balthasar.lua"] {
+            std::fs::write(work.join(file), "x").expect("write");
+        }
+        std::fs::write(other.join(".magi.lua"), "x").expect("write");
+        let grants = Grants {
+            write: vec![other.clone()],
+            ..Grants::default()
+        };
+        let a = profile(&work, &grants).join(" ");
+        for path in [
+            work.join(".git/hooks"),
+            work.join(".git/config"),
+            work.join(".magi.lua"),
+            work.join(".balthasar.lua"),
+            other.join(".magi.lua"),
+        ] {
+            let p = path.display();
+            assert!(a.contains(&format!("--ro-bind {p} {p}")), "{p}: {a}");
+        }
+        assert!(
+            !a.contains(&other.join(".git").display().to_string()),
+            "{a}"
+        );
+        let writable = a.find(&format!("--bind {}", other.display()));
+        let sealed = a.find(&format!("--ro-bind {}", other.join(".magi.lua").display()));
+        assert!(writable < sealed, "the read-only bind comes after: {a}");
+    }
+
+    #[test]
     fn a_shared_tmp_is_bound_over_the_private_one() {
         let dir = Scratch::new("jail", "sharedtmp");
         let grants = Grants {
@@ -344,9 +532,36 @@ mod tests {
     }
 
     #[test]
+    fn a_profile_that_does_not_parse_is_a_refusal_and_not_the_floor() {
+        for wanted in ["{not json", r#"{"reach":true,"wirte":["/"]}"#, "yes"] {
+            let jail = Jail {
+                grants: Grants::read(Some(wanted)),
+                cwd: PathBuf::from("/"),
+                home: PathBuf::new(),
+            };
+            assert!(jail.on() && !jail.allows_network(), "{wanted}");
+            let refused = jail.prepare("true", &[], None, &[], false).err();
+            let why = refused.map(|why| why.to_string()).unwrap_or_default();
+            assert!(why.contains("not a jail profile"), "{wanted}: {why}");
+        }
+        assert!(matches!(Grants::read(None), Ok(None)));
+        assert!(matches!(Grants::read(Some(" ")), Ok(None)));
+        assert!(matches!(Grants::read(Some("1")), Ok(Some(_))));
+    }
+
+    #[test]
     fn the_real_filter_compiles_and_names_the_forbidden_calls() {
-        let program = deny(FORBIDDEN);
-        assert!(!program.is_empty(), "the seccomp program built to nothing");
+        for reach in [false, true] {
+            assert!(
+                !filter(reach).is_empty(),
+                "the seccomp program built to nothing"
+            );
+            assert!(
+                !filter::families(reach).is_empty(),
+                "the allowlist built to nothing"
+            );
+        }
+        assert!(!absent().is_empty());
     }
 
     #[test]
@@ -358,7 +573,7 @@ mod tests {
         let target = dir.join("nope");
         let mut command = std::process::Command::new("mkdir");
         command.arg(&target);
-        crate::tied::confine(&mut command, filter);
+        crate::tied::confine(&mut command, vec![filter]);
         let status = command.status().expect("mkdir runs");
         assert!(!status.success(), "mkdir was not blocked by the filter");
         assert!(
@@ -377,7 +592,7 @@ mod tests {
 
         let work = dir.join("work");
         std::fs::create_dir_all(&work).expect("mkdir");
-        let Some(ruleset) = ruleset(&work, &Grants::default(), &[]) else {
+        let Some(ruleset) = ruleset(&work, &Grants::default(), &[], false) else {
             assert!(
                 std::env::var_os("CASPER_REQUIRE_CONTAINMENT").is_none(),
                 "required Landlock unavailable"
@@ -403,9 +618,40 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_bubblewrap_fails_the_containment_test_when_containment_is_required() {
+        if std::env::var_os("CASPER_TEST_NO_BWRAP").is_some() {
+            return;
+        }
+        let name = "jail::tests::a_jailed_command_cannot_read_the_keys_or_reach_the_network";
+        let run = |required: bool| {
+            let mut command = std::process::Command::new(std::env::current_exe().expect("exe"));
+            command
+                .args(["--exact", name, "--nocapture"])
+                .env("PATH", "")
+                .env("CASPER_TEST_NO_BWRAP", "1")
+                .env_remove("CASPER_REQUIRE_CONTAINMENT")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            if required {
+                command.env("CASPER_REQUIRE_CONTAINMENT", "1");
+            }
+            command.status().expect("the containment test runs")
+        };
+        assert!(
+            run(false).success(),
+            "an unrequired jail is reported, not failed"
+        );
+        assert!(!run(true).success(), "a required jail without bwrap passed");
+    }
+
+    #[test]
     fn a_jailed_command_cannot_read_the_keys_or_reach_the_network() {
         let Some(bwrap) = which("bwrap") else {
-            eprintln!("skipping: no bwrap to build a jail with");
+            assert!(
+                std::env::var_os("CASPER_REQUIRE_CONTAINMENT").is_none(),
+                "required bubblewrap unavailable"
+            );
+            eprintln!("NOT VERIFIED: no bwrap to build a jail with");
             return;
         };
         let dir = Scratch::new("jail", "escape");

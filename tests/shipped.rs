@@ -3,6 +3,8 @@
 //! These load `config/tools.lua`, the same text `main.rs` embeds, rather than a tenant written
 //! beside the assertion.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use casper::lua::engine::Engine;
 
 /// The shipped declarations, with `name`'s surface open at `rows` by `cols`.

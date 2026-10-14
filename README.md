@@ -29,7 +29,7 @@ casper surface <tool>        # hold rows on the harness's screen and draw into t
 | | |
 |---|---|
 | `read` `write` `edit` | read a file, write one, change one — a highlighted file or a coloured diff on screen |
-| `shell` | run a command, and remember where it ran |
+| `shell` | run a command, and remember where it ran for the session that called: the process that started casper, never a session a call names, and nothing remembered without one |
 | `web` | native Rust web search and bounded readable HTTP(S) page extraction, with source URLs |
 | `tools` | the manual for everything below: a tree the model walks, and a page unlocks its tool |
 | `screen` | an interactive program — a pager, an editor, `htop`, `git add -p` — in rows on the screen |
@@ -89,7 +89,9 @@ JSON is on all three. It is the *encoding*, not a transport.
 
 **casper supports all three.** `serve` binds a local Unix socket under its runtime directory,
 accepts same-user peers, and uses the jail profile supplied when the server was spawned. Calls
-cannot replace that profile. The socket is not a remotely accessible transport.
+cannot replace that profile, and a call is answered only when it carries the key written on
+`serve`'s standard input at spawn. With no jail profile, `run` on the socket runs commands as the
+person, as far as their own shell would. The socket is not a remotely accessible transport.
 
 A **call** is answered; an **event** is not:
 
@@ -102,8 +104,8 @@ A **call** is answered; an **event** is not:
 
 `result` is a **list** and `n` says how long it is: a sibling that unpacked a bare value would
 read an answer as nothing at all. `family` says which revision the reply is written in — a reader
-refuses a number it does not know and tolerates one it predates. A refused call is a *reply*, not
-a dropped connection.
+refuses a number newer than its own, by name, and accepts an older one or none. A refused call is
+a *reply*, not a dropped connection.
 
 **The tag key is `event`, everywhere, in both directions**, and `gate-wire` refuses any other.
 The failure it prevents is silent: two of these wires exist as byte-identical copies in two
@@ -114,13 +116,21 @@ stops being answered.
 
 `CASPER_JAIL=1` requests the conservative jail; JSON can add `write` directories, a shared
 `tmp` directory, and unrestricted network permission through `reach: true`. An absent or empty
-selector disables isolation. Magi supplies this selector and the working directory to ordinary
-tools, socket servers, and surfaces; tool arguments do not grant permissions.
+selector disables isolation, except under `casper mcp`, where an absent one is the conservative
+jail and only an empty one disables it. A selector that does not parse refuses every command.
+Magi supplies this selector and the working directory to ordinary tools, socket servers, and
+surfaces; tool arguments do not grant permissions.
 
 Ordinary commands and PTYs use the same preparation. Bubblewrap provides mount/process
 namespaces and loads the syscall filter after setup. Without bubblewrap, Casper requires fully
 enforced Landlock ABI 6 protections and seccomp; unavailable protection refuses the spawn.
-Without unrestricted reach, socket syscalls are denied, including access to host Unix sockets.
+Without reach, socket syscalls are denied. With it, the network opens and nothing local does:
+`socket` takes IPv4, IPv6 and routing netlink (`NETLINK_ROUTE`), plus Unix sockets under
+bubblewrap, whose mount namespace hides the runtime directory. Any other family, and a
+`socketpair` of anything but Unix sockets, fails with `EAFNOSUPPORT`. There is no host Unix socket
+by path, and no controlling terminal. Abstract Unix sockets stay closed wherever
+the kernel can scope them (Landlock ABI 6, and a bubblewrap that is not setuid); where it cannot,
+bubblewrap runs without that scope unless `CASPER_REQUIRE_CONTAINMENT=1` makes it a refusal.
 Host-specific network allowances are not supported by this profile.
 
 Isolated children receive a small environment allowlist rather than inherited provider keys or
@@ -146,6 +156,13 @@ on unreadable/unstable entries, dangling links, more than 16,384 visited entries
 levels. A large or uninspectable store produces a refusal, never silently reduced protection.
 The fallback gives each command private temporary storage unless trusted shared storage was
 specified; it does not grant the whole host `/tmp`.
+
+The two backends answer the same probes the same way, with two named differences. On the Landlock
+path no Unix socket opens at all, since no mount namespace hides the runtime directory there. And
+Landlock cannot carve a read-only file out of a writable tree: `.magi.lua`, `.balthasar.lua`,
+`.git/config` and `.git/hooks` stay writable beneath the workspace and each write grant, where
+bubblewrap binds them read-only. What Landlock does keep read-only is everything outside the
+writable roots, such as the home directory's dotfiles and the person's configuration.
 
 `oslo make test-containment` uses synthetic credentials and local listeners to exercise both
 backends, ordinary/PTY execution, terminal input/resize, and pinned Rust toolchain discovery.
@@ -190,3 +207,21 @@ make build
 # anywhere else
 oslo make build
 ```
+
+## Nix
+
+Each release tag publishes a static build for x86_64 and aarch64 Linux to the `ai-nerv` cache,
+with `config/` under `share/casper/`. casper reads its declarations from `$XDG_CONFIG_HOME/casper`,
+so copy `share/casper/config/` there, as `make install` does from a checkout.
+
+```sh
+cachix use ai-nerv
+nix run github:ai-nerv/casper -- verbs
+nix build github:ai-nerv/casper
+```
+
+The flake names the cache itself, so `--accept-flake-config` does the same as `cachix use`. In
+another flake, take `inputs.casper.packages.${system}.default`, and configure the cache on the
+consuming machine: an input's `nixConfig` is not inherited.
+
+Here, `make nix-build` builds it into `result/`, and `make nix-check` checks the flake.

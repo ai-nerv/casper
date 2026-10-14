@@ -47,7 +47,8 @@ Install the executable and its declarations with `oslo make install`. Register a
 client with command `casper` and arguments `mcp`, `--root`, `/path/to/project`.
 Use `--tools=read,web` to limit exposure and `--timeout-ms=60000` to set the call deadline.
 The server inherits the launch environment and configuration, including `CASPER_JAIL`;
-it does not grant additional permissions or expose a remote HTTP listener.
+with `CASPER_JAIL` unset, each tool runs inside the conservative jail, and only an empty value
+turns isolation off. It does not grant additional permissions or expose a remote HTTP listener.
 `--root` sets the working directory, not filesystem containment. Use `CASPER_JAIL` for
 containment and the MCP client's approval controls for permitted tool actions.
 

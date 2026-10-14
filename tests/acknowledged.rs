@@ -5,6 +5,8 @@
 //! two. A package's tool is asked for by name rather than counted, because the shipped
 //! declarations bring thirteen of their own.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use casper::scratch::Scratch;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};

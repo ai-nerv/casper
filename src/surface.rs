@@ -75,8 +75,7 @@ pub fn hold(tool: &str, engine: &mut Engine) -> bool {
         return delivered();
     }
     // Drawn once before any input, so the rows are filled the moment they appear.
-    let mut opened = size.clone();
-    opened["kind"] = serde_json::Value::String("open".to_owned());
+    let opened = serde_json::json!({"rows": rows, "cols": cols, "holds": holds, "kind": "open"});
     if !offer(engine, &opened) {
         return delivered();
     }

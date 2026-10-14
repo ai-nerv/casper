@@ -1,5 +1,12 @@
 {
-  description = "casper Rust development shell";
+  description = "casper, and its Rust development shell";
+
+  nixConfig = {
+    extra-substituters = [ "https://ai-nerv.cachix.org" ];
+    extra-trusted-public-keys = [
+      "ai-nerv.cachix.org-1:1Wycl/383z79Nvh7ELU2jlycVzOqJyy1PGajS9caDBY="
+    ];
+  };
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs?rev=4c1018dae018162ec878d42fec712642d214fdfa";
@@ -14,7 +21,119 @@
 
   outputs =
     { nixpkgs, flake-utils, nixgl, rust-overlay, ... }:
-    flake-utils.lib.eachDefaultSystem (
+    let
+      manifest = builtins.fromTOML (builtins.readFile ./Cargo.toml);
+
+      # The static binary, with the shipped configuration beside it.
+      packaged = flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          lib = pkgs.lib;
+          casper = pkgs.pkgsStatic.rustPlatform.buildRustPackage {
+            pname = "casper";
+            inherit (manifest.package) version;
+            src = lib.fileset.toSource {
+              root = ./.;
+              fileset = lib.fileset.unions [
+                ./Cargo.toml
+                ./Cargo.lock
+                ./src
+                ./config
+              ];
+            };
+
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+              outputHashes = {
+                "luna-0.5.0" = "sha256-YJsEKm7UykhqNQjhLPBgpmCHQZQhDLFVAENSD43SyAw=";
+              };
+            };
+            cargoBuildFlags = [
+              "--bin"
+              "casper"
+            ];
+            stripAllList = [ "bin" ];
+
+            doCheck = false;
+            postInstall = ''
+              mkdir -p "$out/share/casper"
+              cp -r config "$out/share/casper/"
+            '';
+
+            doInstallCheck = true;
+            nativeInstallCheckInputs = [ pkgs.binutils ];
+            installCheckPhase = ''
+              runHook preInstallCheck
+
+              binary="$out/bin/casper"
+              home="$TMPDIR/home"
+              mkdir -p "$home/run" "$home/config"
+              chmod 700 "$home/run"
+              cp -r "$out/share/casper/config" "$home/config/casper"
+              chmod -R u+w "$home/config"
+              isolated() {
+                env -i PATH="$PATH" HOME="$home" \
+                  XDG_CONFIG_HOME="$home/config" XDG_DATA_HOME="$home/data" \
+                  XDG_CACHE_HOME="$home/cache" XDG_STATE_HOME="$home/state" \
+                  XDG_RUNTIME_DIR="$home/run" \
+                  "$binary" "$@"
+              }
+              isolated verbs --json > "$TMPDIR/verbs.json"
+              grep -q '^{"ok":true,"family":1,' "$TMPDIR/verbs.json"
+              grep -q '"verb":"serve"' "$TMPDIR/verbs.json"
+              isolated tools --json > "$TMPDIR/tools.json"
+              grep -q '^{"ok":true,"family":1,' "$TMPDIR/tools.json"
+              grep -q '"name":"read"' "$TMPDIR/tools.json"
+              test -s "$out/share/casper/config/clients/hexe.lua"
+              test "$(ls "$out/bin")" = casper
+
+              if readelf -l "$binary" | grep -q 'program interpreter'; then
+                echo "error: $binary requests a dynamic loader" >&2
+                exit 1
+              fi
+              if readelf -d "$binary" 2>/dev/null | grep -q NEEDED; then
+                echo "error: $binary has dynamic dependencies" >&2
+                exit 1
+              fi
+
+              runHook postInstallCheck
+            '';
+
+            meta = {
+              description = manifest.package.description;
+              homepage = "https://github.com/ai-nerv/casper";
+              license = lib.licenses.mit;
+              mainProgram = "casper";
+              platforms = [
+                "x86_64-linux"
+                "aarch64-linux"
+              ];
+            };
+          };
+          app = {
+            type = "app";
+            program = "${casper}/bin/casper";
+            meta.description = "Run casper";
+          };
+        in
+        {
+          packages = {
+            default = casper;
+            inherit casper;
+          };
+          apps = {
+            default = app;
+            casper = app;
+          };
+          checks = {
+            inherit casper;
+          };
+        }
+      );
+    in
+    nixpkgs.lib.recursiveUpdate packaged
+    (flake-utils.lib.eachDefaultSystem (
       system:
       let
         overlays = [
@@ -90,6 +209,9 @@
             # failure rather than a line somebody eventually notices. See the note in
             # `Cargo.toml` for why this and not `unused_crate_dependencies`.
             pkgs.cargo-machete
+            # The dependency policy in `deny.toml`, and the advisory database against the lockfile.
+            pkgs.cargo-deny
+            pkgs.cargo-audit
             pkgs.clang
             pkgs.mold
             pkgs.pkg-config
@@ -129,5 +251,5 @@
           WGPU_DEBUG = "0";
         };
       }
-    );
+    ));
 }

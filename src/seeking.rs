@@ -94,7 +94,10 @@ fn looking(asked: &Asked<'_>) -> Sought {
     }
 
     let chosen = scoring::shortlist(asked.query, &fragments, SHORTLIST, OF_EACH_FILE);
-    let shortlist: Vec<&Fragment> = chosen.iter().map(|nth| &fragments[*nth]).collect();
+    let shortlist: Vec<&Fragment> = chosen
+        .iter()
+        .filter_map(|nth| fragments.get(*nth))
+        .collect();
     if shortlist.is_empty() {
         return Sought::Found(unscored(
             asked,

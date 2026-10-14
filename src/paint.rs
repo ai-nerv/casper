@@ -95,7 +95,7 @@ pub fn diff(text: &str) -> Vec<Line> {
                     _ => Role::Context,
                 }
             };
-            vec![Span::new(role, line)]
+            vec![Span::new(role, clean(line))]
         })
         .collect()
 }
@@ -104,7 +104,14 @@ pub fn diff(text: &str) -> Vec<Line> {
 #[must_use]
 pub fn plain(text: &str) -> Vec<Line> {
     text.lines()
-        .map(|line| vec![Span::new(Role::Text, line)])
+        .map(|line| vec![Span::new(Role::Text, clean(line))])
+        .collect()
+}
+
+/// `text` without the characters a terminal acts on: C0 except tab and newline, DEL, and C1.
+fn clean(text: &str) -> String {
+    text.chars()
+        .filter(|&c| c == '\t' || c == '\n' || !(c.is_control()))
         .collect()
 }
 
@@ -134,9 +141,9 @@ pub fn ansi(text: &str, theme: &Theme) -> Vec<Line> {
         let mut role = Role::Text;
         let mut held = String::new();
         let mut rest = raw;
-        while let Some(at) = rest.find('\u{1b}') {
+        while let Some(at) = rest.find(introduces) {
             let (before, after) = rest.split_at(at);
-            held.push_str(before);
+            held.push_str(&clean(before));
             let Some((codes, tail)) = escape(after) else {
                 // An escape that never ends: everything after it is uninterpretable.
                 rest = "";
@@ -153,7 +160,7 @@ pub fn ansi(text: &str, theme: &Theme) -> Vec<Line> {
             }
             rest = tail;
         }
-        held.push_str(rest);
+        held.push_str(&clean(rest));
         // A line always has at least one span, even an empty one: a row with no spans encodes
         // from Lua as `{}`, a map where the wire wants a list.
         if !held.is_empty() || line.is_empty() {
@@ -164,19 +171,52 @@ pub fn ansi(text: &str, theme: &Theme) -> Vec<Line> {
     out
 }
 
+/// Whether `c` opens an escape: ESC, or a C1 control standing for one.
+fn introduces(c: char) -> bool {
+    c == '\u{1b}' || ('\u{80}'..='\u{9f}').contains(&c)
+}
+
 /// Split one escape off the front, answering its SGR parameters when it has any. `Some(None)` is
 /// an escape that is not SGR. `None` is a sequence with no terminator, which cannot be skipped
 /// because nothing says where it ends.
 fn escape(at: &str) -> Option<(Option<&str>, &str)> {
-    let rest = at.strip_prefix('\u{1b}')?;
-    let Some(rest) = rest.strip_prefix('[') else {
-        // Not CSI: skipping one character is right for a two-character escape.
-        return Some((None, rest.get(1..).unwrap_or("")));
+    let mut chars = at.chars();
+    let kind = match chars.next()? {
+        '\u{1b}' => chars.next()?,
+        '\u{9b}' => '[',
+        '\u{9d}' => ']',
+        '\u{90}' => 'P',
+        '\u{98}' => 'X',
+        '\u{9e}' => '^',
+        '\u{9f}' => '_',
+        _ => return Some((None, chars.as_str())),
     };
-    let end = rest.find(|c: char| c.is_ascii_alphabetic())?;
-    let (params, tail) = rest.split_at(end);
-    let (kind, tail) = tail.split_at(1);
-    Some(((kind == "m").then_some(params), tail))
+    let rest = chars.as_str();
+    match kind {
+        '[' => {
+            let end = rest.find(|c: char| ('\u{40}'..='\u{7e}').contains(&c))?;
+            let (params, tail) = rest.split_at(end);
+            let (last, tail) = tail.split_at(1);
+            Some(((last == "m").then_some(params), tail))
+        }
+        // OSC, DCS, SOS, PM and APC: a payload, dropped whole up to BEL or the string terminator.
+        ']' | 'P' | 'X' | '^' | '_' => {
+            let end = rest.find(['\u{7}', '\u{9c}', '\u{1b}'])?;
+            let tail = &rest[end..];
+            let tail = tail
+                .strip_prefix("\u{1b}\\")
+                .or_else(|| tail.strip_prefix(['\u{7}', '\u{9c}']))?;
+            Some((None, tail))
+        }
+        // Intermediates, then one final character: `ESC ( B`, `ESC 7`, `ESC c`.
+        _ => {
+            let after = at.get(1..)?;
+            let skip = after.find(|c: char| !(' '..='/').contains(&c))?;
+            let mut tail = after[skip..].chars();
+            tail.next()?;
+            Some((None, tail.as_str()))
+        }
+    }
 }
 
 /// The role an SGR parameter list means, given a theme. Three answers, not two: `Some(Text)` is a
@@ -306,6 +346,44 @@ mod tests {
     fn moving_the_cursor_is_dropped_rather_than_passed_on() {
         let painted = ansi("a\u{1b}[2Jb\u{1b}[Hc", &Theme::new());
         assert_eq!(text_of(&painted), "abc");
+    }
+
+    #[test]
+    fn string_sequences_go_whole_with_their_payload() {
+        for (text, kept) in [
+            ("a\u{1b}]52;c;ZXZpbA==\u{7}b", "ab"),
+            ("a\u{1b}]0;pwned\u{1b}\\b", "ab"),
+            ("a\u{1b}Pq#0;2;0;0;0\u{1b}\\b", "ab"),
+            ("a\u{1b}_payload\u{1b}\\b", "ab"),
+            ("a\u{1b}^payload\u{1b}\\b", "ab"),
+            ("a\u{1b}Xpayload\u{1b}\\b", "ab"),
+            ("a\u{9d}0;title\u{9c}b", "ab"),
+            ("kept\u{1b}]0;never ends", "kept"),
+        ] {
+            assert_eq!(text_of(&ansi(text, &Theme::new())), kept, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn bells_returns_and_eight_bit_controls_never_reach_the_terminal() {
+        for (text, kept) in [
+            ("a\u{7}b", "ab"),
+            ("rm -rf ~\r\u{1b}[2Kgit status", "rm -rf ~git status"),
+            ("a\u{9b}31mb", "ab"),
+            ("a\u{1b}(Bb", "ab"),
+            ("a\u{1b}[2~b", "ab"),
+            ("a\u{1b}7b", "ab"),
+            ("a\u{7f}b\u{85}c", "abc"),
+        ] {
+            assert_eq!(text_of(&ansi(text, &Theme::new())), kept, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn plain_text_drops_controls_and_keeps_tabs() {
+        let painted = plain("a\tb\u{7}c\u{7f}d\u{85}e\rf\u{1b}[31mg");
+        assert_eq!(text_of(&painted), "a\tbcdef[31mg");
+        assert_eq!(text_of(&diff("+x\u{1b}]0;t\u{7}")), "+x]0;t");
     }
 
     #[test]

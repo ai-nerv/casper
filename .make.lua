@@ -10,14 +10,12 @@
 
 local make = oslo.make
 
--- Name and version live in PROJECT, one per line, so every tool reads them from one place.
+-- Name and version from the package table of Cargo.toml, the file a release bumps.
 local function project()
-  local found = {}
-  for line in (oslo.fs.read("PROJECT") or ""):gmatch("[^\n]+") do
-    local value = line:match("^%s*([^#%[%s]%S*)%s*$")
-    if value then found[#found + 1] = value end
-  end
-  return found[1] or "casper", found[2] or "0.1.0"
+  local manifest = oslo.fs.read("Cargo.toml") or ""
+  local package = manifest:match("%[package%](.-)\n%[") or manifest
+  return package:match('\nname%s*=%s*"([^"]+)"') or "casper",
+         package:match('\nversion%s*=%s*"([^"]+)"') or "0.0.0"
 end
 
 local NAME, VERSION = project()
@@ -121,10 +119,30 @@ end
 make.recipe{ name = "family-path", desc = "the binary selected by the build recipe",
              run = function() print("NERV_BINARY=" .. binary_path()) end }
 
+make.recipe{ name = "nix-build", desc = "the static Nix package, into result/bin/" .. NAME,
+             run = function() sh.nix("build", "--accept-flake-config", ".#" .. NAME, "-L") end }
+
+make.recipe{ name = "nix-check", desc = "the flake's outputs and the package's install checks",
+             run = function() sh.nix("flake", "check", "--accept-flake-config", "-L") end }
+
+-- Substituted only: no local or remote builder may build it, so a cache miss fails here.
+make.recipe{
+  name = "nix-download-check",
+  desc = "fetch the package from the cache, building nothing, and run it",
+  run = function()
+    sh.nix("build", "--accept-flake-config", "--no-update-lock-file",
+           "--max-jobs", "0", "--builders", "", ".#" .. NAME)
+    local ran = oslo.run{ "result/bin/" .. NAME, "verbs", "--json", capture = true }
+    assert(ran.ok and (ran.out or ""):find('"ok":true', 1, true),
+           "result/bin/" .. NAME .. " verbs --json did not answer ok")
+    print(("%s answers verbs from the cache"):format(NAME))
+  end,
+}
+
 -- **The binary, not the library.** casper is a program: the library exists so the tests can
 -- reach inside it, and nobody runs an rlib. This built `--lib` for a while, inherited from the
 -- scaffold, and the cost was not an error -- it was `make build` succeeding and leaving the
--- previous binary in place, so a change to `config/tools.lua` (which rides in the binary through
+-- previous binary in place, so a change to `config/clients/` (which rides in the binary through
 -- `include_str!`) was absent from the thing you then ran.
 --
 -- Release, because this is the binary somebody runs. `make debug` is for iterating.
@@ -339,15 +357,37 @@ make.recipe{
       print(said)
       error("cargo machete failed")
     end
-    local shelled = oslo.run{ "nix", "develop", "--command", "cargo", "machete" }
+    local shelled = oslo.run{ "nix", "--extra-experimental-features", "nix-command flakes",
+                              "develop", "--command", "cargo", "machete" }
     assert(shelled.ok, "cargo machete failed")
   end,
 }
 
+-- The advisory database and the dependency policy, each run only where its tool is installed:
+-- `verify` names both, and a machine without one says so and carries on.
+local function when_installed(tool, argv, failed)
+  return function()
+    if not oslo.run{ "cargo", tool, "--version", capture = true }.ok then
+      print(("cargo %s is not installed; skipped"):format(tool))
+      return
+    end
+    assert(oslo.run(argv).ok, failed)
+  end
+end
+
+-- Known advisories against the lockfile, from the advisory database already on this machine.
+make.recipe{ name = "audit", desc = "known advisories against the lockfile, offline",
+             run = when_installed("audit", { "cargo", "audit", "--no-fetch" },
+                                  "cargo audit failed") }
+
+-- Licenses, bans, advisories and sources, as `deny.toml` sets them.
+make.recipe{ name = "deny", desc = "the dependency policy in deny.toml",
+             run = when_installed("deny", { "cargo", "deny", "check" }, "cargo deny failed") }
+
 make.recipe{
   name = "verify",
   desc = "the whole local gate",
-  deps = { "fmt-check", "check", "test", "check-all", "test-all", "clippy", "rustdoc", "gates", "gate-hermetic", "gate-family", "gate-role", "machete" },
+  deps = { "fmt-check", "check", "test", "check-all", "test-all", "clippy", "rustdoc", "gates", "gate-hermetic", "gate-family", "gate-role", "machete", "audit", "deny" },
 }
 make.alias("v", "verify")
 
@@ -364,7 +404,9 @@ make.recipe{
   run = function()
     local where = "target/x86_64-unknown-linux-musl/release/casper"
     if not oslo.fs.exists(where) then where = "target/release/casper" end
-    local ran = oslo.run{ "scripts/gate-family.sh", where  }
+    -- `serve` is probed live: bound in the gate's own runtime directory, its key handed first.
+    local ran = oslo.run{ "env", "GATE_SERVE_STDIN=" .. ("5e"):rep(32), "scripts/gate-family.sh",
+                          where, "serve", "--at", "{run}/casper/gate.sock" }
     assert(ran.ok, "gate-family failed")
   end,
 }

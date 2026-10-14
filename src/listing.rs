@@ -300,20 +300,20 @@ fn ordered(entry: &Entry) -> Vec<(bool, String)> {
 /// A size as a person reads it: three significant figures and a unit, never more.
 #[must_use]
 pub fn sized(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
+    const LARGER: [&str; 4] = ["K", "M", "G", "T"];
     let mut size = bytes as f64;
-    let mut unit = 0;
-    while size >= 1024.0 && unit + 1 < UNITS.len() {
+    let mut unit = None;
+    for larger in LARGER {
+        if size < 1024.0 {
+            break;
+        }
         size /= 1024.0;
-        unit += 1;
+        unit = Some(larger);
     }
-    if unit == 0 {
-        return format!("{bytes}{}", UNITS[0]);
-    }
-    if size < 10.0 {
-        format!("{size:.1}{}", UNITS[unit])
-    } else {
-        format!("{size:.0}{}", UNITS[unit])
+    match unit {
+        None => format!("{bytes}B"),
+        Some(unit) if size < 10.0 => format!("{size:.1}{unit}"),
+        Some(unit) => format!("{size:.0}{unit}"),
     }
 }
 

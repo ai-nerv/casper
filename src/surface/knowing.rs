@@ -13,14 +13,9 @@ pub fn table(ctx: luna::Context<'_>) -> Callback<'_> {
             return Err(raise(ctx, "casper.knows(verb, args): a verb first"));
         };
         let verb = String::from_utf8_lossy(verb.as_bytes()).into_owned();
-        let args = match args {
-            Value::Nil => serde_json::Value::Null,
-            other => {
-                crate::lua::convert::json_from_lua(ctx, other, 0).unwrap_or(serde_json::Value::Null)
-            }
-        };
-
-        match crate::surface::wonder(&verb, args) {
+        let asked = crate::lua::convert::json_from_lua(ctx, args)
+            .and_then(|args| crate::surface::wonder(&verb, args));
+        match asked {
             Ok(said) => {
                 stack.replace(ctx, crate::lua::convert::lua_from_json(ctx, &said));
             }

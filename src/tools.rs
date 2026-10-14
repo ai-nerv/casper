@@ -200,10 +200,43 @@ pub struct Answer {
     pub about: String,
 }
 
+/// Which session a call comes from: the process that started this casper, which on either door
+/// is the coordinator, named by its pid and the moment it started, so a reused pid is another
+/// session. `None` when there is no such process to name.
+#[must_use]
+pub fn session() -> Option<String> {
+    let parent = rustix::process::getppid()?.as_raw_nonzero().get();
+    let stat = std::fs::read_to_string(format!("/proc/{parent}/stat")).ok()?;
+    started(&stat).map(|at| format!("{parent}-{at}"))
+}
+
+/// Field 22 of a `/proc/<pid>/stat` line, the start time, counted past the command name, which
+/// may itself hold spaces and parentheses.
+fn started(stat: &str) -> Option<&str> {
+    let (_, fields) = stat.rsplit_once(')')?;
+    let at = fields.split_whitespace().nth(19)?;
+    at.bytes().all(|b| b.is_ascii_digit()).then_some(at)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::paint::{Role, Span};
+
+    #[test]
+    fn a_session_is_the_caller_by_pid_and_start_and_the_same_on_every_ask() {
+        let caller = rustix::process::getppid().map(|pid| pid.as_raw_nonzero().get());
+        let named = session().expect("this test has a caller");
+        assert!(
+            named.starts_with(&format!("{}-", caller.unwrap_or_default())),
+            "{named}"
+        );
+        assert_eq!(session(), Some(named));
+        let stat = "42 (a) b (c)) S 1 42 42 0 -1 4194560 1 0 0 0 0 0 0 0 20 0 1 0 98765 0 0";
+        assert_eq!(started(stat), Some("98765"));
+        assert_eq!(started("42 (cut short) S 1"), None);
+        assert_eq!(started("no command name at all"), None);
+    }
 
     #[test]
     fn a_plain_result_carries_nothing_it_is_not() {

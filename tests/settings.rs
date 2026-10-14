@@ -4,6 +4,8 @@
 //! one process per call, so a `configure` that only reached the configuring process would report
 //! `set` for something that evaporated on exit.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use std::process::Command;
 
 /// A config directory holding this checkout's declarations, rather than whatever `make install`

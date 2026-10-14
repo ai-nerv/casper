@@ -2,6 +2,8 @@
 //!
 //! A tool added to or removed from `config/tools.lua` fails this test until the list is edited.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use std::process::Command;
 
 /// The names `casper tools` lists for this checkout's declarations, sorted.

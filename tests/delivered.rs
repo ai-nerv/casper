@@ -8,6 +8,8 @@
 //! Every case also asserts that nothing panicked, because `println!` and `eprintln!` panic on a
 //! failed write and exit 101 is not exit 1.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use casper::scratch::Scratch;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};

@@ -3,9 +3,10 @@
 //!
 //! `PR_SET_PDEATHSIG` is cleared across `fork`, so each child re-arms it in the window, then
 //! re-reads its parent to catch a casper already gone; the signal fires when the *forking thread*
-//! exits, so spawn from the main one. [`running`] also gives the child its own process group;
-//! [`on_a_screen`] must not — `pty_process` made it a session leader. [`confine`] and [`restrict`]
-//! arm the seccomp filter and Landlock ruleset [`crate::jail`] builds as data.
+//! exits, so spawn from the main one. [`running`] also gives the child a session of its own, so it
+//! has no controlling terminal and its group is one signal away; [`on_a_screen`] must not —
+//! `pty_process` made it a session leader. [`confine`] and [`restrict`] arm the seccomp filters
+//! and Landlock ruleset [`crate::jail`] builds as data.
 
 use std::os::unix::process::CommandExt as _;
 
@@ -18,11 +19,11 @@ fn arm(casper: rustix::process::Pid) -> std::io::Result<()> {
 }
 
 fn alone() -> std::io::Result<()> {
-    rustix::process::setpgid(None, None)?;
+    rustix::process::setsid()?;
     Ok(())
 }
 
-// SAFETY: descriptor inheritance, process grouping, and parent-death setup use raw syscalls
+// SAFETY: descriptor inheritance, session creation, and parent-death setup use raw syscalls
 // on prebuilt data, without allocating between fork and exec.
 #[allow(unsafe_code)]
 pub fn running(command: &mut std::process::Command, descriptors: Vec<std::os::fd::OwnedFd>) {
@@ -41,7 +42,7 @@ pub fn running(command: &mut std::process::Command, descriptors: Vec<std::os::fd
 #[must_use]
 pub fn on_a_screen(
     command: pty_process::blocking::Command,
-    filter: Option<seccompiler::BpfProgram>,
+    filters: Vec<seccompiler::BpfProgram>,
     ruleset: Option<landlock::RulesetCreated>,
     descriptors: Vec<std::os::fd::OwnedFd>,
 ) -> pty_process::blocking::Command {
@@ -49,7 +50,7 @@ pub fn on_a_screen(
     unsafe {
         command.pre_exec(move || {
             inherit(&descriptors)?;
-            enforce(filter.as_ref(), ruleset.as_ref())?;
+            enforce(&filters, ruleset.as_ref())?;
             arm(casper)
         })
     }
@@ -63,11 +64,11 @@ fn inherit(descriptors: &[std::os::fd::OwnedFd]) -> std::io::Result<()> {
 }
 
 fn enforce(
-    filter: Option<&seccompiler::BpfProgram>,
+    filters: &[seccompiler::BpfProgram],
     ruleset: Option<&landlock::RulesetCreated>,
 ) -> std::io::Result<()> {
     let denied = |_| std::io::Error::from_raw_os_error(libc::EPERM);
-    if let Some(filter) = filter {
+    for filter in filters {
         seccompiler::apply_filter(filter).map_err(denied)?;
     }
     if let Some(ruleset) = ruleset {
@@ -83,12 +84,12 @@ fn enforce(
     Ok(())
 }
 
-// SAFETY: the closure only calls `apply_filter` on a filter built and moved in before the fork —
-// one `prctl` pair, nothing allocated in the child.
+// SAFETY: the closure only calls `apply_filter` on filters built and moved in before the fork —
+// one `prctl` pair each, nothing allocated in the child.
 #[allow(unsafe_code)]
-pub fn confine(command: &mut std::process::Command, filter: seccompiler::BpfProgram) {
+pub fn confine(command: &mut std::process::Command, filters: Vec<seccompiler::BpfProgram>) {
     unsafe {
-        command.pre_exec(move || enforce(Some(&filter), None));
+        command.pre_exec(move || enforce(&filters, None));
     }
 }
 
@@ -97,6 +98,6 @@ pub fn confine(command: &mut std::process::Command, filter: seccompiler::BpfProg
 #[allow(unsafe_code)]
 pub fn restrict(command: &mut std::process::Command, ruleset: landlock::RulesetCreated) {
     unsafe {
-        command.pre_exec(move || enforce(None, Some(&ruleset)));
+        command.pre_exec(move || enforce(&[], Some(&ruleset)));
     }
 }

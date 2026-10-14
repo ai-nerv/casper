@@ -1,15 +1,25 @@
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "containment/agreement.rs"]
+mod agreement;
 #[path = "containment/aliases.rs"]
 mod aliases;
+#[path = "containment/fetch.rs"]
+mod fetch;
 #[path = "containment/launcher.rs"]
 mod launcher;
 #[path = "containment/lifecycle.rs"]
 mod lifecycle;
 #[path = "containment/paths.rs"]
 mod paths;
+#[path = "containment/persistence.rs"]
+mod persistence;
+#[path = "containment/reach.rs"]
+mod reach;
 #[path = "containment/socket.rs"]
 mod socket;
 #[path = "containment/surface.rs"]
@@ -21,7 +31,13 @@ fn installed(name: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-fn fixture(mode: &str, bubblewrap: bool, variant: &str) {
+/// The variants run with reach on, the configuration production uses.
+fn reaching(variant: &str) -> bool {
+    matches!(variant, "reach" | "fetch" | "agreement")
+}
+
+/// Run `variant` in a fixture of its own; answers the verdicts an agreement probe left, if any.
+fn fixture(mode: &str, bubblewrap: bool, variant: &str) -> String {
     let network = std::net::UdpSocket::bind("127.0.0.1:0").expect("host network probe");
     network
         .set_read_timeout(Some(Duration::from_millis(100)))
@@ -41,6 +57,18 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) {
         .expect("credential alias");
     std::fs::write(dir.join("outside"), "HOST_UNCHANGED").expect("outside fixture");
     aliases::prepare(&dir, variant);
+    if matches!(variant, "persistence" | "agreement") {
+        persistence::prepare(&dir);
+    }
+    let _reached = matches!(variant, "reach" | "agreement").then(|| reach::prepare(&dir));
+    let fetched = (variant == "fetch").then(|| fetch::serve(&dir));
+    if variant == "agreement" {
+        std::fs::copy(
+            std::env::current_exe().expect("test executable"),
+            dir.join("work/agreement-probe"),
+        )
+        .expect("agreement probe executable");
+    }
     let local = (variant == "unix-network").then(|| {
         std::fs::copy(
             std::env::current_exe().expect("test executable"),
@@ -94,7 +122,7 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) {
                 "required bubblewrap unavailable"
             );
             eprintln!("NOT VERIFIED: bubblewrap unavailable");
-            return;
+            return String::new();
         };
         let program = if matches!(
             variant,
@@ -146,6 +174,9 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) {
     }
     if variant == "isolation-off" {
         command.env("CASPER_JAIL", "");
+    }
+    if reaching(variant) {
+        command.env("CASPER_JAIL", r#"{"reach":true}"#);
     }
     if variant == "broad-grant" {
         command.env(
@@ -202,7 +233,7 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) {
     }
     if variant == "parent-death" {
         lifecycle::parent_dies(&mut child, &dir.join("work/ready"));
-        return;
+        return String::new();
     }
     let deadline = Instant::now() + Duration::from_secs(20);
     let status = loop {
@@ -224,6 +255,18 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) {
         "HOST_UNCHANGED"
     );
     let mut packet = [0; 128];
+    if let Some(server) = fetched {
+        assert!(
+            server.join().expect("fetch listener"),
+            "nothing was fetched"
+        );
+    }
+    if reaching(variant) {
+        network
+            .recv_from(&mut packet)
+            .expect("a reach grant keeps the network open");
+        return std::fs::read_to_string(dir.join("work/verdicts")).unwrap_or_default();
+    }
     let error = network
         .recv_from(&mut packet)
         .expect_err("jailed command reached host UDP socket");
@@ -232,6 +275,7 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) {
         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
     ));
     drop(local);
+    String::new()
 }
 
 fn probe(root: &Path) -> String {
@@ -296,6 +340,10 @@ fn contained_child() {
         terminal_io(&root);
         return;
     }
+    if variant == "persistence" {
+        persistence::check(&root, &mode, installed("bwrap").is_some());
+        return;
+    }
     let mut script = probe(&root);
     if variant == "late-stores" {
         script = format!(
@@ -318,6 +366,20 @@ fn contained_child() {
     }
     if variant == "unix-network" {
         script.push_str("\n./network-probe --exact unix_socket_probe --nocapture\n");
+    }
+    if matches!(variant.as_str(), "reach" | "agreement") {
+        reach::own_a_terminal();
+        let probe = if variant == "reach" {
+            "reach"
+        } else {
+            "agreement"
+        };
+        script.push_str(&format!(
+            "\n./{probe}-probe --exact {probe}::probe --nocapture\n"
+        ));
+    }
+    if variant == "fetch" {
+        script.push_str("\n./fetch-probe --exact fetch::probe --nocapture\n");
     }
     if variant == "descriptor-probe" {
         script.push_str("\n./descriptor-probe --exact descriptor_probe --nocapture\n");
@@ -428,6 +490,58 @@ fn terminal_io(root: &Path) {
         std::fs::read_to_string(root.join("work/report")).expect("terminal report"),
         "37 111\nx\n"
     );
+}
+
+#[test]
+fn reach_opens_the_network_and_no_local_socket_or_terminal() {
+    for bubblewrap in [false, true] {
+        for mode in ["command", "socket"] {
+            fixture(mode, bubblewrap, "reach");
+        }
+    }
+}
+
+#[test]
+fn reach_keeps_name_resolution_and_an_https_fetch_working() {
+    for bubblewrap in [false, true] {
+        fixture("command", bubblewrap, "fetch");
+    }
+}
+
+#[test]
+fn bubblewrap_keeps_what_the_next_unjailed_program_runs_read_only() {
+    for mode in ["command", "screen"] {
+        fixture(mode, true, "persistence");
+    }
+}
+
+#[test]
+fn landlock_keeps_persistence_outside_the_writable_roots_but_cannot_seal_it_beneath_them() {
+    for mode in ["command", "screen"] {
+        fixture(mode, false, "persistence");
+    }
+}
+
+#[test]
+fn bubblewrap_and_landlock_agree_but_for_the_named_differences() {
+    let landlock = agreement::read(&fixture("command", false, "agreement"));
+    let bubblewrap = agreement::read(&fixture("command", true, "agreement"));
+    for (name, under_bubblewrap, under_landlock) in agreement::EXPECTED {
+        assert_eq!(
+            landlock.get(*name),
+            Some(under_landlock),
+            "landlock: {name}"
+        );
+        let differs = under_bubblewrap != under_landlock;
+        assert_eq!(differs, agreement::DIFFERENT.contains(name), "{name}");
+        if !bubblewrap.is_empty() {
+            assert_eq!(
+                bubblewrap.get(*name),
+                Some(under_bubblewrap),
+                "bubblewrap: {name}"
+            );
+        }
+    }
 }
 
 #[test]

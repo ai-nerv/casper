@@ -123,15 +123,12 @@ fn indexed(n: u8) -> [u8; 3] {
     /// What each step of the cube is worth. Not evenly spaced: a linear ramp here makes every
     /// dark colour visibly wrong.
     const STEP: [u8; 6] = [0, 95, 135, 175, 215, 255];
+    let step = |nth: u8| STEP.get(usize::from(nth)).copied().unwrap_or(u8::MAX);
     match n {
-        0..=15 => BASE[n as usize],
+        0..=15 => BASE.get(usize::from(n)).copied().unwrap_or_default(),
         16..=231 => {
             let n = n - 16;
-            [
-                STEP[(n / 36) as usize],
-                STEP[(n / 6 % 6) as usize],
-                STEP[(n % 6) as usize],
-            ]
+            [step(n / 36), step(n / 6 % 6), step(n % 6)]
         }
         // Twenty-four greys from just off black to just off white.
         grey => {

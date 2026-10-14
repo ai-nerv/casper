@@ -66,7 +66,7 @@ pub fn run(arguments: Value, configuration: Option<&Value>) -> Result<Value, Str
             let offset = request.offset.unwrap_or(0).min(chars.len());
             let end =
                 (offset + request.max_chars.unwrap_or(12_000).clamp(1, 50_000)).min(chars.len());
-            let text: String = chars[offset..end].iter().collect();
+            let text: String = chars.iter().skip(offset).take(end - offset).collect();
             Ok(json!({
                 "url": fetched.url.as_str(), "status": fetched.status,
                 "title": page.title, "content_type": fetched.content_type,

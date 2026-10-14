@@ -132,14 +132,15 @@ fi
 
 # ---- the tie is still the two syscalls it claims to be ----------------------------------------
 # Named rather than assumed. Both landed as fixes for a leak that had already happened twice:
-# the death signal is what ends the program when casper goes, and the process group is the
-# handle a wrapper needs to take its own children with it. A `tied` that had quietly lost one
+# the death signal is what ends the program when casper goes, and the session, with the process
+# group it creates, is the handle a wrapper needs to take its own children with it and what keeps
+# them off casper's terminal. A `tied` that had quietly lost one
 # would still compile and every spawn site would still call it.
 #
 # The open bracket is part of the pattern, and comments are stripped: this was a bare substring
 # match, and renaming the call to `setpgid_REMOVED` left the gate green — a substring is still
 # there in a symbol that no longer exists, and so is one in the paragraph explaining it.
-for symbol in set_parent_process_death_signal setpgid; do
+for symbol in set_parent_process_death_signal setsid; do
   if ! awk '{ sub(/\/\/.*$/, ""); print }' "$TIED" | grep -q "$symbol("; then
     echo "gate-spawn: $TIED no longer calls $symbol; the tie it advertises is not the tie" >&2
     fail=1

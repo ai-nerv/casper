@@ -269,16 +269,18 @@ per keypress would work for a picker and not for anything that animates.
 The family contract, unchanged: JSON body, replies `{"ok":true,"n":N,"result":[…]}`, a refusal is
 `ok:false` with a fault and never a dropped connection, `verbs` ships from v1.
 
-**Two doors, one jail.** The old rule — *a socket that runs commands is remote code execution* — held
-only while the jail was the caller's to set. casper binds a socket with `serve` and answers `tools`
-and `run` on it, but the walls are set on `serve`'s spawn, in casper's own environment, by the
-coordinator — never by a call. A socket peer runs inside exactly the jail a spawned call would, and a
-peer of another user is refused. So the socket is a warm tool surface, not a shell:
+**Two doors, one jail.** A socket that runs commands is remote code execution unless someone other
+than the caller sets its walls. casper binds a socket with `serve` and answers `tools` and `run` on
+it, and the walls are set on `serve`'s spawn, in casper's own environment, by the coordinator — never
+by a call. A call is answered only when it carries the key the coordinator wrote on `serve`'s
+standard input, a peer of another user is refused, and a socket peer runs inside exactly the jail a
+spawned call would. With the jail off there are no walls on either door: `run` runs commands as the
+person, as far as the person's own shell would.
 
-| link | verbs | why it is safe |
+| link | verbs | what bounds it |
 |---|---|---|
 | **spawn** (argv + stdin) | all of them, `run` included | the parent could have run the command itself. |
-| **socket** (`serve`) | `tools` and `run` | the jail is the spawner's — a call cannot widen it — and only the same user reaches it. |
+| **socket** (`serve`) | `tools` and `run` | the jail is the spawner's — a call cannot widen it — and only a same-user caller with the spawner's key reaches it. |
 
 magi spawns `casper run --json` and writes the call on stdin, or keeps one `casper serve` and frames
 calls to it — the same surface, chosen by `MAGI_TOOLS_DOOR`.

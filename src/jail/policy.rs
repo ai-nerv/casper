@@ -5,35 +5,73 @@ use std::ffi::OsString;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
+/// Credential stores beneath the home directory, inspected for aliases as well as overlap.
+const STORES: &[&str] = &[
+    ".ssh",
+    ".aws",
+    ".gnupg",
+    ".docker",
+    ".kube",
+    ".config/gh",
+    ".config/gcloud",
+    ".external",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".netrc",
+    ".git-credentials",
+    ".npmrc",
+    ".pypirc",
+    ".local/share/keyrings",
+    ".password-store",
+];
+
+/// The family's own configuration directories and the memory store: what a jailed command must
+/// not rewrite to change what the next session is allowed.
+const FAMILY: &[&str] = &["magi", "casper", "melchior", "balthasar"];
+
+/// Browser profiles, refused on overlap but never walked: they are large and hold dangling lock
+/// links by design.
+const PROFILES: &[&str] = &["google-chrome", "chromium", "BraveSoftware"];
+
 pub(super) fn protected(home: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let mut paths: Vec<_> = [
-        ".ssh",
-        ".aws",
-        ".gnupg",
-        ".docker",
-        ".kube",
-        ".config/gh",
-        ".config/gcloud",
-        ".external",
-        ".cargo/credentials",
-        ".cargo/credentials.toml",
-    ]
-    .iter()
-    .map(|path| home.join(path))
-    .collect();
     let data = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".local/share"));
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".config"));
-    paths.extend([data.join("magi"), config.join("gh"), config.join("gcloud")]);
+    protected_in(home, &data, &config)
+}
+
+/// The half of [`protected`] that does not read the environment for where data and config live.
+fn protected_in(home: &Path, data: &Path, config: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut paths: Vec<_> = STORES.iter().map(|path| home.join(path)).collect();
+    paths.extend([data.join("magi"), data.join("keyrings")]);
+    paths.extend([config.join("gh"), config.join("gcloud")]);
+    for name in FAMILY {
+        paths.extend([home.join(".config").join(name), config.join(name)]);
+    }
+    paths.push(home.join(".balthasar"));
     if let Some(cargo) = std::env::var_os("CARGO_HOME") {
         paths.extend([
             PathBuf::from(&cargo).join("credentials"),
             PathBuf::from(cargo).join("credentials.toml"),
         ]);
     }
+    let mut paths = canonicalised(paths)?;
+    let aliases = super::credentials::expand(&paths)
+        .map_err(|error| std::io::Error::other(format!("credential inspection failed: {error}")))?;
+    paths.extend(aliases);
+    let mut profiles = vec![home.join(".mozilla")];
+    for name in PROFILES {
+        profiles.extend([home.join(".config").join(name), config.join(name)]);
+    }
+    paths.extend(canonicalised(profiles)?);
+    Ok(paths)
+}
+
+/// `paths` and where each resolves, sorted and without repeats.
+fn canonicalised(mut paths: Vec<PathBuf>) -> std::io::Result<Vec<PathBuf>> {
     let canonical = paths
         .iter()
         .map(|path| resolve(path))
@@ -41,9 +79,6 @@ pub(super) fn protected(home: &Path) -> std::io::Result<Vec<PathBuf>> {
     paths.extend(canonical);
     paths.sort();
     paths.dedup();
-    let aliases = super::credentials::expand(&paths)
-        .map_err(|error| std::io::Error::other(format!("credential inspection failed: {error}")))?;
-    paths.extend(aliases);
     Ok(paths)
 }
 
@@ -115,23 +150,29 @@ pub(super) fn bindings(
 ) -> std::io::Result<Vec<OwnedFd>> {
     let mut descriptors = Vec::new();
     let mut index = 0;
-    while index < args.len() {
-        if matches!(args[index].as_str(), "--bind" | "--ro-bind") {
-            let fd = validated_fd(Path::new(&args[index + 1]), protected)?;
-            if args[index] == "--bind"
-                && launcher.starts_with(super::credentials::opened_path(&fd)?)
-            {
-                return Err(std::io::Error::other(
-                    "sandbox launcher is inside a writable jail grant",
-                ));
+    let bind = |flag: &String| matches!(flag.as_str(), "--bind" | "--ro-bind");
+    while let Some(rest) = args.get_mut(index..) {
+        let (flag, source) = match rest {
+            [flag, source, ..] if bind(flag) => (flag, source),
+            [flag, ..] if bind(flag) => {
+                return Err(std::io::Error::other(format!("{flag} names no path")));
             }
-            args[index].push_str("-fd");
-            args[index + 1] = fd.as_raw_fd().to_string();
-            descriptors.push(fd);
-            index += 3;
-        } else {
-            index += 1;
+            [] => break,
+            _ => {
+                index += 1;
+                continue;
+            }
+        };
+        let fd = validated_fd(Path::new(source.as_str()), protected)?;
+        if flag == "--bind" && launcher.starts_with(super::credentials::opened_path(&fd)?) {
+            return Err(std::io::Error::other(
+                "sandbox launcher is inside a writable jail grant",
+            ));
         }
+        flag.push_str("-fd");
+        *source = fd.as_raw_fd().to_string();
+        descriptors.push(fd);
+        index += 3;
     }
     Ok(descriptors)
 }
@@ -232,7 +273,7 @@ mod tests {
         std::os::unix::fs::symlink(root.join("secret"), &link).expect("changed grant");
         let error = validated_fd(&link, &protected).expect_err("opened target must be rejected");
         assert!(error.to_string().contains("credential"));
-        assert!(super::super::ruleset(&root.join("work"), &grants, &protected).is_none());
+        assert!(super::super::ruleset(&root.join("work"), &grants, &protected, false).is_none());
         let mut args = super::super::profile(&root.join("work"), &grants);
         assert!(bindings(&mut args, &protected, Path::new("/usr/bin/bwrap")).is_err());
     }
@@ -273,6 +314,67 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn a_bind_that_names_no_path_is_refused_and_not_a_panic() {
+        for flag in ["--bind", "--ro-bind"] {
+            let mut args = vec!["--die-with-parent".to_owned(), flag.to_owned()];
+            let why = bindings(&mut args, &[], Path::new("/usr/bin/bwrap")).err();
+            let why = why.map(|e| e.to_string()).unwrap_or_default();
+            assert!(why.contains("names no path"), "{flag}: {why}");
+        }
+    }
+
+    #[test]
+    fn family_config_credentials_and_browser_profiles_are_never_granted() {
+        let root = crate::scratch::Scratch::new("protected", "family");
+        let home = root.join("home");
+        let (data, config) = (home.join(".local/share"), home.join(".config"));
+        for dir in ["magi", "melchior", "google-chrome"] {
+            std::fs::create_dir_all(config.join(dir)).expect("profile");
+        }
+        for dir in [
+            ".balthasar",
+            ".password-store",
+            ".mozilla/p",
+            ".local/share/keyrings",
+        ] {
+            std::fs::create_dir_all(home.join(dir)).expect("store");
+        }
+        std::fs::write(home.join(".netrc"), "machine x").expect("netrc");
+        let lock = config.join("google-chrome/SingletonLock");
+        std::os::unix::fs::symlink(root.join("host-1"), lock).expect("lock");
+        std::os::unix::fs::symlink(root.join("host-2"), home.join(".mozilla/p/lock"))
+            .expect("lock");
+        let protected = protected_in(&home, &data, &config).expect("a dangling lock is fine");
+        for path in [
+            config.join("magi"),
+            config.join("casper"),
+            config.join("melchior"),
+            config.join("balthasar"),
+            home.join(".netrc"),
+            home.join(".git-credentials"),
+            home.join(".npmrc"),
+            home.join(".pypirc"),
+            home.join(".cargo/credentials.toml"),
+            home.join(".local/share/keyrings"),
+            home.join(".password-store"),
+            home.join(".mozilla"),
+            config.join("google-chrome"),
+            config.join("chromium"),
+            config.join("BraveSoftware"),
+            home.join(".balthasar"),
+        ] {
+            let canonical = resolve(&path).expect("resolves");
+            assert!(protected.contains(&canonical), "{}", path.display());
+        }
+        let grants = Grants {
+            write: vec![config.clone()],
+            ..Grants::default()
+        };
+        let refused = validate(&root.join("home/work"), &grants, &protected).expect_err("overlap");
+        assert!(refused.to_string().contains("credential"), "{refused}");
     }
 
     #[test]

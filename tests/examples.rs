@@ -3,6 +3,8 @@
 //! Each file is loaded over the shipped declarations, exactly as a plugin directory would, and
 //! checked for declaring what it says it declares. Whether `jq` is installed is not checked.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use casper::lua::engine::Engine;
 
 /// One example, read from the tree at run time, the way a plugin directory reads one.

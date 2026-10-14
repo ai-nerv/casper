@@ -8,6 +8,7 @@ pub(crate) struct Page {
     pub links: Vec<Value>,
 }
 
+#[allow(clippy::expect_used)]
 pub(crate) fn selector(value: &str) -> Selector {
     Selector::parse(value).expect("static HTML selector")
 }

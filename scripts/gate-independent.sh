@@ -40,6 +40,8 @@ found=$(
       {
         sub(/\/\/.*$/, "")
         gsub(/"magi"/, "\"credential-directory\"")
+        # A socket directory or project file of a sibling is part of the contract, named as a string.
+        gsub(/"\.?(melchior|balthasar|magi)(\.lua)?"/, "\"family-name\"")
         gsub(/(home\/\.local\/share|data)\/magi(\/credentials\.json)?/, "credential-fixture")
         print
       }

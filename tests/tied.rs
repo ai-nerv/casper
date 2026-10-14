@@ -4,7 +4,10 @@
 //! end its children on the way. The signal is cleared across `fork`, so the command under casper
 //! and the command under that are checked separately from casper itself.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use casper::scratch::Scratch;
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -24,7 +27,8 @@ struct Caller {
     leaf: Option<u32>,
     /// Everything else the caller started, read while it was all still up. See [`below`].
     under: Vec<u32>,
-    _dir: Scratch,
+    /// Handed to everything below the caller in its environment. See [`carrying`].
+    dir: Scratch,
 }
 
 impl Caller {
@@ -102,7 +106,7 @@ impl Caller {
             ran: None,
             leaf: None,
             under: Vec::new(),
-            _dir: dir,
+            dir,
         };
         caller.served = read_pid(&pids).expect("the caller said which casper it started");
         caller.ran = running_under(caller.served);
@@ -131,7 +135,36 @@ impl Drop for Caller {
             end(pid);
         }
         self.killed();
+        // Then whatever started after `under` was read, until none of it is left running.
+        let deadline = Instant::now() + NOTICES_WITHIN;
+        loop {
+            let left = carrying(&self.dir);
+            if left.is_empty() || Instant::now() >= deadline {
+                break;
+            }
+            left.into_iter().for_each(end);
+            std::thread::sleep(Duration::from_millis(25));
+        }
     }
+}
+
+/// Every live process whose environment names `dir`, wherever it has been reparented since. A
+/// program on a screen forks its own child after casper's first one appears, so no reading of
+/// the tree taken at the start can be sure to hold it.
+fn carrying(dir: &Path) -> Vec<u32> {
+    let needle = dir.as_os_str().as_bytes();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+        .filter(|pid| {
+            std::fs::read(format!("/proc/{pid}/environ"))
+                .is_ok_and(|env| env.windows(needle.len()).any(|at| at == needle))
+        })
+        .filter(|&pid| alive(pid))
+        .collect()
 }
 
 fn read_pid(at: &Path) -> Option<u32> {

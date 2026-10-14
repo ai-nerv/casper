@@ -16,9 +16,15 @@
 //! `os.execute` and `io.popen` stay removed: [`crate::lua::exec`] is the only way to a process.
 
 use crate::tools::{Card, Ran};
-use luna::{Callback, CallbackReturn, Closure, Executor, Lua, Table, Value};
+use luna::{Callback, CallbackReturn, Closure, Executor, Fuel, Lua, StashedExecutor, Table, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
+
+/// The most instructions one chunk, tool call or surface frame may run.
+const BUDGET: u64 = 100_000_000;
+
+/// The most memory the VM may hold, checked between slices.
+const CEILING: usize = 256 << 20;
 
 /// Where declared tools' functions live, out of reach of a config that did not declare them.
 const TOOLS: &str = "__casper_tools";
@@ -91,6 +97,7 @@ impl Engine {
             lua: Lua::full(),
             declared: Rc::new(RefCell::new(Declared::default())),
         };
+        engine.lua.set_memory_limit(Some(CEILING));
         crate::lua::sandbox::apply(&mut engine.lua);
         engine.install(configuration);
         engine
@@ -207,11 +214,31 @@ impl Engine {
         });
     }
 
-    /// Run one chunk.
+    /// Name the session the next calls come from as `casper.session`, or none: what a declaration
+    /// keys anything it keeps between calls by. The program names it, never a call.
+    pub fn caller(&mut self, session: Option<&str>) {
+        self.lua.enter(|ctx| {
+            let Ok(Value::Table(casper)) = ctx.get_global("casper") else {
+                return;
+            };
+            let named = session.map_or(Value::Nil, |session| {
+                Value::String(luna::String::from_slice(&ctx, session.as_bytes()))
+            });
+            casper.set(ctx, "session", named).ok();
+        });
+    }
+
+    /// Run one chunk, stopped once it has spent its instruction budget.
     ///
     /// # Errors
-    /// When it will not compile, or raises.
+    /// When it is precompiled or will not compile, raises, or runs past its budget or ceiling.
     pub fn run(&mut self, source: &str, file: &str) -> Result<(), LuaError> {
+        if crate::lua::sandbox::precompiled(source.as_bytes()) {
+            return Err(LuaError::Syntax {
+                file: file.to_owned(),
+                message: crate::lua::sandbox::PRECOMPILED.to_owned(),
+            });
+        }
         let executor = self
             .lua
             .try_enter(|ctx| {
@@ -222,12 +249,61 @@ impl Engine {
                 file: file.to_owned(),
                 message: why.to_string(),
             })?;
+        let runtime = |message: String| LuaError::Runtime {
+            file: file.to_owned(),
+            message,
+        };
+        self.metered(&executor, BUDGET).map_err(runtime)?;
         self.lua
-            .execute::<()>(&executor)
-            .map_err(|why| LuaError::Runtime {
-                file: file.to_owned(),
-                message: why.to_string(),
-            })
+            .try_enter(|ctx| ctx.fetch(&executor).take_result::<()>(ctx)?)
+            .map_err(|why| runtime(why.to_string()))
+    }
+
+    /// Step `executor` to the end in slices, stopping it once `budget` instructions are spent.
+    /// No `__gc` handler runs: the sandbox refuses a metatable carrying one.
+    fn metered(&mut self, executor: &StashedExecutor, budget: u64) -> Result<(), String> {
+        const SLICE: i32 = 4096;
+        let mut spent: u64 = 0;
+        loop {
+            let mut fuel = Fuel::with(SLICE);
+            let finished = self
+                .lua
+                .enter(|ctx| ctx.fetch(executor).step(ctx, &mut fuel))
+                .map_err(|why| why.to_string())?;
+            spent += u64::try_from(SLICE.saturating_sub(fuel.remaining())).unwrap_or(0);
+            if self.lua.enter(|ctx| ctx.fetch(executor).is_waiting()) {
+                self.lua.enter(|ctx| ctx.fetch(executor).stop(&ctx));
+                return Err("a declaration cannot wait on a future here".to_owned());
+            }
+            if let Some(ceiling) = self.over_ceiling() {
+                self.lua.enter(|ctx| ctx.fetch(executor).stop(&ctx));
+                crate::noted!("lua: stopped over {ceiling} bytes of memory");
+                return Err(format!(
+                    "held more than its {} MiB of memory and was stopped",
+                    ceiling >> 20
+                ));
+            }
+            if finished {
+                return Ok(());
+            }
+            if spent > budget {
+                self.lua.enter(|ctx| ctx.fetch(executor).stop(&ctx));
+                crate::noted!("lua: stopped after {spent} instructions");
+                return Err(format!(
+                    "ran past its budget of {budget} instructions and was stopped"
+                ));
+            }
+        }
+    }
+
+    /// The ceiling, when the VM still holds more than it after a full collection.
+    fn over_ceiling(&mut self) -> Option<usize> {
+        let ceiling = self.lua.memory_limit()?;
+        if self.lua.total_memory() <= ceiling {
+            return None;
+        }
+        self.lua.gc_collect();
+        (self.lua.total_memory() > ceiling).then_some(ceiling)
     }
 
     /// What has been declared so far.
@@ -259,11 +335,18 @@ impl Engine {
             return Some(Ran::failed(why.to_string()));
         }
 
-        let mut out = None;
-        self.lua.enter(|ctx| {
-            out = crate::lua::convert::json_from_lua(ctx, ctx.get_global_value(RESULT), 0);
-        });
-        let out = out.filter(|value| !value.is_null())?;
+        let out = self
+            .lua
+            .enter(|ctx| crate::lua::convert::json_from_lua(ctx, ctx.get_global_value(RESULT)));
+        let out = match out {
+            Ok(serde_json::Value::Null) => return None,
+            Ok(out) => out,
+            Err(why) => {
+                return Some(Ran::failed(format!(
+                    "{name} answered something unreadable: {why}"
+                )));
+            }
+        };
         // A tool may answer in the wire's shape, or with a bare string when text is all it has.
         let mut ran = match out {
             serde_json::Value::String(said) => Ran::said(said),
@@ -322,11 +405,7 @@ impl Engine {
              if type(open) == 'function' then {DREW} = open({ARGS}, {EVENT}) end"
         );
         self.run(&source, "screen.lua").ok()?;
-        let mut out = None;
-        self.lua.enter(|ctx| {
-            out = crate::lua::convert::json_from_lua(ctx, ctx.get_global_value(DREW), 0);
-        });
-        out.filter(|value| !value.is_null())
+        self.drew()
     }
 
     /// Open a tool's surface and hold it.
@@ -372,11 +451,17 @@ impl Engine {
         if self.run(&source, "surface.lua").is_err() {
             return None;
         }
-        let mut out = None;
-        self.lua.enter(|ctx| {
-            out = crate::lua::convert::json_from_lua(ctx, ctx.get_global_value(DREW), 0);
-        });
-        out.filter(|value| !value.is_null())
+        self.drew()
+    }
+
+    /// What a surface or screen handed back, when it is something that can be described.
+    fn drew(&mut self) -> Option<serde_json::Value> {
+        let out = self
+            .lua
+            .enter(|ctx| crate::lua::convert::json_from_lua(ctx, ctx.get_global_value(DREW)));
+        out.inspect_err(|why| crate::noted!("lua: a frame cannot be described: {why}"))
+            .ok()
+            .filter(|value| !value.is_null())
     }
 
     /// Settings assigned onto `casper`, read back after the chunk ran.
@@ -391,7 +476,7 @@ impl Engine {
                 let Value::String(name) = key else { continue };
                 let name = String::from_utf8_lossy(name.as_bytes()).into_owned();
                 // A registrar is a function and cannot be described; anything else is a setting.
-                if let Some(json) = crate::lua::convert::json_from_lua(ctx, value, 0) {
+                if let Ok(json) = crate::lua::convert::json_from_lua(ctx, value) {
                     declared.settings.insert(name, json);
                 }
             }
@@ -421,7 +506,8 @@ fn card<'gc>(ctx: luna::Context<'gc>, name: &str, spec: Table<'gc>) -> Option<Ca
         name: name.to_owned(),
         description: text("description").unwrap_or_default(),
         // A tool with no schema takes no arguments, which is a real thing to be.
-        parameters: crate::lua::convert::json_from_lua(ctx, spec.get_value(ctx, "parameters"), 0)
+        parameters: crate::lua::convert::json_from_lua(ctx, spec.get_value(ctx, "parameters"))
+            .ok()
             .filter(|value| !value.is_null())
             .unwrap_or_else(|| serde_json::json!({"type": "object"})),
         needs: text("needs"),
@@ -481,6 +567,22 @@ mod tests {
     }
 
     #[test]
+    fn the_session_a_declaration_reads_is_the_one_the_program_named() {
+        let mut engine = declaring(
+            r#"casper.tool("who", { run = function() return tostring(casper.session) end })"#,
+        );
+        let asked = |engine: &mut Engine| {
+            let ran = engine.call("who", &serde_json::Value::Null);
+            ran.map(|ran| ran.said).unwrap_or_default()
+        };
+        assert_eq!(asked(&mut engine), "nil");
+        engine.caller(Some("7-123"));
+        assert_eq!(asked(&mut engine), "7-123");
+        engine.caller(None);
+        assert_eq!(asked(&mut engine), "nil");
+    }
+
+    #[test]
     fn a_bare_string_is_a_result_with_nothing_else_to_say() {
         let mut engine = declaring(r#"casper.tool("pwd", { run = function() return "/tmp" end })"#);
         let ran = engine.call("pwd", &serde_json::Value::Null).expect("ran");
@@ -526,6 +628,129 @@ mod tests {
             .run("this is not lua at all !!", "tools.lua")
             .expect_err("fails");
         assert!(why.to_string().contains("tools.lua"), "{why}");
+    }
+
+    #[test]
+    fn a_declaration_that_loops_is_stopped_and_reported() {
+        let began = std::time::Instant::now();
+        let why = Engine::new()
+            .run("while true do end", "loops.lua")
+            .expect_err("stopped");
+        assert!(why.to_string().contains("budget"), "{why}");
+        assert!(why.to_string().contains("loops.lua"), "{why}");
+        assert!(began.elapsed().as_secs() < 30, "{:?}", began.elapsed());
+    }
+
+    #[test]
+    fn a_tool_that_loops_fails_and_the_engine_still_answers() {
+        let mut engine = declaring(
+            r#"casper.tool("spin", { run = function() while true do end end })
+               casper.tool("ok", { run = function() return "fine" end })"#,
+        );
+        let ran = engine.call("spin", &serde_json::Value::Null).expect("ran");
+        assert!(ran.failed && ran.said.contains("budget"), "{ran:?}");
+        let ran = engine.call("ok", &serde_json::Value::Null).expect("ran");
+        assert_eq!(ran.said, "fine");
+    }
+
+    #[test]
+    fn the_shipped_declarations_fit_well_inside_the_memory_ceiling() {
+        let mut engine = declaring(include_str!("../../config/tools.lua"));
+        engine.lua.gc_collect();
+        let held = engine.lua.total_memory();
+        assert!(held * 32 < CEILING, "{held} bytes held against {CEILING}");
+    }
+
+    #[test]
+    fn a_tool_that_hoards_memory_fails_and_the_engine_still_answers() {
+        let mut engine = declaring(
+            r#"casper.tool("hoard", { run = function()
+                 local kept, piece = {}, string.rep("x", 1 << 16)
+                 for at = 1, 1 << 20 do kept[at] = piece .. at end
+               end })
+               casper.tool("ok", { run = function() return "fine" end })"#,
+        );
+        let ran = engine.call("hoard", &serde_json::Value::Null).expect("ran");
+        assert!(ran.failed && ran.said.contains("MiB of memory"), "{ran:?}");
+        let ran = engine.call("ok", &serde_json::Value::Null).expect("ran");
+        assert_eq!(ran.said, "fine");
+        assert!(engine.lua.total_memory() < CEILING);
+    }
+
+    #[test]
+    fn a_chunk_that_finishes_inside_one_slice_is_held_to_the_ceiling() {
+        let mut engine = Engine::new();
+        engine.lua.set_memory_limit(Some(8 << 20));
+        let why = engine
+            .run("big = string.rep('x', 16 * 1024 * 1024)", "one.lua")
+            .expect_err("one allocation over the ceiling");
+        assert!(why.to_string().contains("MiB of memory"), "{why}");
+    }
+
+    #[test]
+    fn no_route_past_the_guard_enrols_an_object_for_a_finalizer() {
+        let mut engine = declaring(
+            r#"casper.tool("enrol", { run = function()
+                 local gc = { __gc = function() end }
+                 local routes = {
+                   function(t) return setmetatable(t, gc) end,
+                   function(t) return debug.setmetatable(t, gc) end,
+                   function(t) local _, set = debug.getupvalue(setmetatable, 1); return set(t, gc) end,
+                   function(t) return rawget(_G, "setmetatable")(t, gc) end,
+                 }
+                 local took = 0
+                 for _, route in ipairs(routes) do
+                   for _ = 1, 5000 do
+                     if pcall(route, { string.rep("x", 1024) }) then took = took + 1 end
+                   end
+                 end
+                 return tostring(took)
+               end })"#,
+        );
+        engine.lua.gc_collect();
+        let before = engine.lua.total_memory();
+        let ran = engine.call("enrol", &serde_json::Value::Null).expect("ran");
+        assert_eq!(ran.said, "0", "{ran:?}");
+        engine.lua.gc_collect();
+        engine.lua.gc_collect();
+        let after = engine.lua.total_memory();
+        assert!(
+            after < before + (1 << 20),
+            "{before} bytes before, {after} after"
+        );
+    }
+
+    #[test]
+    fn an_error_lends_no_metatable_that_would_enrol_every_later_error() {
+        let mut engine = declaring(
+            r#"casper.tool("raise", { run = function()
+                 local _, raised = pcall(string.rep)
+                 local shared = getmetatable(raised)
+                 if type(shared) == "table" then shared.__gc = function() end end
+                 for _ = 1, 50000 do pcall(string.rep) end
+                 return type(raised) .. " " .. type(shared)
+               end })"#,
+        );
+        engine.lua.gc_collect();
+        let before = engine.lua.total_memory();
+        let ran = engine.call("raise", &serde_json::Value::Null).expect("ran");
+        assert_eq!(ran.said, "userdata nil", "{ran:?}");
+        engine.lua.gc_collect();
+        engine.lua.gc_collect();
+        let after = engine.lua.total_memory();
+        assert!(
+            after < before + (1 << 20),
+            "{before} bytes before, {after} after"
+        );
+    }
+
+    #[test]
+    fn a_surface_frame_that_loops_ends_the_surface() {
+        let mut engine = declaring(
+            r#"casper.tool("s", { surface = function() return function() while true do end end end })"#,
+        );
+        assert!(engine.open("s", &serde_json::Value::Null, &serde_json::json!({})));
+        assert!(engine.frame(&serde_json::json!({"kind": "tick"})).is_none());
     }
 
     #[test]

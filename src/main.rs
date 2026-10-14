@@ -7,8 +7,9 @@
 //! ```
 //!
 //! casper answers on two doors: the command line, and a socket a coordinator binds with `serve`
-//! and holds open across a session. The socket is not a remote shell — what `run` runs, it runs
-//! inside the jail `serve` was spawned with, never one a call named. See [`casper::serving`].
+//! and holds open across a session. What `run` runs on the socket, it runs inside the jail `serve`
+//! was spawned with, never one a call named, and only for a call carrying `serve`'s key. See
+//! [`casper::serving`].
 //!
 //! Every verb prints the wire shape, and a refusal is `{"ok":false,…}` with a zero exit. JSON by
 //! default, CBOR with `--cbor`: one shape, two encodings.
@@ -321,6 +322,7 @@ fn run_call(call: &Call) -> Reply {
         casper::noted!("run: {} refused: it is turned off", call.tool);
         return Reply::refused(format!("no such tool: {}", call.tool));
     }
+    engine.caller(casper::tools::session().as_deref());
     let Some(mut ran) = engine.call(&call.tool, &given(call)) else {
         casper::noted!("run: {} refused: no such tool", call.tool);
         return Reply::refused(format!("no such tool: {}", call.tool));
@@ -328,9 +330,8 @@ fn run_call(call: &Call) -> Reply {
     // What the model reads is capped; what the person is shown is not.
     ran.said = casper::setup::bounded(ran.said);
     casper::noted!(
-        "run: {} {} jailed={} → {} in {}ms, {} bytes; brief={:?} back={:?} keep={}",
-        call.tool,
-        casper::noted::short(&call.args.to_string()),
+        "run: {} jailed={} → {} in {}ms, {} bytes; brief {} bytes, back {} bytes, keep={}",
+        casper::noted::command(&call.tool, arguments(&call.args)),
         casper::jail::Jail::from_env().on(),
         if ran.failed {
             "failed"
@@ -341,16 +342,26 @@ fn run_call(call: &Call) -> Reply {
         },
         began.elapsed().as_millis(),
         ran.said.len(),
-        ran.brief.as_deref().unwrap_or_default(),
-        ran.back.as_deref().unwrap_or_default(),
+        ran.brief.as_ref().map_or(0, String::len),
+        ran.back.as_ref().map_or(0, String::len),
         ran.keep
     );
     answer(&ran)
 }
 
+/// How many arguments a tool call carries: the fields of an object, the items of a list.
+fn arguments(args: &serde_json::Value) -> usize {
+    match args {
+        serde_json::Value::Object(fields) => fields.len(),
+        serde_json::Value::Array(items) => items.len(),
+        serde_json::Value::Null => 0,
+        _ => 1,
+    }
+}
+
 /// Bind a session's socket and answer `tools` and `run` on it until it closes. The jail every call
-/// runs in is this process's own — the one a coordinator gave `serve` at spawn — so the socket runs
-/// only what that jail allows, which is why it is a tool surface and not a remote shell.
+/// runs in is this process's own — the one a coordinator gave `serve` at spawn — and a call is
+/// answered only with the key the coordinator wrote on `serve`'s standard input.
 fn serve(how: As, args: &[String]) -> bool {
     let Some(at) = flag(args, "--at") else {
         return say(
@@ -358,9 +369,13 @@ fn serve(how: As, args: &[String]) -> bool {
             &Reply::refused("serve needs --at <path>, under the runtime directory".to_owned()),
         );
     };
+    let key = match casper::serving::Key::read(&mut std::io::stdin().lock()) {
+        Ok(key) => key,
+        Err(why) => return say(how, &Reply::refused(why)),
+    };
     let path = std::path::PathBuf::from(&at);
-    let listener = match casper::serving::listening_on(&path) {
-        Ok(listener) => listener,
+    let bound = match casper::serving::listening_on(&path) {
+        Ok(bound) => bound,
         Err(why) => {
             return say(
                 how,
@@ -374,7 +389,7 @@ fn serve(how: As, args: &[String]) -> bool {
         "serve: listening at {at}, jailed={}",
         casper::jail::Jail::from_env().on()
     );
-    if let Err(why) = casper::serving::accept(&listener, answer_socket) {
+    if let Err(why) = casper::serving::accept(&bound.listener, key, answer_socket) {
         casper::noted!("serve: {why}");
     }
     true
