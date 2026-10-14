@@ -200,3 +200,24 @@ fn an_accept_that_runs_out_of_descriptors_rests_and_carries_on() {
         .expect("deadline");
     assert!(heard(&mut client).ok);
 }
+
+#[test]
+fn a_call_is_abandoned_once_its_peer_has_closed_and_not_before() {
+    assert!(!abandoned(), "off the socket nothing is ever abandoned");
+    let (ours, theirs) = UnixStream::pair().expect("pair");
+    let (before, after) = super::answering(&ours, || {
+        let before = abandoned();
+        theirs
+            .shutdown(std::net::Shutdown::Write)
+            .expect("half close");
+        let half = abandoned();
+        drop(theirs);
+        (before || half, abandoned())
+    });
+    assert!(!before, "a peer still reading is not gone");
+    assert!(after, "a closed peer is");
+    assert!(
+        !abandoned(),
+        "and nothing is watched once the call is answered"
+    );
+}
