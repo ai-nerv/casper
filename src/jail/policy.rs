@@ -317,6 +317,16 @@ mod tests {
     }
 
     #[test]
+    fn a_bind_that_names_no_path_is_refused_and_not_a_panic() {
+        for flag in ["--bind", "--ro-bind"] {
+            let mut args = vec!["--die-with-parent".to_owned(), flag.to_owned()];
+            let why = bindings(&mut args, &[], Path::new("/usr/bin/bwrap")).err();
+            let why = why.map(|e| e.to_string()).unwrap_or_default();
+            assert!(why.contains("names no path"), "{flag}: {why}");
+        }
+    }
+
+    #[test]
     fn family_config_credentials_and_browser_profiles_are_never_granted() {
         let root = crate::scratch::Scratch::new("protected", "family");
         let home = root.join("home");
