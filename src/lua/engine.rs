@@ -210,6 +210,20 @@ impl Engine {
         });
     }
 
+    /// Name the session the next calls come from as `casper.session`, or none: what a declaration
+    /// keys anything it keeps between calls by. The program names it, never a call.
+    pub fn caller(&mut self, session: Option<&str>) {
+        self.lua.enter(|ctx| {
+            let Ok(Value::Table(casper)) = ctx.get_global("casper") else {
+                return;
+            };
+            let named = session.map_or(Value::Nil, |session| {
+                Value::String(luna::String::from_slice(&ctx, session.as_bytes()))
+            });
+            casper.set(ctx, "session", named).ok();
+        });
+    }
+
     /// Run one chunk, stopped once it has spent its instruction budget.
     ///
     /// # Errors
@@ -512,6 +526,22 @@ mod tests {
             .expect("it ran");
         assert_eq!(ran.said, "you said hello");
         assert!(!ran.failed);
+    }
+
+    #[test]
+    fn the_session_a_declaration_reads_is_the_one_the_program_named() {
+        let mut engine = declaring(
+            r#"casper.tool("who", { run = function() return tostring(casper.session) end })"#,
+        );
+        let asked = |engine: &mut Engine| {
+            let ran = engine.call("who", &serde_json::Value::Null);
+            ran.map(|ran| ran.said).unwrap_or_default()
+        };
+        assert_eq!(asked(&mut engine), "nil");
+        engine.caller(Some("7-123"));
+        assert_eq!(asked(&mut engine), "7-123");
+        engine.caller(None);
+        assert_eq!(asked(&mut engine), "nil");
     }
 
     #[test]

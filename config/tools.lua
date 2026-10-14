@@ -578,8 +578,8 @@ do -- shell
   -- remembered on disk instead of the shell that was in it. That is less than a live shell keeps
   -- (an exported variable does not survive, nor a shell function) and it is the part that
   -- actually gets used.
-  -- The script around a command. The directory is remembered per session, the one casper hands
-  -- in as `args.session`, and within it per directory the shell starts in: under the jail in the
+  -- The script around a command. The directory is remembered per session, the one casper names
+  -- as `casper.session`, and within it per directory the shell starts in: under the jail in the
   -- jail's own `$TMPDIR`, off it in casper's runtime directory, chosen and made by the family's
   -- private-directory rule. No session, no memory. What it reads back reaches `cd` as a variable,
   -- never as text in the script, and so does everything else handed in.
@@ -654,7 +654,7 @@ wait $!]]
       local jailed = (os.getenv("CASPER_JAIL") or "") ~= "" and "1" or ""
       local done = casper.exec("sh", {
         "-c", BEFORE .. args.command .. AFTER, "sh", jailed, tostring(args.cwd or ""),
-        tostring(args.session or ""),
+        tostring(casper.session or ""),
       })
 
       local out = done.out
