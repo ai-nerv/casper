@@ -177,11 +177,17 @@ const FORBIDDEN: &[i64] = &[
     libc::SYS_umount2,
     libc::SYS_pivot_root,
     libc::SYS_kexec_load,
-    libc::SYS_kexec_file_load,
+    KEXEC_FILE_LOAD,
     libc::SYS_init_module,
     libc::SYS_finit_module,
     libc::SYS_delete_module,
 ];
+
+/// `kexec_file_load`, by its generic-table number where libc does not name it.
+#[cfg(target_arch = "x86_64")]
+const KEXEC_FILE_LOAD: i64 = libc::SYS_kexec_file_load;
+#[cfg(not(target_arch = "x86_64"))]
+const KEXEC_FILE_LOAD: i64 = 294;
 
 /// What `personality` may still be asked: the query and the ordinary Linux personas.
 const PERSONAS: &[u64] = &[0, 0x8, 0x2_0000, 0x2_0008, 0xffff_ffff];
@@ -568,7 +574,11 @@ mod tests {
     fn a_denied_syscall_is_refused_by_the_filter() {
         // The mechanism, proven on a syscall a shell reaches easily: a filter denying `mkdir`
         // makes `mkdir` fail with the errno the filter names, armed the way `tied::confine` arms it.
-        let filter = deny(&[libc::SYS_mkdir, libc::SYS_mkdirat]);
+        #[cfg(target_arch = "x86_64")]
+        let calls = [libc::SYS_mkdir, libc::SYS_mkdirat];
+        #[cfg(not(target_arch = "x86_64"))]
+        let calls = [libc::SYS_mkdirat];
+        let filter = deny(&calls);
         let dir = crate::scratch::Scratch::new("jail", "seccomp");
         let target = dir.join("nope");
         let mut command = std::process::Command::new("mkdir");

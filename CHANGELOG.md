@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.1] - 2026-10-14
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Name kexec_file_load on aarch64
+
 ## [0.6.0] - 2026-10-14
 
 ### <!-- 1 -->🐛 Bug Fixes
