@@ -55,8 +55,7 @@ pub fn cut(path: &str, text: &str) -> Vec<Fragment> {
     out
 }
 
-/// Where to cut `lines`: the last blank line past the point a fragment stands on its own, or
-/// `end`.
+/// Where to cut: the last blank line past the point a fragment stands on its own, or `end`.
 fn breaking(lines: &[&str], end: usize) -> usize {
     (SETTLED..end)
         .rev()
