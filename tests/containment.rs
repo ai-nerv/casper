@@ -10,6 +10,8 @@ mod launcher;
 mod lifecycle;
 #[path = "containment/paths.rs"]
 mod paths;
+#[path = "containment/persistence.rs"]
+mod persistence;
 #[path = "containment/socket.rs"]
 mod socket;
 #[path = "containment/surface.rs"]
@@ -41,6 +43,9 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) {
         .expect("credential alias");
     std::fs::write(dir.join("outside"), "HOST_UNCHANGED").expect("outside fixture");
     aliases::prepare(&dir, variant);
+    if variant == "persistence" {
+        persistence::prepare(&dir);
+    }
     let local = (variant == "unix-network").then(|| {
         std::fs::copy(
             std::env::current_exe().expect("test executable"),
@@ -296,6 +301,10 @@ fn contained_child() {
         terminal_io(&root);
         return;
     }
+    if variant == "persistence" {
+        persistence::check(&root, &mode);
+        return;
+    }
     let mut script = probe(&root);
     if variant == "late-stores" {
         script = format!(
@@ -428,6 +437,13 @@ fn terminal_io(root: &Path) {
         std::fs::read_to_string(root.join("work/report")).expect("terminal report"),
         "37 111\nx\n"
     );
+}
+
+#[test]
+fn bubblewrap_keeps_what_the_next_unjailed_program_runs_read_only() {
+    for mode in ["command", "screen"] {
+        fixture(mode, true, "persistence");
+    }
 }
 
 #[test]

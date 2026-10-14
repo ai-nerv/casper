@@ -90,6 +90,10 @@ impl Jail {
     }
 }
 
+/// Paths beneath a writable bind that stay read-only on the bubblewrap path: what the next
+/// unjailed `git`, `magi` or `balthasar` would run.
+const PERSISTENT: &[&str] = &[".git/hooks", ".git/config", ".magi.lua", ".balthasar.lua"];
+
 /// The bubblewrap arguments: the conservative floor, widened by whatever the session's [`Grants`]
 /// carried. In order, because bubblewrap applies them in order and a later mount wins.
 #[must_use]
@@ -124,10 +128,14 @@ fn profile(cwd: &Path, grants: &Grants) -> Vec<String> {
     for writable in &grants.write {
         bind(&mut a, "--bind", writable);
     }
-    // A writable checkout keeps its `.git`, but not the hooks the next `git` would run.
-    let hooks = cwd.join(".git/hooks");
-    if hooks.exists() {
-        bind(&mut a, "--ro-bind", &hooks);
+    // A writable checkout keeps its `.git`, but not what the next unjailed program would run.
+    for root in std::iter::once(cwd).chain(grants.write.iter().map(PathBuf::as_path)) {
+        for name in PERSISTENT {
+            let path = root.join(name);
+            if path.exists() {
+                bind(&mut a, "--ro-bind", &path);
+            }
+        }
     }
     // No network unless a reach grant asked for it; a tool command talks to no socket otherwise,
     // so the runtime directory is not bound in — a jailed child session's siblings are magi's to
@@ -296,6 +304,41 @@ mod tests {
             !a.contains("--unshare-net"),
             "a reach grant leaves the network on: {a}"
         );
+    }
+
+    #[test]
+    fn what_the_next_unjailed_program_runs_is_bound_read_only_under_every_writable_root() {
+        let dir = Scratch::new("jail", "persistent");
+        let (work, other) = (dir.join("work"), dir.join("other"));
+        for path in [work.join(".git/hooks"), other.clone()] {
+            std::fs::create_dir_all(path).expect("mkdir");
+        }
+        for file in [".git/config", ".magi.lua", ".balthasar.lua"] {
+            std::fs::write(work.join(file), "x").expect("write");
+        }
+        std::fs::write(other.join(".magi.lua"), "x").expect("write");
+        let grants = Grants {
+            write: vec![other.clone()],
+            ..Grants::default()
+        };
+        let a = profile(&work, &grants).join(" ");
+        for path in [
+            work.join(".git/hooks"),
+            work.join(".git/config"),
+            work.join(".magi.lua"),
+            work.join(".balthasar.lua"),
+            other.join(".magi.lua"),
+        ] {
+            let p = path.display();
+            assert!(a.contains(&format!("--ro-bind {p} {p}")), "{p}: {a}");
+        }
+        assert!(
+            !a.contains(&other.join(".git").display().to_string()),
+            "{a}"
+        );
+        let writable = a.find(&format!("--bind {}", other.display()));
+        let sealed = a.find(&format!("--ro-bind {}", other.join(".magi.lua").display()));
+        assert!(writable < sealed, "the read-only bind comes after: {a}");
     }
 
     #[test]
