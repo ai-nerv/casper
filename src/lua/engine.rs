@@ -16,9 +16,12 @@
 //! `os.execute` and `io.popen` stay removed: [`crate::lua::exec`] is the only way to a process.
 
 use crate::tools::{Card, Ran};
-use luna::{Callback, CallbackReturn, Closure, Executor, Lua, Table, Value};
+use luna::{Callback, CallbackReturn, Closure, Executor, Fuel, Lua, StashedExecutor, Table, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
+
+/// The most instructions one chunk, tool call or surface frame may run.
+const BUDGET: u64 = 100_000_000;
 
 /// Where declared tools' functions live, out of reach of a config that did not declare them.
 const TOOLS: &str = "__casper_tools";
@@ -207,10 +210,10 @@ impl Engine {
         });
     }
 
-    /// Run one chunk.
+    /// Run one chunk, stopped once it has spent [`BUDGET`] instructions.
     ///
     /// # Errors
-    /// When it will not compile, or raises.
+    /// When it will not compile, raises, or runs past its budget.
     pub fn run(&mut self, source: &str, file: &str) -> Result<(), LuaError> {
         let executor = self
             .lua
@@ -222,12 +225,43 @@ impl Engine {
                 file: file.to_owned(),
                 message: why.to_string(),
             })?;
+        let runtime = |message: String| LuaError::Runtime {
+            file: file.to_owned(),
+            message,
+        };
+        self.metered(&executor, BUDGET).map_err(runtime)?;
         self.lua
-            .execute::<()>(&executor)
-            .map_err(|why| LuaError::Runtime {
-                file: file.to_owned(),
-                message: why.to_string(),
-            })
+            .try_enter(|ctx| ctx.fetch(&executor).take_result::<()>(ctx)?)
+            .map_err(|why| runtime(why.to_string()))
+    }
+
+    /// Step `executor` to the end in slices, stopping it once `budget` instructions are spent.
+    /// A `__gc` handler is never run: it would be Lua outside any budget.
+    fn metered(&mut self, executor: &StashedExecutor, budget: u64) -> Result<(), String> {
+        const SLICE: i32 = 4096;
+        let mut spent: u64 = 0;
+        loop {
+            let mut fuel = Fuel::with(SLICE);
+            let finished = self
+                .lua
+                .enter(|ctx| ctx.fetch(executor).step(ctx, &mut fuel))
+                .map_err(|why| why.to_string())?;
+            spent += u64::try_from(SLICE.saturating_sub(fuel.remaining())).unwrap_or(0);
+            if self.lua.enter(|ctx| ctx.fetch(executor).is_waiting()) {
+                self.lua.enter(|ctx| ctx.fetch(executor).stop(&ctx));
+                return Err("a declaration cannot wait on a future here".to_owned());
+            }
+            if finished {
+                return Ok(());
+            }
+            if spent > budget {
+                self.lua.enter(|ctx| ctx.fetch(executor).stop(&ctx));
+                crate::noted!("lua: stopped after {spent} instructions");
+                return Err(format!(
+                    "ran past its budget of {budget} instructions and was stopped"
+                ));
+            }
+        }
     }
 
     /// What has been declared so far.
@@ -526,6 +560,38 @@ mod tests {
             .run("this is not lua at all !!", "tools.lua")
             .expect_err("fails");
         assert!(why.to_string().contains("tools.lua"), "{why}");
+    }
+
+    #[test]
+    fn a_declaration_that_loops_is_stopped_and_reported() {
+        let began = std::time::Instant::now();
+        let why = Engine::new()
+            .run("while true do end", "loops.lua")
+            .expect_err("stopped");
+        assert!(why.to_string().contains("budget"), "{why}");
+        assert!(why.to_string().contains("loops.lua"), "{why}");
+        assert!(began.elapsed().as_secs() < 30, "{:?}", began.elapsed());
+    }
+
+    #[test]
+    fn a_tool_that_loops_fails_and_the_engine_still_answers() {
+        let mut engine = declaring(
+            r#"casper.tool("spin", { run = function() while true do end end })
+               casper.tool("ok", { run = function() return "fine" end })"#,
+        );
+        let ran = engine.call("spin", &serde_json::Value::Null).expect("ran");
+        assert!(ran.failed && ran.said.contains("budget"), "{ran:?}");
+        let ran = engine.call("ok", &serde_json::Value::Null).expect("ran");
+        assert_eq!(ran.said, "fine");
+    }
+
+    #[test]
+    fn a_surface_frame_that_loops_ends_the_surface() {
+        let mut engine = declaring(
+            r#"casper.tool("s", { surface = function() return function() while true do end end end })"#,
+        );
+        assert!(engine.open("s", &serde_json::Value::Null, &serde_json::json!({})));
+        assert!(engine.frame(&serde_json::json!({"kind": "tick"})).is_none());
     }
 
     #[test]
