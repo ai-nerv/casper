@@ -197,6 +197,21 @@ local function be32(s)
   return s:byte(1) * 16777216 + s:byte(2) * 65536 + s:byte(3) * 256 + s:byte(4)
 end
 
+-- The family's one frame cap, on what is sent and on what is read.
+local MAX_FRAME = 16777216
+
+--- The uid the host lends, if it lends one. `$UID` is a shell variable, not an environment one,
+--- so it is never read.
+local function host_uid()
+  for _, name in ipairs(FAMILY) do
+    local h = _G[name]
+    local uid = type(h) == "table" and h.uid or nil
+    if type(uid) == "function" then uid = uid() end
+    if type(uid) == "number" then return math.floor(uid) end
+  end
+  return nil
+end
+
 -- Drop the connection, and say why it went.
 --
 -- A reply says nothing about which call it answers: they are matched by position. So a call given
@@ -234,6 +249,7 @@ Session.__index = Session
 function Session:call(name, ...)
   if not self.handle then return nil, "this connection is closed" end
   local request = encode({ call = name, args = { ... } })
+  if #request > MAX_FRAME then return nil, "that call is over the family's frame cap" end
   -- A write that failed part-way has put the head of a call on the wire that this side will never
   -- finish, and the far end reads whatever comes next as the rest of it.
   local sent, why = self.handle:send(frame(request))
@@ -241,7 +257,11 @@ function Session:call(name, ...)
 
   local head, gone = exactly(self, 4)
   if not head then return nil, gone end
-  local body, cut = exactly(self, be32(head))
+  local size = be32(head)
+  if size == 0 or size > MAX_FRAME then
+    return nil, adrift(self, "the shell answered with a frame of " .. size .. " bytes, which is not one")
+  end
+  local body, cut = exactly(self, size)
   if not body then return nil, cut end
 
   local reply = decode(body)
@@ -310,9 +330,13 @@ local function find(where)
   local named = type(where) == "string" and where or nil
 
   local runtime = os.getenv("XDG_RUNTIME_DIR")
-  local dir = (runtime and runtime ~= "")
-    and (runtime .. "/onix/oslo")
-    or ("/tmp/onix-" .. (os.getenv("UID") or "0") .. "/oslo")
+  local uid = host_uid()
+  local dir = (runtime and runtime ~= "") and (runtime .. "/onix/oslo")
+    or (uid and ("/tmp/onix-" .. uid .. "/oslo"))
+  if not dir then
+    local env = os.getenv("OSLO_SOCK")
+    return (env and env ~= "") and { { path = env } } or {}
+  end
   if named then return { { path = dir .. "/" .. named .. ".sock" } } end
 
   -- `$OSLO_SOCK` goes first and does not go alone. A process the shell started inherits it and
@@ -388,12 +412,15 @@ end
 local function tool_dir(tool)
   local runtime = os.getenv("XDG_RUNTIME_DIR")
   if runtime and runtime ~= "" then return runtime .. "/" .. tool end
-  return "/tmp/" .. tool .. "-" .. (os.getenv("UID") or "0")
+  local uid = host_uid()
+  return uid and ("/tmp/" .. tool .. "-" .. uid) or nil
 end
 
 local function descriptor(tool)
   if type(tool) ~= "string" or tool == "" or tool:find("[^%w._-]") then return nil end
-  local host, path = nil, tool_dir(tool) .. "/" .. tool .. ".tool"
+  local dir = tool_dir(tool)
+  if not dir then return nil end
+  local host, path = nil, dir .. "/" .. tool .. ".tool"
   for _, name in ipairs(FAMILY) do
     local h = _G[name]
     if h and h.fs and h.fs.ls then host = h; break end

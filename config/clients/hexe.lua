@@ -201,6 +201,21 @@ local function be32(s)
   return s:byte(1) * 16777216 + s:byte(2) * 65536 + s:byte(3) * 256 + s:byte(4)
 end
 
+-- The family's one frame cap, on what is sent and on what is read.
+local MAX_FRAME = 16777216
+
+--- The uid the host lends, if it lends one. `$UID` is a shell variable, not an environment one,
+--- so it is never read.
+local function host_uid()
+  for _, name in ipairs(HOSTS) do
+    local h = _G[name]
+    local uid = type(h) == "table" and h.uid or nil
+    if type(uid) == "function" then uid = uid() end
+    if type(uid) == "number" then return math.floor(uid) end
+  end
+  return nil
+end
+
 --- Read exactly `n` bytes, however many reads that takes.
 local function exactly(handle, n)
   local parts, have = {}, 0
@@ -225,15 +240,23 @@ function Session:call(name, ...)
   local body = { call = name }
   if #args > 0 then body.args = args end
 
+  local request = encode(body)
+  if #request > MAX_FRAME then return nil, "that call is over the family's frame cap" end
+
   local handle, why = transport.connect(self.path, self.timeout_ms)
   if not handle then return nil, why end
 
-  local sent, gone = handle:send(frame(encode(body)))
+  local sent, gone = handle:send(frame(request))
   if not sent then handle:close(); return nil, gone end
 
   local head, cut = exactly(handle, 4)
   if not head then handle:close(); return nil, cut end
-  local reply_body, trimmed = exactly(handle, be32(head))
+  local size = be32(head)
+  if size == 0 or size > MAX_FRAME then
+    handle:close()
+    return nil, "the session answered with a frame of " .. size .. " bytes, which is not one"
+  end
+  local reply_body, trimmed = exactly(handle, size)
   handle:close()
   if not reply_body then return nil, trimmed end
 
@@ -310,9 +333,14 @@ local function socket_dir()
     end
   end
   local runtime = os.getenv("XDG_RUNTIME_DIR")
-  local base = (runtime and runtime ~= "")
-    and (runtime .. "/hexe")
-    or ("/tmp/hexe-" .. (os.getenv("UID") or "0"))
+  local base
+  if runtime and runtime ~= "" then
+    base = runtime .. "/hexe"
+  else
+    local uid = host_uid()
+    if not uid then return nil end
+    base = "/tmp/hexe-" .. uid
+  end
   local instance = os.getenv("HEXE_INSTANCE")
   return (instance and instance ~= "") and (base .. "/" .. instance) or base
 end
@@ -326,6 +354,7 @@ local function find(where)
   if not named and env and env ~= "" then return { { path = env } } end
 
   local dir = socket_dir()
+  if not dir then return {} end
   if not named then return list_candidates(dir) end
 
   local direct = dir .. "/api@" .. named .. ".sock"
@@ -407,12 +436,15 @@ end
 local function tool_dir(tool)
   local runtime = os.getenv("XDG_RUNTIME_DIR")
   if runtime and runtime ~= "" then return runtime .. "/" .. tool end
-  return "/tmp/" .. tool .. "-" .. (os.getenv("UID") or "0")
+  local uid = host_uid()
+  return uid and ("/tmp/" .. tool .. "-" .. uid) or nil
 end
 
 local function descriptor(tool)
   if type(tool) ~= "string" or tool == "" or tool:find("[^%w._-]") then return nil end
-  local host, path = nil, tool_dir(tool) .. "/" .. tool .. ".tool"
+  local dir = tool_dir(tool)
+  if not dir then return nil end
+  local host, path = nil, dir .. "/" .. tool .. ".tool"
   for _, name in ipairs(HOSTS) do
     local h = _G[name]
     if h and h.fs and h.fs.ls then host = h; break end
