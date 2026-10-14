@@ -10,6 +10,20 @@ use std::io::ErrorKind;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
+/// `$XDG_RUNTIME_DIR`, when it is an absolute path to a directory this uid owns with no group or
+/// other permissions. Empty is unset.
+#[must_use]
+pub fn trusted_runtime() -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty())?);
+    let meta = std::fs::metadata(&dir).ok()?;
+    (dir.is_absolute()
+        && meta.is_dir()
+        && meta.uid() == rustix::process::getuid().as_raw()
+        && meta.mode() & 0o077 == 0)
+        .then_some(dir)
+}
+
 /// Where casper's sockets live: `$XDG_RUNTIME_DIR/casper`, else a per-user directory under the
 /// temporary directory, so two users never collide on one path.
 #[must_use]

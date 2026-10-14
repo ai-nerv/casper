@@ -40,6 +40,8 @@ found=$(
       {
         sub(/\/\/.*$/, "")
         gsub(/"magi"/, "\"credential-directory\"")
+        # A socket directory of a sibling is part of the wire, named as a string.
+        gsub(/"(melchior|balthasar)"/, "\"socket-directory\"")
         gsub(/(home\/\.local\/share|data)\/magi(\/credentials\.json)?/, "credential-fixture")
         print
       }

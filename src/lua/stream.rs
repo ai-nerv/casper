@@ -10,6 +10,7 @@ use luna::{Callback, CallbackReturn, Context, Table, Value};
 use std::cell::RefCell;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -17,40 +18,56 @@ use std::time::Duration;
 /// us allocate for it before a byte of it has arrived.
 const MAX_RECV: usize = 16 * 1024 * 1024;
 
+/// The family's socket directories, by name: `<runtime>/<name>` or `<tmp>/<name>-<uid>`.
+const FAMILY: &[&str] = &["magi", "casper", "melchior", "memory", "balthasar"];
+
 /// A connected socket, shared between the handle's methods.
 type Handle = Rc<RefCell<Option<UnixStream>>>;
 
-/// Whether `path` is a socket a config may dial: under [`roots`] and nowhere else. There is no
-/// permission seam to gate with here — a config file is read before anything that could ask a
-/// person exists — so the reachable set is narrowed instead. Narrowed, not sealed: one of the
-/// roots is the shared temporary directory, and the check is on the written path rather than the
-/// one a symlink leads to. What seals this seam is that a declaration has [`crate::lua::exec`].
-fn dialable(path: &std::path::Path) -> bool {
-    roots().iter().any(|root| under(path, root))
+/// The path to dial when `path` is one of the family's sockets, and `None` otherwise.
+///
+/// A config file is read before anything that could ask a person exists, so the reachable set is
+/// the family's own socket directories and nothing else under the runtime or temporary directory.
+fn dialable(path: &Path) -> Option<PathBuf> {
+    dialable_in(path, &roots())
 }
 
-/// Where this user's sockets may live. Both roots, because the family uses either.
-fn roots() -> Vec<std::path::PathBuf> {
-    let mut out = vec![std::env::temp_dir()];
-    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
-        out.push(std::path::PathBuf::from(runtime));
+/// [`dialable`] against explicit roots: the parent, canonicalised, under one of them, and the
+/// path itself a socket this uid owns, not a link to one.
+fn dialable_in(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    let name = path.file_name()?;
+    let parent = std::fs::canonicalize(path.parent()?).ok()?;
+    if !roots.iter().any(|root| parent.starts_with(root)) {
+        return None;
     }
-    out
+    let real = parent.join(name);
+    let meta = std::fs::symlink_metadata(&real).ok()?;
+    (meta.file_type().is_socket() && meta.uid() == rustix::process::getuid().as_raw())
+        .then_some(real)
 }
 
-/// Whether `path`, once `..` is resolved, is inside `root`.
-fn under(path: &std::path::Path, root: &std::path::Path) -> bool {
-    let mut out = std::path::PathBuf::new();
-    for part in path.components() {
-        match part {
-            std::path::Component::ParentDir => {
-                out.pop();
-            }
-            std::path::Component::CurDir => {}
-            other => out.push(other),
-        }
+/// The family's socket directories for this user, canonicalised where they exist.
+fn roots() -> Vec<PathBuf> {
+    let uid = rustix::process::getuid().as_raw();
+    let tmp = std::env::temp_dir();
+    let mut out: Vec<PathBuf> = FAMILY
+        .iter()
+        .map(|name| tmp.join(format!("{name}-{uid}")))
+        .collect();
+    if let Some(runtime) = crate::serving::trusted_runtime() {
+        out.extend(FAMILY.iter().map(|name| runtime.join(name)));
     }
-    out.starts_with(root)
+    out.into_iter()
+        .map(|root| std::fs::canonicalize(&root).unwrap_or(root))
+        .collect()
+}
+
+/// Whether the peer on `socket` runs as this user.
+fn ours(socket: &UnixStream) -> bool {
+    use std::os::fd::AsFd;
+    rustix::net::sockopt::socket_peercred(socket.as_fd())
+        .is_ok_and(|cred| cred.uid == rustix::process::getuid())
 }
 
 /// Build the `stream` table.
@@ -66,16 +83,16 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
 
         // Refused as an ordinary answer rather than a raise, so a config probing for an absent
         // sibling carries on without it.
-        if !dialable(std::path::Path::new(&path)) {
+        let Some(real) = dialable(Path::new(&path)) else {
             stack.replace(
                 ctx,
                 (
                     Value::Nil,
-                    "a socket outside this user's runtime directory is not this VM's to open",
+                    "only a family program's own socket, owned by this user, is this VM's to open",
                 ),
             );
             return Ok(CallbackReturn::Return);
-        }
+        };
 
         // A default rather than a wait forever: a stale socket accepts and never answers.
         let timeout = match timeout_ms {
@@ -84,7 +101,10 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
             _ => Duration::from_secs(5),
         };
 
-        match UnixStream::connect(&path) {
+        match UnixStream::connect(&real) {
+            Ok(socket) if !ours(&socket) => {
+                stack.replace(ctx, (Value::Nil, "the peer on that socket is another user"));
+            }
             // A socket that would take no deadline is refused rather than handed over: without
             // one, a peer that accepts and never answers hangs the call forever.
             Ok(socket) => match socket
@@ -179,4 +199,76 @@ fn handle_table<'gc>(ctx: Context<'gc>, socket: Handle) -> Table<'gc> {
     handle.set(ctx, "close", close).ok();
 
     handle
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scratch::Scratch;
+    use std::os::unix::net::UnixListener;
+
+    /// A scratch runtime with a family directory, a socket in it, and the session bus beside it.
+    fn runtime() -> (Scratch, PathBuf, Vec<UnixListener>) {
+        let dir = Scratch::new("stream", "family");
+        let root = std::fs::canonicalize(&*dir).expect("canonical scratch");
+        std::fs::create_dir(root.join("magi")).expect("family dir");
+        let held = vec![
+            UnixListener::bind(root.join("magi/host.sock")).expect("family socket"),
+            UnixListener::bind(root.join("bus")).expect("bus socket"),
+        ];
+        (dir, root, held)
+    }
+
+    #[test]
+    fn a_family_socket_is_dialable() {
+        let (_dir, root, _held) = runtime();
+        let roots = [root.join("magi")];
+        assert_eq!(
+            dialable_in(&root.join("magi/host.sock"), &roots),
+            Some(root.join("magi/host.sock"))
+        );
+    }
+
+    #[test]
+    fn the_session_bus_beside_the_family_is_refused() {
+        let (_dir, root, _held) = runtime();
+        let roots = [root.join("magi")];
+        assert_eq!(dialable_in(&root.join("bus"), &roots), None);
+        assert_eq!(dialable_in(&root.join("magi/../bus"), &roots), None);
+    }
+
+    #[test]
+    fn a_link_or_a_plain_file_inside_a_family_dir_is_refused() {
+        let (_dir, root, _held) = runtime();
+        let roots = [root.join("magi")];
+        std::os::unix::fs::symlink(root.join("bus"), root.join("magi/link")).expect("link");
+        std::os::unix::fs::symlink(&root, root.join("magi/up")).expect("dir link");
+        std::fs::write(root.join("magi/file"), "x").expect("file");
+        for name in ["magi/link", "magi/up/bus", "magi/file", "magi/absent"] {
+            assert_eq!(dialable_in(&root.join(name), &roots), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_relative_path_is_never_dialable() {
+        assert_eq!(dialable(Path::new("bus")), None);
+        assert_eq!(dialable(Path::new("")), None);
+    }
+
+    #[test]
+    fn a_config_cannot_open_the_session_bus() {
+        let (_dir, root, _held) = runtime();
+        let mut engine = crate::lua::engine::Engine::new();
+        let source = format!(
+            "local h, why = casper.stream.connect({:?})\ncasper.answer = tostring(h) .. ' ' .. why",
+            root.join("bus").display().to_string()
+        );
+        engine.run(&source, "probe.lua").expect("runs");
+        engine.harvest();
+        let said = engine.setting("answer").unwrap_or_default();
+        assert!(
+            said.as_str().is_some_and(|s| s.starts_with("nil ")),
+            "{said}"
+        );
+    }
 }
