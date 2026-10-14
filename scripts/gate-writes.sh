@@ -17,7 +17,7 @@
 # the remembered working directory, rotating a log, tidying a cache. Each is reasonable on its own
 # and each makes casper a program that deletes your files.
 #
-# Three files, each with its own reason:
+# The files, each with its own reason:
 #
 #   src/acknowledged.rs   the manifest, under the configuration directory. The one durable thing
 #                         casper decides to write, and `casper acknowledge` is the verb for it.
@@ -27,9 +27,12 @@
 #   src/serving.rs        the socket door. Binding a session's socket creates its directory under
 #                         the runtime and clears a dead daemon's leftover socket file — the only
 #                         filesystem the casper process touches beyond the manifest and the log.
+#   src/jail/guard.rs     the Landlock path's guard. After a jailed command it puts back the files
+#                         bubblewrap would have bound read-only, and removes what appeared there.
 #
-# And removal is narrower than writing: only the scratch helper and the socket door may unlink, so
-# a delete added elsewhere is a finding even in a file that may write.
+# And removal is narrower than writing: only the scratch helper, the socket door, the jail's
+# temporary directory and the guard may unlink, so a delete added elsewhere is a finding even in a
+# file that may write.
 #
 # POSIX for the same reason the others are: /bin/sh on the runner is dash.
 set -eu
@@ -37,10 +40,11 @@ ROOT="${GATE_ROOT:-src}"
 
 # May write. Adding to this list is a deliberate act; the point is that it cannot happen by
 # accident.
-WRITERS='src/acknowledged.rs src/noted.rs src/scratch.rs src/serving.rs src/jail/temporary.rs'
+WRITERS='src/acknowledged.rs src/noted.rs src/scratch.rs src/serving.rs src/jail/temporary.rs src/jail/guard.rs'
 
-# May remove. The scratch helper owns what it removes; the socket door clears a dead daemon's file.
-REMOVERS='src/scratch.rs src/serving.rs src/jail/temporary.rs'
+# May remove. The scratch helper owns what it removes; the socket door clears a dead daemon's file;
+# the guard removes what a jailed command left at a protected path.
+REMOVERS='src/scratch.rs src/serving.rs src/jail/temporary.rs src/jail/guard.rs'
 
 # What counts as reaching for the filesystem to change it. `File::create` and `OpenOptions` are
 # here because both truncate or create without the word `write` appearing anywhere.
@@ -50,8 +54,8 @@ REMOVERS='src/scratch.rs src/serving.rs src/jail/temporary.rs'
 # each is a way to change what is on disk: `set_permissions`, `set_times`, `symlink` and
 # `File::options`, which is `OpenOptions` under another spelling. `create_new` matched only as a
 # substring of `File::create`, and is spelled out here rather than left to that.
-WRITING='fs::(write|create_dir|create_dir_all|copy|rename|hard_link|soft_link|symlink|set_permissions|set_times)\b|File::(create|create_new|options)|OpenOptions|DirBuilder::'
-REMOVING='fs::(remove_file|remove_dir|remove_dir_all)'
+WRITING='fs::(write|create_dir|create_dir_all|copy|rename|hard_link|soft_link|symlink|set_permissions|set_times|renameat|mkdirat|symlinkat|chmod|fchmod)\b|File::(create|create_new|options)|OpenOptions|DirBuilder::|OFlags::(CREATE|TRUNC)'
+REMOVING='fs::(remove_file|remove_dir|remove_dir_all|unlinkat)\b'
 
 fail=0
 

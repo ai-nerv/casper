@@ -57,7 +57,7 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) -> String {
         .expect("credential alias");
     std::fs::write(dir.join("outside"), "HOST_UNCHANGED").expect("outside fixture");
     aliases::prepare(&dir, variant);
-    if matches!(variant, "persistence" | "agreement") {
+    if matches!(variant, "persistence" | "agreement" | "window") {
         persistence::prepare(&dir);
     }
     let _reached = matches!(variant, "reach" | "agreement").then(|| reach::prepare(&dir));
@@ -86,6 +86,10 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) -> String {
             "pub fn answer() -> u8 { 42 }\n",
         )
         .expect("compiler input");
+    }
+    if variant == "git-init" {
+        let git = installed("git").expect("git unavailable");
+        std::os::unix::fs::symlink(git, dir.join("work/git")).expect("git fixture");
     }
     if variant == "replaced-grant" {
         std::fs::create_dir(dir.join("allowed")).expect("original grant");
@@ -265,7 +269,11 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) -> String {
         network
             .recv_from(&mut packet)
             .expect("a reach grant keeps the network open");
-        return std::fs::read_to_string(dir.join("work/verdicts")).unwrap_or_default();
+        let verdicts = std::fs::read_to_string(dir.join("work/verdicts")).unwrap_or_default();
+        if variant != "agreement" {
+            return verdicts;
+        }
+        return verdicts + &agreement::kept(&dir.join("work"));
     }
     let error = network
         .recv_from(&mut packet)
@@ -344,6 +352,14 @@ fn contained_child() {
         persistence::check(&root, &mode, installed("bwrap").is_some());
         return;
     }
+    if variant == "window" {
+        persistence::window(&root);
+        return;
+    }
+    if variant == "git-init" {
+        persistence::created(&root);
+        return;
+    }
     let mut script = probe(&root);
     if variant == "late-stores" {
         script = format!(
@@ -410,10 +426,13 @@ fn contained_child() {
             assert!(!root.join("work/report").exists());
             return;
         }
+        let restored = variant == "agreement" && installed("bwrap").is_none();
         assert_eq!(
-            done.code, 0,
+            done.code,
+            i64::from(restored),
             "command refused or failed: {} {}",
-            done.err, done.out
+            done.err,
+            done.out
         );
     } else {
         let mut screen = casper::pty::Screen::open(
@@ -510,15 +529,27 @@ fn reach_keeps_name_resolution_and_an_https_fetch_working() {
 
 #[test]
 fn bubblewrap_keeps_what_the_next_unjailed_program_runs_read_only() {
-    for mode in ["command", "screen"] {
+    for mode in ["command", "screen", "socket"] {
         fixture(mode, true, "persistence");
     }
 }
 
 #[test]
-fn landlock_keeps_persistence_outside_the_writable_roots_but_cannot_seal_it_beneath_them() {
-    for mode in ["command", "screen"] {
+fn landlock_puts_back_what_the_next_unjailed_program_runs_and_says_so() {
+    for mode in ["command", "screen", "socket"] {
         fixture(mode, false, "persistence");
+    }
+}
+
+#[test]
+fn landlock_lets_a_reader_see_the_change_until_the_command_has_ended() {
+    fixture("command", false, "window");
+}
+
+#[test]
+fn what_did_not_exist_may_be_created_on_both_paths_so_git_init_works() {
+    for bubblewrap in [false, true] {
+        fixture("command", bubblewrap, "git-init");
     }
 }
 
