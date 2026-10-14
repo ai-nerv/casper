@@ -45,7 +45,7 @@ Every one of them is declared in `config/tools.lua`, in Lua, and nothing about t
 in as a declaration. Network operations are implemented in Rust behind those declarations. A
 tool of your own goes in the same file.
 
-## MCP
+## MCP and web reading
 
 Casper is also an **MCP client**: trusted `mcp_servers` settings connect to external servers
 over stdio or Streamable HTTP. Their discovered tools appear in `casper tools` and Magi as
@@ -56,7 +56,11 @@ there is no Blender-specific executor. See [MCP_CLIENT.md](docs/MCP_CLIENT.md) f
 official Rust MCP SDK over stdio. Disabled and hidden tools are not exposed. Tool failures are
 MCP error results, and cancelled or timed-out calls stop their worker processes.
 
-See [MCP_WEB.md](MCP_WEB.md) for configuration, trust boundaries and examples.
+The `web` tool searches for sources or fetches an HTTP(S) page and extracts readable text and
+links. It uses a native Rust HTTP client, does not execute page scripts and needs no additional
+runtime. Fetching is reading, not interactive website automation.
+
+See [MCP_WEB.md](MCP_WEB.md) for configuration, trust boundaries, examples and HTTP tests.
 
 ## Surfaces
 
