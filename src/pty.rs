@@ -132,7 +132,10 @@ impl Screen {
             // Ends when the program does: the last slave fd closing makes this read fail, which
             // drops the sender and is how the frame loop learns the program is gone.
             while let Ok(read) = (&*reading).read(&mut buffer) {
-                if read == 0 || sender.send(buffer[..read].to_vec()).is_err() {
+                let Some(got) = buffer.get(..read).filter(|got| !got.is_empty()) else {
+                    return;
+                };
+                if sender.send(got.to_vec()).is_err() {
                     return;
                 }
             }
