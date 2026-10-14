@@ -5,16 +5,21 @@ use casper::lua::engine::Engine;
 use casper::scratch::Scratch;
 use std::process::{Command, Stdio};
 
-/// A transport whose every connection answers `reply` and counts how often it was dialled.
+/// A transport whose every connection answers `reply`, counting how often it was dialled, the
+/// most one `recv` asked for, and the last connection, which `close` marks closed.
 const FAKE: &str = r#"
-dialled = 0
+dialled, largest, last = 0, 0, nil
 local function fake(reply)
   return { connect = function()
     dialled = dialled + 1
-    local h = { left = reply }
+    local h = { left = reply, closed = false }
+    last = h
     function h:send() return true end
-    function h:recv(n) local out = self.left:sub(1, n); self.left = self.left:sub(n + 1); return out end
-    function h:close() return true end
+    function h:recv(n)
+      largest = math.max(largest, n)
+      local out = self.left:sub(1, n); self.left = self.left:sub(n + 1); return out
+    end
+    function h:close() self.closed = true; return true end
     return h
   end }
 end
@@ -68,6 +73,63 @@ fn a_call_over_the_cap_is_refused_before_it_is_sent() {
             said.ends_with("|0"),
             "{client} dialled for an oversized call: {said}"
         );
+    }
+}
+
+/// The family's wire corpus, `tests/wire-corpus/cases.json`.
+fn corpus() -> serde_json::Value {
+    let at = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/wire-corpus");
+    let cases: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(at.join("cases.json")).expect("cases"))
+            .expect("parse");
+    let mut client = cases["client"].clone();
+    for case in client.as_array_mut().expect("client cases") {
+        let bytes = std::fs::read(at.join(case["file"].as_str().expect("file"))).expect("case");
+        case["bytes"] = bytes.into();
+    }
+    client
+}
+
+#[test]
+fn every_client_case_of_the_wire_corpus_is_taken_as_it_says() {
+    for client in ["hexe", "oslo"] {
+        for case in corpus().as_array().expect("cases") {
+            let bytes: Vec<String> = case["bytes"]
+                .as_array()
+                .expect("bytes")
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            let said = answer(&format!(
+                "local lib = load(casper.clients.{client})(fake(string.char({})))
+                 local s = lib.connect({{ path = '/nowhere' }})
+                 local raised, value, why = pcall(s.call, s, 'verbs')
+                 casper.answer = table.concat({{ tostring(raised), tostring(value), tostring(why),
+                   tostring(last.closed), tostring(largest) }}, '|')",
+                bytes.join(", ")
+            ));
+            let took: Vec<&str> = said.split('|').collect();
+            let (file, expect) = (&case["file"], case["expect"].as_str().unwrap_or_default());
+            assert_eq!(took[0], "true", "{client} {file} raised: {said}");
+            match expect {
+                "accepted" => assert_eq!(took[1], "x", "{client} {file}: {said}"),
+                "failed" => assert_eq!(took[1..3], ["nil", "no"], "{client} {file}: {said}"),
+                "refused" => {
+                    assert_eq!(took[1], "nil", "{client} {file}: {said}");
+                    assert!(took[2].contains("revision 2"), "{client} {file}: {said}");
+                }
+                "error_and_close" | "error_and_close_without_allocating" => {
+                    assert_eq!(took[1], "nil", "{client} {file}: {said}");
+                    assert_eq!(took[3], "true", "{client} {file} left open: {said}");
+                    let largest: u64 = took[4].parse().expect("a count");
+                    assert!(
+                        expect == "error_and_close" || largest <= 4,
+                        "{client} {file} asked for {largest} bytes: {said}"
+                    );
+                }
+                other => panic!("{file}: no such expectation '{other}'"),
+            }
+        }
     }
 }
 

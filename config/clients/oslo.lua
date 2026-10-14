@@ -200,6 +200,9 @@ end
 -- The family's one frame cap, on what is sent and on what is read.
 local MAX_FRAME = 16777216
 
+-- The newest revision of the family wire this client reads. A reply with none is older still.
+local REVISION = 1
+
 --- The uid the host lends, if it lends one. `$UID` is a shell variable, not an environment one,
 --- so it is never read.
 local function host_uid()
@@ -264,7 +267,15 @@ function Session:call(name, ...)
   local body, cut = exactly(self, size)
   if not body then return nil, cut end
 
-  local reply = decode(body)
+  local decoded, reply = pcall(decode, body)
+  if not decoded then return nil, adrift(self, reply) end
+  if type(reply) ~= "table" then
+    return nil, adrift(self, "the shell answered with something that is not a reply")
+  end
+  if type(reply.family) == "number" and reply.family > REVISION then
+    return nil, "the shell answers in revision " .. reply.family
+      .. " of the family wire, and this client reads " .. REVISION
+  end
   if not reply.ok then return nil, reply.error or "the shell refused the call" end
   -- `result` is a list of return values, so one Lua call answers with what the remote one did.
   return table.unpack(reply.result or {}, 1, reply.n or #(reply.result or {}))
