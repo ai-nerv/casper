@@ -25,7 +25,7 @@ fn command(dir: &Scratch) -> tokio::process::Command {
 fn command_for(dir: &Scratch, tools: &str) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_casper"));
     command
-        .args(["mcp", &format!("--tools={tools}")])
+        .arg("mcp")
         .current_dir(dir)
         .env("HOME", &**dir)
         .env("XDG_CONFIG_HOME", &**dir)
@@ -34,7 +34,52 @@ fn command_for(dir: &Scratch, tools: &str) -> tokio::process::Command {
         .env("CASPER_CONFIGURE", "{}")
         .kill_on_drop(true)
         .env_remove("CASPER_JAIL");
+    if tools != "*" {
+        command.arg(format!("--tools={tools}"));
+    }
     command
+}
+
+#[tokio::test]
+async fn the_full_registry_has_web_reading_without_browser_automation() {
+    let dir = fixture();
+    let client =
+        ().serve(TokioChildProcess::new(command_for(&dir, "*")).expect("MCP transport"))
+            .await
+            .expect("MCP initializes");
+    let tools = client.list_all_tools().await.expect("complete registry");
+    assert!(!tools.iter().any(|tool| tool.name == "browse"));
+    let web = tools
+        .iter()
+        .find(|tool| tool.name == "web")
+        .expect("web tool remains");
+    assert_eq!(
+        web.input_schema["properties"]["action"]["enum"],
+        json!(["search", "fetch"])
+    );
+    assert!(
+        client
+            .call_tool(CallToolRequestParams::new("browse"))
+            .await
+            .is_err()
+    );
+    client.cancel().await.expect("client closes");
+    let output = command_for(&dir, "browse")
+        .output()
+        .await
+        .expect("removed tool refused");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no such configured tool"));
+    assert!(
+        !casper::wire::CLI_VERBS
+            .iter()
+            .any(|(verb, _)| *verb == "browser")
+    );
+    assert!(
+        !casper::setup::needs()
+            .iter()
+            .any(|need| need.name == "browser")
+    );
 }
 
 #[tokio::test]

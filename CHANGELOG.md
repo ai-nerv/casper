@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.6] - 2026-10-14
+
+### <!-- 9 -->◀️ Revert
+
+- Remove the Chromium browser tools
+
 ## [0.5.5] - 2026-09-29
 
 ### <!-- 0 -->⛰️  Features
