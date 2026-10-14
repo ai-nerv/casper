@@ -181,6 +181,11 @@ Start with inspection. This allowlist deliberately excludes arbitrary Blender co
 and scene mutation. Expand it only when you intend to allow those actions. Do not pregrant
 all network access unless that is your deliberate policy.
 
+`get_viewport_screenshot` has Blender write the image to the server's temporary directory and
+the server read it back. Inside the jail that directory is private, so add a `"TMPDIR"` in the
+project, for example `"/absolute/path/to/project/.mcp/blender-tmp"`, which both sides see at one
+path.
+
 Magi can discover `mcp__blender__get_scene_info` and call it with the server's discovered schema:
 
 ```json
