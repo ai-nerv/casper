@@ -48,7 +48,7 @@ fn dialable_in(path: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
 }
 
 /// The family's socket directories for this user, canonicalised where they exist.
-fn roots() -> Vec<PathBuf> {
+pub(super) fn roots() -> Vec<PathBuf> {
     let uid = rustix::process::getuid().as_raw();
     let tmp = std::env::temp_dir();
     let mut out: Vec<PathBuf> = FAMILY
