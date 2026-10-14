@@ -163,6 +163,7 @@ dependencies = [
  "reqwest",
  "rmcp",
  "rustix",
+ "rustls",
  "scraper",
  "seccompiler",
  "serde",

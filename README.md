@@ -124,8 +124,11 @@ surfaces; tool arguments do not grant permissions.
 Ordinary commands and PTYs use the same preparation. Bubblewrap provides mount/process
 namespaces and loads the syscall filter after setup. Without bubblewrap, Casper requires fully
 enforced Landlock ABI 6 protections and seccomp; unavailable protection refuses the spawn.
-Without reach, socket syscalls are denied. With it, the network opens and nothing local does: no
-host Unix socket by path, and no controlling terminal. Abstract Unix sockets stay closed wherever
+Without reach, socket syscalls are denied. With it, the network opens and nothing local does:
+`socket` takes IPv4, IPv6 and routing netlink (`NETLINK_ROUTE`), plus Unix sockets under
+bubblewrap, whose mount namespace hides the runtime directory. Any other family, and a
+`socketpair` of anything but Unix sockets, fails with `EAFNOSUPPORT`. There is no host Unix socket
+by path, and no controlling terminal. Abstract Unix sockets stay closed wherever
 the kernel can scope them (Landlock ABI 6, and a bubblewrap that is not setuid); where it cannot,
 bubblewrap runs without that scope unless `CASPER_REQUIRE_CONTAINMENT=1` makes it a refusal.
 Host-specific network allowances are not supported by this profile.

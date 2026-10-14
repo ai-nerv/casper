@@ -68,7 +68,8 @@ impl Jail {
         };
         prepared.env = policy::environment(&self.home, &tmp, extra);
         let filters = vec![
-            super::filter(grants.reach, bwrap.is_some()),
+            super::filter(grants.reach),
+            super::filter::families(bwrap.is_some()),
             super::absent(),
         ];
         if filters.iter().any(Vec::is_empty) {

@@ -7,8 +7,9 @@
 //! that runs a program is as bounded as the first.
 //!
 //! [`Jail::prepare`] captures the child environment and required protections for ordinary and
-//! terminal children. Without bubblewrap, Landlock restricts filesystem and process access and
-//! seccomp blocks ungranted sockets. Missing required protections refuse the spawn.
+//! terminal children. Without bubblewrap, Landlock restricts filesystem and process access. On
+//! both paths seccomp blocks ungranted sockets and opens only the network's address families.
+//! Missing required protections refuse the spawn.
 
 use std::path::{Path, PathBuf};
 
@@ -185,7 +186,7 @@ const FORBIDDEN: &[i64] = &[
 /// What `personality` may still be asked: the query and the ordinary Linux personas.
 const PERSONAS: &[u64] = &[0, 0x8, 0x2_0000, 0x2_0008, 0xffff_ffff];
 
-/// The syscalls an ungranted network loses.
+/// The syscalls an ungranted network loses. With it, `socket` takes [`filter::families`].
 const UNREACHED: &[i64] = &[
     libc::SYS_socket,
     libc::SYS_connect,
@@ -194,35 +195,50 @@ const UNREACHED: &[i64] = &[
     libc::SYS_sendmmsg,
 ];
 
+/// A syscall and the rules under which a filter answers it: any one rule matching, or always when
+/// there are none.
+type Rules = Vec<(
+    i64,
+    Vec<Result<seccompiler::SeccompRule, seccompiler::BackendError>>,
+)>;
+
+/// One rule: every condition on the syscall's arguments, compared as 32-bit values.
+fn rule(
+    conditions: &[(u8, seccompiler::SeccompCmpOp, u64)],
+) -> Result<seccompiler::SeccompRule, seccompiler::BackendError> {
+    use seccompiler::{SeccompCmpArgLen, SeccompCondition, SeccompRule};
+    conditions
+        .iter()
+        .map(|(arg, op, value)| {
+            SeccompCondition::new(*arg, SeccompCmpArgLen::Dword, op.clone(), *value)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .and_then(SeccompRule::new)
+}
+
 /// The jail's `EPERM` filter: [`FORBIDDEN`], `clone` into a new user namespace, an unusual
-/// `personality`, the network unless `reach`, and a Unix socket unless `unix`.
-fn filter(reach: bool, unix: bool) -> seccompiler::BpfProgram {
-    use seccompiler::{SeccompCmpArgLen as Len, SeccompCmpOp as Op, SeccompCondition, SeccompRule};
-    let on = |arg, op, value| SeccompCondition::new(arg, Len::Dword, op, value);
-    let rule = |conditions: Vec<Result<SeccompCondition, _>>| {
-        conditions
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()
-            .and_then(SeccompRule::new)
-    };
+/// `personality`, and the network unless `reach`.
+fn filter(reach: bool) -> seccompiler::BpfProgram {
+    use seccompiler::SeccompCmpOp as Op;
     let newuser = libc::CLONE_NEWUSER as u64;
-    let mut rules: Vec<(i64, Vec<Result<SeccompRule, _>>)> = vec![
+    let personas: Vec<_> = PERSONAS.iter().map(|p| (0, Op::Ne, *p)).collect();
+    let mut rules: Rules = vec![
         (
             libc::SYS_clone,
-            vec![rule(vec![on(0, Op::MaskedEq(newuser), newuser)])],
+            vec![rule(&[(0, Op::MaskedEq(newuser), newuser)])],
         ),
-        (
-            libc::SYS_personality,
-            vec![rule(PERSONAS.iter().map(|p| on(0, Op::Ne, *p)).collect())],
-        ),
+        (libc::SYS_personality, vec![rule(&personas)]),
     ];
     rules.extend(FORBIDDEN.iter().map(|nr| (*nr, Vec::new())));
     if !reach {
         rules.extend(UNREACHED.iter().map(|nr| (*nr, Vec::new())));
-    } else if !unix {
-        let local = libc::AF_UNIX as u64;
-        rules.push((libc::SYS_socket, vec![rule(vec![on(0, Op::Eq, local)])]));
     }
+    built(rules, libc::EPERM)
+}
+
+/// `rules` compiled to answer `errno`, or an empty program, which the caller refuses, when one
+/// rule will not build.
+fn built(rules: Rules, errno: i32) -> seccompiler::BpfProgram {
     let built: Result<std::collections::BTreeMap<_, _>, _> = rules
         .into_iter()
         .map(|(nr, list)| {
@@ -236,19 +252,23 @@ fn filter(reach: bool, unix: bool) -> seccompiler::BpfProgram {
             crate::noted!("jail: a seccomp rule could not be built ({why}); none is armed");
             seccompiler::BpfProgram::default()
         },
-        compile,
+        |rules| compile(rules, errno),
     )
 }
 
 /// A seccomp program that allows everything but `forbid`, each of which answers `EPERM`.
 #[cfg(test)]
 fn deny(forbid: &[i64]) -> seccompiler::BpfProgram {
-    compile(forbid.iter().map(|nr| (*nr, Vec::new())).collect())
+    compile(
+        forbid.iter().map(|nr| (*nr, Vec::new())).collect(),
+        libc::EPERM,
+    )
 }
 
-/// `rules` as a program answering `EPERM` on a match and allowing everything else.
+/// `rules` as a program answering `errno` on a match and allowing everything else.
 fn compile(
     rules: std::collections::BTreeMap<i64, Vec<seccompiler::SeccompRule>>,
+    errno: i32,
 ) -> seccompiler::BpfProgram {
     use seccompiler::{SeccompAction, SeccompFilter, TargetArch};
     let arch = if cfg!(target_arch = "aarch64") {
@@ -259,7 +279,7 @@ fn compile(
     SeccompFilter::new(
         rules,
         SeccompAction::Allow,
-        SeccompAction::Errno(libc::EPERM as u32),
+        SeccompAction::Errno(errno.unsigned_abs()),
         arch,
     )
     .and_then(std::convert::TryInto::try_into)
@@ -531,9 +551,15 @@ mod tests {
 
     #[test]
     fn the_real_filter_compiles_and_names_the_forbidden_calls() {
-        for (reach, unix) in [(false, false), (true, false), (true, true)] {
-            let program = filter(reach, unix);
-            assert!(!program.is_empty(), "the seccomp program built to nothing");
+        for reach in [false, true] {
+            assert!(
+                !filter(reach).is_empty(),
+                "the seccomp program built to nothing"
+            );
+            assert!(
+                !filter::families(reach).is_empty(),
+                "the allowlist built to nothing"
+            );
         }
         assert!(!absent().is_empty());
     }

@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 
 #[path = "containment/aliases.rs"]
 mod aliases;
+#[path = "containment/fetch.rs"]
+mod fetch;
 #[path = "containment/launcher.rs"]
 mod launcher;
 #[path = "containment/lifecycle.rs"]
@@ -50,7 +52,8 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) {
     if variant == "persistence" {
         persistence::prepare(&dir);
     }
-    let reached = (variant == "reach").then(|| reach::prepare(&dir));
+    let _reached = (variant == "reach").then(|| reach::prepare(&dir));
+    let fetched = (variant == "fetch").then(|| fetch::serve(&dir));
     let local = (variant == "unix-network").then(|| {
         std::fs::copy(
             std::env::current_exe().expect("test executable"),
@@ -157,7 +160,7 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) {
     if variant == "isolation-off" {
         command.env("CASPER_JAIL", "");
     }
-    if variant == "reach" {
+    if matches!(variant, "reach" | "fetch") {
         command.env("CASPER_JAIL", r#"{"reach":true}"#);
     }
     if variant == "broad-grant" {
@@ -237,7 +240,13 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) {
         "HOST_UNCHANGED"
     );
     let mut packet = [0; 128];
-    if reached.is_some() {
+    if let Some(server) = fetched {
+        assert!(
+            server.join().expect("fetch listener"),
+            "nothing was fetched"
+        );
+    }
+    if matches!(variant, "reach" | "fetch") {
         network
             .recv_from(&mut packet)
             .expect("a reach grant keeps the network open");
@@ -345,6 +354,9 @@ fn contained_child() {
     if variant == "reach" {
         reach::own_a_terminal();
         script.push_str("\n./reach-probe --exact reach::probe --nocapture\n");
+    }
+    if variant == "fetch" {
+        script.push_str("\n./fetch-probe --exact fetch::probe --nocapture\n");
     }
     if variant == "descriptor-probe" {
         script.push_str("\n./descriptor-probe --exact descriptor_probe --nocapture\n");
@@ -463,6 +475,13 @@ fn reach_opens_the_network_and_no_local_socket_or_terminal() {
         for mode in ["command", "socket"] {
             fixture(mode, bubblewrap, "reach");
         }
+    }
+}
+
+#[test]
+fn reach_keeps_name_resolution_and_an_https_fetch_working() {
+    for bubblewrap in [false, true] {
+        fixture("command", bubblewrap, "fetch");
     }
 }
 
