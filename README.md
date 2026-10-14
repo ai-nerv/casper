@@ -24,11 +24,12 @@ is using it.
 casper tools                 # every tool it offers, as declarations a harness can register
 casper run <tool>            # run one; the call arrives as JSON on stdin
 casper surface <tool>        # hold rows on the harness's screen and draw into them
+casper image <path>          # one raster file through the jail, resized as an attachment
 ```
 
 | | |
 |---|---|
-| `read` `write` `edit` | read a file, write one, change one — a highlighted file or a coloured diff on screen |
+| `read` `write` `edit` | read a file, write one, change one — a highlighted file or a coloured diff on screen; an image is read as a resized attachment |
 | `shell` | run a command, and remember where it ran for the session that called: the process that started casper, never a session a call names, and nothing remembered without one |
 | `web` | native Rust web search and bounded readable HTTP(S) page extraction, with source URLs |
 | `tools` | the manual for everything below: a tree the model walks, and a page unlocks its tool |

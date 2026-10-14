@@ -92,6 +92,19 @@ fn main() -> std::process::ExitCode {
             say(how, &reply)
         }
         "tools" => say(how, &tools()),
+        "image" => {
+            let reply = args
+                .get(1)
+                .ok_or_else(|| "image needs a file path".to_owned())
+                .and_then(|path| casper::images::jailed_file(path));
+            say(
+                how,
+                &match reply {
+                    Ok(image) => Reply::of(serde_json::to_value(image).unwrap_or_default()),
+                    Err(why) => Reply::refused(why),
+                },
+            )
+        }
         "run" => say(how, &ran()),
         "serve" => serve(how, &args),
         "needs" => say(how, &listing(needs())),
@@ -540,6 +553,7 @@ fn usage() -> bool {
         "casper — the tooling interface\n\
          \n\
          \x20 casper tools        every tool it offers, with schemas\n\
+         \x20 casper image PATH   read and resize a raster attachment\n\
          \x20 casper mcp          expose configured tools over MCP stdio\n\
          \x20 casper run          one call on stdin, one result on stdout\n\
          \x20 casper serve        bind a session's socket and answer on it\n\

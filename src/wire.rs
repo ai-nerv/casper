@@ -130,6 +130,7 @@ impl Reply {
 
 /// Every verb casper answers on its command line, and what each does.
 pub const CLI_VERBS: &[(&str, &str)] = &[
+    ("image", "read and resize one raster attachment"),
     ("mcp", "expose configured tools over MCP JSON-RPC stdio"),
     ("verbs", "what this program answers, and on which door"),
     (

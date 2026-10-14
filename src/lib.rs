@@ -5,6 +5,7 @@
 pub mod acknowledged;
 pub mod framing;
 pub mod highlight;
+pub mod images;
 pub mod jail;
 pub mod listing;
 pub mod lua;

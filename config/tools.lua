@@ -38,7 +38,8 @@ casper.theme = {
 local MANUAL = {
   { group = "files", about = "read, write and edit files; always available", tools = {
     { name = "read", page = [[
-read(path, offset?, limit?) -- the file's text. For a large file, `offset` (first line, from 1) and
+read(path, offset?, limit?) -- text or a raster image attachment (PNG, JPEG, GIF, WebP, BMP).
+Images are resized for vision and are never returned as base64 text. For large text, `offset` (first line, from 1) and
 `limit` (most lines) pick a range, and a closing line says which lines came back of how many.]] },
     { name = "write", page = [[
 write(path, contents) -- replace the whole file with `contents`, creating the directories it needs.
@@ -263,7 +264,8 @@ do -- read
   -- colour would spend the model's context on nothing it can use.
   casper.tool("read", {
     description = [[
-  Read a file. For a large one, `offset` and `limit` pick a range of lines, and a closing line says
+  Read text or a raster image (PNG, JPEG, GIF, WebP, BMP). Images are resized and sent as image
+  attachments, not text; animated images use the first frame. For large text, `offset` and `limit` pick a range of lines, and a closing line says
   which lines came back of how many.]],
     parameters = {
       type = "object",
@@ -280,6 +282,14 @@ do -- read
     needs = "read",
 
     run = function(args)
+      local ok, image = pcall(casper.image, args.path)
+      if not ok then return failure(tostring(image)) end
+      if image then
+        return {
+          said = "Read image " .. args.path .. " [" .. image.media_type .. "; resized for inline vision]",
+          images = { image }, brief = "image " .. args.path, back = "read " .. args.path,
+        }
+      end
       local plain = casper.exec("cat", { args.path })
       if plain.code ~= 0 then
         return failure(plain.err)

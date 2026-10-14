@@ -150,18 +150,17 @@ impl ServerHandler for Server {
                 } else {
                     ran.said.clone()
                 };
-                let mut result = if ran.failed || waiting {
-                    CallToolResult::error(vec![ContentBlock::text(text)])
-                } else {
-                    CallToolResult::success(vec![ContentBlock::text(text)])
-                };
-                if !ran.failed && !waiting {
-                    for image in ran.images.drain(..) {
-                        result
-                            .content
-                            .push(ContentBlock::image(image.data, image.mime_type));
+                let mut content = vec![ContentBlock::text(text)];
+                if !waiting {
+                    for image in std::mem::take(&mut ran.images) {
+                        content.push(ContentBlock::image(image.data, image.media_type));
                     }
                 }
+                let mut result = if ran.failed || waiting {
+                    CallToolResult::error(content)
+                } else {
+                    CallToolResult::success(content)
+                };
                 result.structured_content = serde_json::to_value(ran).ok();
                 result
             }

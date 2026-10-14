@@ -194,6 +194,9 @@ impl Engine {
                 .set(ctx, "tapped", crate::lua::keying::table(ctx))
                 .ok();
             casper.set(ctx, "exec", crate::lua::exec::table(ctx)).ok();
+            casper
+                .set(ctx, "image", crate::lua::images::table(ctx))
+                .ok();
             casper.set(ctx, "json", crate::lua::json::table(ctx)).ok();
             casper.set(ctx, "paint", crate::lua::paint::table(ctx)).ok();
 

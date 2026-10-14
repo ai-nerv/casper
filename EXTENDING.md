@@ -150,6 +150,10 @@ casper.tool("name", {
 colour — and a tool never names a colour, it names what its output *means* (`added`, `keyword`,
 `path`) and the harness resolves that against its own palette.
 
+A result may also carry `images = { casper.image(path) }`. `casper.image` reads a PNG, JPEG, GIF,
+WebP or BMP file through the jail and answers it resized for vision as `{ data, media_type }`, or
+`nil` for a file that is not one of those. The base64 stays out of `said`.
+
 ### melchior — a provider or a wire protocol
 
 ```lua

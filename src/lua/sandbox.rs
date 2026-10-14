@@ -219,9 +219,10 @@ mod tests {
         rawequal rawget rawlen rawset select setmetatable tonumber tostring type warn xpcall
         __casper_screens __casper_surfaces __casper_tools __stream __stream.connect
         casper casper.ask casper.clients casper.clients.hexe casper.clients.oslo casper.dirs
-        casper.dirs.list casper.dirs.tree casper.exec casper.fs casper.fs.ls casper.json
-        casper.json.decode casper.json.encode casper.paint casper.paint.ansi casper.paint.code
-        casper.paint.diff casper.paint.plain casper.seek casper.stream casper.stream.connect
+        casper.dirs.list casper.dirs.tree casper.exec casper.fs casper.fs.ls casper.image
+        casper.json casper.json.decode casper.json.encode casper.paint casper.paint.ansi
+        casper.paint.code casper.paint.diff casper.paint.plain casper.seek casper.stream
+        casper.stream.connect
         casper.surface casper.tapped casper.tool casper.web casper.wonder
         coroutine coroutine.close coroutine.continue coroutine.create coroutine.isyieldable
         coroutine.resume coroutine.running coroutine.status coroutine.wrap coroutine.yield
