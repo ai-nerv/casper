@@ -4,11 +4,20 @@
 //! at spawn, never ones a caller named, and a peer of another user is turned away. This is why the
 //! socket is not a remote shell: what `run` runs, it runs jailed, and the jail is the spawner's.
 
-use crate::framing::{self, Wire};
 use crate::wire::{Call, Reply};
 use std::io::ErrorKind;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+
+mod key;
+mod talking;
+#[cfg(test)]
+mod tests;
+
+pub use key::Key;
 
 /// `$XDG_RUNTIME_DIR`, when it is an absolute path to a directory this uid owns with no group or
 /// other permissions. Empty is unset.
@@ -64,36 +73,84 @@ pub fn listening_on(at: &Path) -> std::io::Result<UnixListener> {
     UnixListener::bind(at)
 }
 
-/// Answer on `listener` until it closes, one connection at a time — casper's calls are serial — and
-/// reply to each in the call's own encoding. A single bad connection is skipped, not fatal.
-pub fn accept(listener: &UnixListener, handle: impl Fn(&Call) -> Reply) -> std::io::Result<()> {
-    for incoming in listener.incoming() {
-        let Ok(stream) = incoming else { continue };
+/// The most connections answered at once; the next is told it is busy.
+pub const CONNECTIONS: usize = 8;
+
+/// How long the loop rests after an accept that failed for want of a resource.
+const BACKOFF: Duration = Duration::from_millis(100);
+
+/// What every connection is answered with: the key and the surface.
+type Shared = (Key, Box<dyn Fn(&Call) -> Reply + Send + Sync>);
+
+/// Answer on `listener` until it fails for good: each connection on a thread of its own, a call
+/// with the key `serve` was started with, and a reply in the call's own encoding.
+pub fn accept(
+    listener: &UnixListener,
+    key: Key,
+    handle: impl Fn(&Call) -> Reply + Send + Sync + 'static,
+) -> std::io::Result<()> {
+    accepting(|| listener.accept().map(|(stream, _)| stream), key, handle)
+}
+
+/// [`accept`] over any source of connections.
+fn accepting(
+    mut next: impl FnMut() -> std::io::Result<UnixStream>,
+    key: Key,
+    handle: impl Fn(&Call) -> Reply + Send + Sync + 'static,
+) -> std::io::Result<()> {
+    let shared: Arc<Shared> = Arc::new((key, Box::new(handle)));
+    let open = Arc::new(AtomicUsize::new(0));
+    loop {
+        let stream = match next() {
+            Ok(stream) => stream,
+            Err(why) if why.kind() == ErrorKind::Interrupted => continue,
+            Err(why) if passing(&why) => {
+                crate::noted!("serve: accept failed, resting: {why}");
+                std::thread::sleep(BACKOFF);
+                continue;
+            }
+            Err(why) => return Err(why),
+        };
         if !ours(&stream) {
             continue;
         }
-        if let Err(why) = talk(&stream, &handle) {
-            crate::noted!("serve: a connection ended badly: {why}");
+        if open.fetch_add(1, Ordering::SeqCst) >= CONNECTIONS {
+            open.fetch_sub(1, Ordering::SeqCst);
+            talking::busy(stream, CONNECTIONS);
+            continue;
+        }
+        let slot = Slot(Arc::clone(&open));
+        let shared = Arc::clone(&shared);
+        let spawned = std::thread::Builder::new()
+            .name("casper-serve".to_owned())
+            .spawn(move || {
+                let _slot = slot;
+                let (key, handle) = &*shared;
+                if let Err(why) = talking::talk(stream, key, handle.as_ref()) {
+                    crate::noted!("serve: a connection ended badly: {why}");
+                }
+            });
+        if let Err(why) = spawned {
+            crate::noted!("serve: no thread for a connection: {why}");
         }
     }
-    Ok(())
 }
 
-/// One connection: read a call, answer it, repeat until the peer closes.
-fn talk(stream: &UnixStream, handle: &impl Fn(&Call) -> Reply) -> std::io::Result<()> {
-    let mut reader = std::io::BufReader::new(stream);
-    loop {
-        let body = match framing::read_frame(&mut reader) {
-            Ok(body) => body,
-            Err(why) if why.kind() == ErrorKind::UnexpectedEof => return Ok(()),
-            Err(why) => return Err(why),
-        };
-        let wire = Wire::of(&body);
-        let reply = match framing::decode::<Call>(&body) {
-            Ok(call) => handle(&call),
-            Err(why) => Reply::refused(format!("that is not a call: {why}")),
-        };
-        framing::write_frame(&mut { stream }, &wire.encode(&reply)?)?;
+/// Whether an accept failed for want of something that comes back: descriptors, buffers, or a
+/// peer that left before it was taken.
+fn passing(why: &std::io::Error) -> bool {
+    matches!(
+        why.raw_os_error(),
+        Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM | libc::ECONNABORTED)
+    )
+}
+
+/// One of [`CONNECTIONS`], given back when its connection ends however it ends.
+struct Slot(Arc<AtomicUsize>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -105,50 +162,4 @@ fn ours(stream: &UnixStream) -> bool {
     use std::os::fd::AsFd;
     rustix::net::sockopt::socket_peercred(stream.as_fd())
         .is_ok_and(|cred| cred.uid == rustix::process::getuid())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_path_outside_the_runtime_is_not_one_to_bind() {
-        assert!(!inside(Path::new("/tmp/casper.sock")));
-        assert!(!inside(&runtime().join("../escape")));
-        assert!(inside(&runtime().join("proj/id")));
-    }
-
-    #[test]
-    fn a_call_over_the_socket_is_answered_in_its_own_encoding() {
-        // The bind guard wants a path under the runtime. The `casper` dir is removed afterwards only
-        // when the test made it, so a developer's own live sockets are never swept up.
-        let base = runtime();
-        let ours = !base.exists();
-        let at = base.join(format!("t-{}.sock", std::process::id()));
-        let _ = std::fs::remove_file(&at);
-        let listener = listening_on(&at).expect("bind");
-        let path = at.clone();
-        let server = std::thread::spawn(move || {
-            accept(&listener, |call| {
-                Reply::of(serde_json::json!({ "echoed": call.call }))
-            })
-        });
-
-        let mut client = UnixStream::connect(&path).expect("connect");
-        let body = Wire::Json
-            .encode(&serde_json::json!({ "call": "tools", "args": [] }))
-            .expect("encode");
-        framing::write_frame(&mut client, &body).expect("send");
-        let got = framing::read_frame(&mut client).expect("recv");
-        let reply: Reply = framing::decode(&got).expect("decode");
-        assert!(reply.ok, "{reply:?}");
-        assert_eq!(reply.result[0]["echoed"], "tools");
-
-        drop(client);
-        drop(server);
-        let _ = std::fs::remove_file(&path);
-        if ours {
-            let _ = std::fs::remove_dir_all(&base);
-        }
-    }
 }

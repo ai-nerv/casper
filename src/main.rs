@@ -349,14 +349,18 @@ fn run_call(call: &Call) -> Reply {
 }
 
 /// Bind a session's socket and answer `tools` and `run` on it until it closes. The jail every call
-/// runs in is this process's own — the one a coordinator gave `serve` at spawn — so the socket runs
-/// only what that jail allows, which is why it is a tool surface and not a remote shell.
+/// runs in is this process's own — the one a coordinator gave `serve` at spawn — and a call is
+/// answered only with the key the coordinator wrote on `serve`'s standard input.
 fn serve(how: As, args: &[String]) -> bool {
     let Some(at) = flag(args, "--at") else {
         return say(
             how,
             &Reply::refused("serve needs --at <path>, under the runtime directory".to_owned()),
         );
+    };
+    let key = match casper::serving::Key::read(&mut std::io::stdin().lock()) {
+        Ok(key) => key,
+        Err(why) => return say(how, &Reply::refused(why)),
     };
     let path = std::path::PathBuf::from(&at);
     let listener = match casper::serving::listening_on(&path) {
@@ -374,7 +378,7 @@ fn serve(how: As, args: &[String]) -> bool {
         "serve: listening at {at}, jailed={}",
         casper::jail::Jail::from_env().on()
     );
-    if let Err(why) = casper::serving::accept(&listener, answer_socket) {
+    if let Err(why) = casper::serving::accept(&listener, key, answer_socket) {
         casper::noted!("serve: {why}");
     }
     true

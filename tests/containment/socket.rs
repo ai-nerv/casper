@@ -20,16 +20,24 @@ casper.tool("probe", {
     )
     .expect("socket declaration");
     let path = root.join("r/casper/s");
+    let key = "5e".repeat(32);
     let mut server = super::lifecycle::Owned::new(
         Command::new(env!("CARGO_BIN_EXE_casper"))
             .args(["serve", "--at"])
             .arg(&path)
             .env("XDG_RUNTIME_DIR", root.join("r"))
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .spawn()
             .expect("socket server"),
     );
+    {
+        use std::io::Write as _;
+        let mut stdin = server.0.stdin.take().expect("serve's stdin");
+        stdin
+            .write_all(format!("{key}\n").as_bytes())
+            .expect("the key");
+    }
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut stream = loop {
         if let Ok(stream) = UnixStream::connect(&path) {
@@ -49,7 +57,7 @@ casper.tool("probe", {
         .set_write_timeout(Some(Duration::from_secs(5)))
         .expect("send deadline");
     for _ in 0..2 {
-        let call = serde_json::json!({ "call": "run", "args": [{
+        let call = serde_json::json!({ "call": "run", "key": key, "args": [{
             "tool": "probe", "cwd": "/", "jail": "", "reach": true,
             "args": { "script": script, "CASPER_JAIL": "", "reach": true }
         }] });

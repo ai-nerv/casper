@@ -104,6 +104,15 @@ impl Reply {
         }
     }
 
+    /// A failure: the call could not be carried out, as against refused.
+    #[must_use]
+    pub fn failed(why: impl Into<String>) -> Self {
+        Self {
+            fault: Some(Fault::Failed),
+            ..Self::refused(why)
+        }
+    }
+
     /// A refusal, which is still a reply.
     #[must_use]
     pub fn refused(why: impl Into<String>) -> Self {
