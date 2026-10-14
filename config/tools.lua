@@ -578,24 +578,36 @@ do -- shell
   -- remembered on disk instead of the shell that was in it. That is less than a live shell keeps
   -- (an exported variable does not survive, nor a shell function) and it is the part that
   -- actually gets used.
-  local function remembered()
-    -- Under the jail `$XDG_RUNTIME_DIR` is read-only, so the directory is kept in `/tmp` instead,
-    -- which the jail makes a writable, per-project dir that persists across calls. Off the jail,
-    -- `$XDG_RUNTIME_DIR` is per-user and writable.
-    if (os.getenv("CASPER_JAIL") or "") ~= "" then
-      return "/tmp/casper/cwd"
-    end
-    local runtime = os.getenv("XDG_RUNTIME_DIR") or "/tmp"
-    return runtime .. "/casper/cwd"
-  end
+  -- The script around a command. The directory is remembered per project, keyed by where the
+  -- shell starts: under the jail in the jail's own `$TMPDIR`, off it in this user's runtime
+  -- directory, and only in a directory this user owns. What it reads back reaches `cd` as a
+  -- variable, never as text in the script, and so does everything else handed in.
+  local BEFORE = [[
+casper_jailed=$1 casper_asked=$2; shift 2
+casper_key=$(pwd -P | cksum | cut -d' ' -f1)
+if [ -n "$casper_jailed" ]; then
+  casper_base="${TMPDIR:-/tmp}/casper-shell-cwd"
+elif [ -n "$XDG_RUNTIME_DIR" ] && [ -d "$XDG_RUNTIME_DIR" ] && [ -O "$XDG_RUNTIME_DIR" ]; then
+  casper_base="$XDG_RUNTIME_DIR/casper/shell-cwd"
+else
+  casper_base="${TMPDIR:-/tmp}/casper-$(id -u)/shell-cwd"
+fi
+mkdir -p "$casper_base" 2>/dev/null && chmod 700 "$casper_base" 2>/dev/null
+casper_memory=
+if [ -O "$casper_base" ] && [ -O "${casper_base%/*}" ]; then
+  casper_memory="$casper_base/$casper_key"
+fi
+casper_held=
+if [ -n "$casper_memory" ] && [ -f "$casper_memory" ]; then
+  casper_held=$(cat -- "$casper_memory")
+fi
+cd -- "${casper_held:-${casper_asked:-.}}" 2>/dev/null || cd .
+trap 'trap "" TERM HUP; kill -TERM -$$ 2>/dev/null; exit 143' TERM HUP
+{ ]]
+  local AFTER = [[
 
-  local function where()
-    local done = casper.exec("cat", { remembered() })
-    if done.code ~= 0 then return nil end
-    local path = done.out:gsub("%s+$", "")
-    if path == "" then return nil end
-    return path
-  end
+casper_code=$?; [ -n "$casper_memory" ] && pwd > "$casper_memory"; exit $casper_code; } &
+wait $!]]
 
   casper.tool("shell", {
     description = [[
@@ -620,22 +632,16 @@ do -- shell
       -- The remembered directory, then the command, then wherever it ended up. Written every
       -- time rather than only after a `cd`, because a command may change directory in ways
       -- nothing here can see -- a script, a `pushd`, a `cd` inside an `if`.
-      local held = where() or args.cwd or "."
-      local kept = remembered()
       -- **Backgrounded so this shell can hear a signal, grouped so it can pass one on.** `pwd`
       -- has to follow the command, so dash forks for it rather than exec'ing it, and
       -- `PR_SET_PDEATHSIG` is cleared across every fork: killing a magi took casper and this
-      -- shell and left `sleep 300` under init. casper starts this shell leading a process group
-      -- of its own (`tied.rs`), so `-$$` is the command and what it started and can never be
-      -- casper. The `&` is what lets the trap run at all -- a shell waiting on a *foreground*
-      -- command handles the signal once that command returns, which here is never.
+      -- shell and left `sleep 300` under init. casper starts this shell leading a session and
+      -- process group of its own (`tied.rs`), so `-$$` is the command and what it started and
+      -- can never be casper. The `&` is what lets the trap run at all -- a shell waiting on a
+      -- *foreground* command handles the signal once that command returns, which here is never.
+      local jailed = (os.getenv("CASPER_JAIL") or "") ~= "" and "1" or ""
       local done = casper.exec("sh", {
-        "-c",
-        ([[
-mkdir -p "$(dirname %q)"; cd %q 2>/dev/null || cd .
-trap 'trap "" TERM HUP; kill -TERM -$$ 2>/dev/null; exit 143' TERM HUP
-{ %s; code=$?; pwd > %q; exit $code; } &
-wait $!]]):format(kept, held, args.command, kept),
+        "-c", BEFORE .. args.command .. AFTER, "sh", jailed, tostring(args.cwd or ""),
       })
 
       local out = done.out

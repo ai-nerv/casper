@@ -32,11 +32,26 @@ impl Alone {
 
     /// Make one call, the way the harness makes them: JSON on stdin, JSON on stdout.
     fn asking(&self, call: &str) -> serde_json::Value {
-        let done = Command::new(CASPER)
+        self.asking_in(call, None, &[])
+    }
+
+    /// One call from casper started in `project`, with `env` on top.
+    fn asking_in(
+        &self,
+        call: &str,
+        project: Option<&std::path::Path>,
+        env: &[(&str, std::ffi::OsString)],
+    ) -> serde_json::Value {
+        let mut command = Command::new(CASPER);
+        if let Some(project) = project {
+            command.current_dir(project);
+        }
+        let done = command
             .arg("run")
             .env("XDG_CONFIG_HOME", self.dir.join("config"))
             .env("XDG_RUNTIME_DIR", &*self.dir)
             .env("XDG_DATA_HOME", self.dir.join("data"))
+            .envs(env.iter().map(|(key, value)| (key, value)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -58,6 +73,25 @@ impl Alone {
     fn shell(&self, command: &str) -> serde_json::Value {
         let call = serde_json::json!({"tool": "shell", "args": {"command": command}});
         self.asking(&call.to_string())["result"][0].clone()
+    }
+
+    /// The same, from casper started in `project` with `env`; answers with what it printed.
+    fn shell_in(
+        &self,
+        project: &std::path::Path,
+        env: &[(&str, std::ffi::OsString)],
+        command: &str,
+    ) -> String {
+        let call = serde_json::json!({"tool": "shell", "args": {"command": command}});
+        let said = self.asking_in(&call.to_string(), Some(project), env)["result"][0].clone();
+        said["said"].as_str().unwrap_or_default().to_owned()
+    }
+
+    /// A project directory with a `sub` directory in it.
+    fn project(&self, name: &str) -> std::path::PathBuf {
+        let project = self.dir.join(name);
+        std::fs::create_dir_all(project.join("sub")).expect("project");
+        std::fs::canonicalize(project).expect("canonical project")
     }
 }
 
@@ -120,4 +154,76 @@ fn the_directory_a_command_ended_in_is_where_the_next_one_starts() {
         alone.shell("pwd")["said"],
         serde_json::json!("/usr/share\n")
     );
+}
+
+#[test]
+fn a_cd_in_one_project_does_not_move_another() {
+    let alone = Alone::new("projects");
+    let (one, two) = (alone.project("one"), alone.project("two"));
+    alone.shell_in(&one, &[], "cd sub");
+    assert_eq!(
+        alone.shell_in(&two, &[], "pwd"),
+        format!("{}\n", two.display())
+    );
+    let moved = one.join("sub");
+    assert_eq!(
+        alone.shell_in(&one, &[], "pwd"),
+        format!("{}\n", moved.display())
+    );
+}
+
+#[test]
+fn a_remembered_directory_is_never_read_as_shell() {
+    let alone = Alone::new("planted");
+    let project = alone.project("p");
+    let name = "x$(touch ran)`touch ran`";
+    std::fs::create_dir(project.join(name)).expect("planted directory");
+    alone.shell_in(&project, &[], &format!("cd '{name}'"));
+    let at = alone.shell_in(&project, &[], "pwd");
+    assert_eq!(at, format!("{}\n", project.join(name).display()));
+    assert!(!project.join("ran").exists() && !project.join(name).join("ran").exists());
+}
+
+/// A directory of links to the programs the shell script needs, and no `bwrap` among them.
+fn without_bubblewrap(alone: &Alone) -> std::ffi::OsString {
+    let bin = alone.dir.join("bin");
+    std::fs::create_dir_all(&bin).expect("bin");
+    let path = std::env::var_os("PATH").expect("PATH");
+    for tool in ["sh", "cksum", "cut", "id", "mkdir", "chmod", "cat"] {
+        let found = std::env::split_paths(&path)
+            .map(|dir| dir.join(tool))
+            .find(|candidate| candidate.is_file())
+            .expect("a program the shell script needs");
+        std::os::unix::fs::symlink(found, bin.join(tool)).expect("link");
+    }
+    bin.into_os_string()
+}
+
+#[test]
+fn a_jailed_shell_remembers_its_directory_in_the_jails_own_tmp() {
+    let alone = Alone::new("jailed");
+    let (tmp, home) = (alone.dir.join("tmp"), alone.dir.join("home"));
+    for dir in [&tmp, &home] {
+        std::fs::create_dir_all(dir).expect("fixture");
+    }
+    let jail = serde_json::json!({ "tmp": tmp }).to_string();
+    let paths = [
+        ("bubblewrap", std::env::var_os("PATH").expect("PATH")),
+        ("landlock", without_bubblewrap(&alone)),
+    ];
+    for (backend, path) in paths {
+        let project = alone.project(backend);
+        let env = [
+            ("CASPER_JAIL", jail.clone().into()),
+            ("HOME", home.clone().into_os_string()),
+            ("PATH", path),
+        ];
+        alone.shell_in(&project, &env, "cd sub");
+        let at = alone.shell_in(&project, &env, "pwd");
+        assert_eq!(
+            at,
+            format!("{}\n", project.join("sub").display()),
+            "{backend}"
+        );
+    }
 }
