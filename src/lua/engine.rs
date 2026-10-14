@@ -678,6 +678,16 @@ mod tests {
     }
 
     #[test]
+    fn a_chunk_that_finishes_inside_one_slice_is_held_to_the_ceiling() {
+        let mut engine = Engine::new();
+        engine.lua.set_memory_limit(Some(8 << 20));
+        let why = engine
+            .run("big = string.rep('x', 16 * 1024 * 1024)", "one.lua")
+            .expect_err("one allocation over the ceiling");
+        assert!(why.to_string().contains("MiB of memory"), "{why}");
+    }
+
+    #[test]
     fn no_route_past_the_guard_enrols_an_object_for_a_finalizer() {
         let mut engine = declaring(
             r#"casper.tool("enrol", { run = function()
