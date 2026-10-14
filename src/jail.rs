@@ -149,9 +149,9 @@ fn profile(cwd: &Path, grants: &Grants) -> Vec<String> {
     a
 }
 
-/// The syscalls no jailed command ever needs and that a hostile one would reach for: reading
-/// another process's memory, and `io_uring`, which can open files and sockets without the syscalls
-/// the rest of the jail watches. Denied with `EPERM`, so a program that probes them is told no.
+/// The syscalls no jailed command ever needs and that a hostile one would reach for: another
+/// process's memory, `io_uring`, the kernel keyring, BPF, perf, userfaultfd, namespaces, mounts,
+/// and kernel modules. Denied with `EPERM`, so a program that probes them is told no.
 const FORBIDDEN: &[i64] = &[
     libc::SYS_ptrace,
     libc::SYS_process_vm_readv,
@@ -159,12 +159,93 @@ const FORBIDDEN: &[i64] = &[
     libc::SYS_io_uring_setup,
     libc::SYS_io_uring_enter,
     libc::SYS_io_uring_register,
+    libc::SYS_keyctl,
+    libc::SYS_add_key,
+    libc::SYS_request_key,
+    libc::SYS_bpf,
+    libc::SYS_perf_event_open,
+    libc::SYS_userfaultfd,
+    libc::SYS_unshare,
+    libc::SYS_setns,
+    libc::SYS_mount,
+    libc::SYS_umount2,
+    libc::SYS_pivot_root,
+    libc::SYS_kexec_load,
+    libc::SYS_kexec_file_load,
+    libc::SYS_init_module,
+    libc::SYS_finit_module,
+    libc::SYS_delete_module,
 ];
 
+/// What `personality` may still be asked: the query and the ordinary Linux personas.
+const PERSONAS: &[u64] = &[0, 0x8, 0x2_0000, 0x2_0008, 0xffff_ffff];
+
+/// The syscalls an ungranted network loses.
+const UNREACHED: &[i64] = &[
+    libc::SYS_socket,
+    libc::SYS_connect,
+    libc::SYS_sendto,
+    libc::SYS_sendmsg,
+    libc::SYS_sendmmsg,
+];
+
+/// The jail's `EPERM` filter: [`FORBIDDEN`], `clone` into a new user namespace, an unusual
+/// `personality`, the network unless `reach`, and a Unix socket unless `unix`.
+fn filter(reach: bool, unix: bool) -> seccompiler::BpfProgram {
+    use seccompiler::{SeccompCmpArgLen as Len, SeccompCmpOp as Op, SeccompCondition, SeccompRule};
+    let on = |arg, op, value| SeccompCondition::new(arg, Len::Dword, op, value);
+    let rule = |conditions: Vec<Result<SeccompCondition, _>>| {
+        conditions
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .and_then(SeccompRule::new)
+    };
+    let newuser = libc::CLONE_NEWUSER as u64;
+    let mut rules: Vec<(i64, Vec<Result<SeccompRule, _>>)> = vec![
+        (
+            libc::SYS_clone,
+            vec![rule(vec![on(0, Op::MaskedEq(newuser), newuser)])],
+        ),
+        (
+            libc::SYS_personality,
+            vec![rule(PERSONAS.iter().map(|p| on(0, Op::Ne, *p)).collect())],
+        ),
+    ];
+    rules.extend(FORBIDDEN.iter().map(|nr| (*nr, Vec::new())));
+    if !reach {
+        rules.extend(UNREACHED.iter().map(|nr| (*nr, Vec::new())));
+    } else if !unix {
+        let local = libc::AF_UNIX as u64;
+        rules.push((libc::SYS_socket, vec![rule(vec![on(0, Op::Eq, local)])]));
+    }
+    let built: Result<std::collections::BTreeMap<_, _>, _> = rules
+        .into_iter()
+        .map(|(nr, list)| {
+            list.into_iter()
+                .collect::<Result<Vec<_>, _>>()
+                .map(|l| (nr, l))
+        })
+        .collect();
+    built.map_or_else(
+        |why| {
+            crate::noted!("jail: a seccomp rule could not be built ({why}); none is armed");
+            seccompiler::BpfProgram::default()
+        },
+        compile,
+    )
+}
+
 /// A seccomp program that allows everything but `forbid`, each of which answers `EPERM`.
+#[cfg(test)]
 fn deny(forbid: &[i64]) -> seccompiler::BpfProgram {
+    compile(forbid.iter().map(|nr| (*nr, Vec::new())).collect())
+}
+
+/// `rules` as a program answering `EPERM` on a match and allowing everything else.
+fn compile(
+    rules: std::collections::BTreeMap<i64, Vec<seccompiler::SeccompRule>>,
+) -> seccompiler::BpfProgram {
     use seccompiler::{SeccompAction, SeccompFilter, TargetArch};
-    let rules = forbid.iter().map(|nr| (*nr, Vec::new())).collect();
     let arch = if cfg!(target_arch = "aarch64") {
         TargetArch::aarch64
     } else {
@@ -181,6 +262,29 @@ fn deny(forbid: &[i64]) -> seccompiler::BpfProgram {
         crate::noted!("jail: the seccomp filter could not be built ({why}); none is armed");
         seccompiler::BpfProgram::default()
     })
+}
+
+/// The jail's `ENOSYS` filter: `clone3`, whose flags seccomp cannot read, so the C library falls
+/// back to `clone`; and on x86-64 every x32 call.
+fn absent() -> seccompiler::BpfProgram {
+    use seccompiler::sock_filter;
+    const LOAD_NR: u16 = 0x20;
+    const JEQ: u16 = 0x15;
+    const JGE: u16 = 0x35;
+    const RET: u16 = 0x06;
+    const X32: u32 = 0x4000_0000;
+    let at = |code, jt, jf, k| sock_filter { code, jt, jf, k };
+    let enosys = libc::SECCOMP_RET_ERRNO | libc::ENOSYS as u32;
+    let mut program = vec![at(LOAD_NR, 0, 0, 0)];
+    if cfg!(target_arch = "x86_64") {
+        program.push(at(JGE, 2, 0, X32));
+    }
+    program.extend([
+        at(JEQ, 1, 0, libc::SYS_clone3 as u32),
+        at(RET, 0, 0, libc::SECCOMP_RET_ALLOW),
+        at(RET, 0, 0, enosys),
+    ]);
+    program
 }
 
 /// System directories readable in both backends, subject to credential-overlap validation.
@@ -207,10 +311,28 @@ pub(super) fn read_floor() -> Vec<PathBuf> {
         .collect()
 }
 
+/// The bubblewrap path's Landlock ruleset: no filesystem or network rule, only the abstract Unix
+/// socket namespace scoped to the jail. `None` when the kernel cannot scope it.
+fn scoped() -> Option<landlock::RulesetCreated> {
+    use landlock::{CompatLevel, Compatible, Ruleset, RulesetAttr, Scope};
+    Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
+        .scope(Scope::AbstractUnixSocket)
+        .ok()?
+        .create()
+        .ok()
+}
+
 /// A Landlock ruleset from the grants: read across the system directories, write at `cwd`, each
 /// granted directory and the scratch devices, TCP denied unless a reach grant, signals scoped to
-/// this domain. Every requested right must be supported by the running kernel.
-fn ruleset(cwd: &Path, grants: &Grants, protected: &[PathBuf]) -> Option<landlock::RulesetCreated> {
+/// this domain. `/dev/tty` only for a screen, whose terminal is its own. Every requested right
+/// must be supported by the running kernel.
+fn ruleset(
+    cwd: &Path,
+    grants: &Grants,
+    protected: &[PathBuf],
+    terminal: bool,
+) -> Option<landlock::RulesetCreated> {
     use landlock::{
         ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
         RulesetAttr, RulesetCreatedAttr, Scope,
@@ -240,13 +362,11 @@ fn ruleset(cwd: &Path, grants: &Grants, protected: &[PathBuf]) -> Option<landloc
         let fd = policy::validated_fd(&dir, protected).ok()?;
         created = created.add_rule(PathBeneath::new(fd, all)).ok()?;
     }
-    for device in [
-        "/dev/null",
-        "/dev/zero",
-        "/dev/random",
-        "/dev/urandom",
-        "/dev/tty",
-    ] {
+    let tty = terminal.then_some("/dev/tty");
+    for device in ["/dev/null", "/dev/zero", "/dev/random", "/dev/urandom"]
+        .into_iter()
+        .chain(tty)
+    {
         if let Ok(fd) = PathFd::new(device) {
             created = created
                 .add_rule(PathBeneath::new(
@@ -388,8 +508,11 @@ mod tests {
 
     #[test]
     fn the_real_filter_compiles_and_names_the_forbidden_calls() {
-        let program = deny(FORBIDDEN);
-        assert!(!program.is_empty(), "the seccomp program built to nothing");
+        for (reach, unix) in [(false, false), (true, false), (true, true)] {
+            let program = filter(reach, unix);
+            assert!(!program.is_empty(), "the seccomp program built to nothing");
+        }
+        assert!(!absent().is_empty());
     }
 
     #[test]
@@ -401,7 +524,7 @@ mod tests {
         let target = dir.join("nope");
         let mut command = std::process::Command::new("mkdir");
         command.arg(&target);
-        crate::tied::confine(&mut command, filter);
+        crate::tied::confine(&mut command, vec![filter]);
         let status = command.status().expect("mkdir runs");
         assert!(!status.success(), "mkdir was not blocked by the filter");
         assert!(
@@ -420,7 +543,7 @@ mod tests {
 
         let work = dir.join("work");
         std::fs::create_dir_all(&work).expect("mkdir");
-        let Some(ruleset) = ruleset(&work, &Grants::default(), &[]) else {
+        let Some(ruleset) = ruleset(&work, &Grants::default(), &[], false) else {
             assert!(
                 std::env::var_os("CASPER_REQUIRE_CONTAINMENT").is_none(),
                 "required Landlock unavailable"

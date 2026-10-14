@@ -232,7 +232,7 @@ mod tests {
         std::os::unix::fs::symlink(root.join("secret"), &link).expect("changed grant");
         let error = validated_fd(&link, &protected).expect_err("opened target must be rejected");
         assert!(error.to_string().contains("credential"));
-        assert!(super::super::ruleset(&root.join("work"), &grants, &protected).is_none());
+        assert!(super::super::ruleset(&root.join("work"), &grants, &protected, false).is_none());
         let mut args = super::super::profile(&root.join("work"), &grants);
         assert!(bindings(&mut args, &protected, Path::new("/usr/bin/bwrap")).is_err());
     }

@@ -13,13 +13,16 @@ pub(crate) fn worker(root: &Path) -> std::io::Result<tokio::process::Command> {
     Ok(command.into())
 }
 
+/// Set when a jail that cannot be built in full must refuse rather than run with less.
+const REQUIRED: &str = "CASPER_REQUIRE_CONTAINMENT";
+
 pub struct Prepared {
     program: PathBuf,
     args: Vec<String>,
     cwd: PathBuf,
     env: Vec<(OsString, OsString)>,
     clear: bool,
-    filter: Option<seccompiler::BpfProgram>,
+    filters: Vec<seccompiler::BpfProgram>,
     landlock: Option<landlock::RulesetCreated>,
     descriptors: Vec<std::os::fd::OwnedFd>,
     _temporary: Option<Temporary>,
@@ -41,7 +44,7 @@ impl Jail {
             cwd: cwd.unwrap_or(&self.cwd).into(),
             env: extra.iter().map(|(k, v)| (k.into(), v.into())).collect(),
             clear: self.on(),
-            filter: None,
+            filters: Vec::new(),
             landlock: None,
             descriptors: Vec::new(),
             _temporary: None,
@@ -63,24 +66,16 @@ impl Jail {
             path
         };
         prepared.env = policy::environment(&self.home, &tmp, extra);
-        let mut forbidden = super::FORBIDDEN.to_vec();
-        if !grants.reach {
-            forbidden.extend([
-                libc::SYS_socket,
-                libc::SYS_connect,
-                libc::SYS_sendto,
-                libc::SYS_sendmsg,
-                libc::SYS_sendmmsg,
-            ]);
-        }
-        let filter = super::deny(&forbidden);
-        if filter.is_empty() {
+        let filters = vec![
+            super::filter(grants.reach, bwrap.is_some()),
+            super::absent(),
+        ];
+        if filters.iter().any(Vec::is_empty) {
             return Err(std::io::Error::other("required seccomp filter unavailable"));
         }
         if let Some(bwrap) = bwrap {
             use std::os::fd::AsRawFd;
             let bwrap = policy::launcher(Path::new(&bwrap), &protected)?;
-            let descriptor = super::filter::descriptor(&filter)?;
             let mut wrapped = super::profile(&self.cwd, grants);
             prepared.descriptors = policy::bindings(&mut wrapped, &protected, &bwrap)?;
             wrapped.truncate(wrapped.len() - 2);
@@ -88,24 +83,51 @@ impl Jail {
                 wrapped.retain(|arg| arg != "--new-session");
             }
             wrapped.extend(["--chdir".into(), prepared.cwd.display().to_string()]);
-            wrapped.extend(["--seccomp".into(), descriptor.as_raw_fd().to_string()]);
+            for filter in &filters {
+                let descriptor = super::filter::descriptor(filter)?;
+                wrapped.extend([
+                    "--add-seccomp-fd".into(),
+                    descriptor.as_raw_fd().to_string(),
+                ]);
+                prepared.descriptors.push(descriptor);
+            }
             wrapped.push("--".into());
             wrapped.push(program.into());
             wrapped.extend(args.iter().cloned());
+            prepared.landlock = scope(&bwrap)?;
             prepared.program = bwrap;
             prepared.args = wrapped;
-            prepared.descriptors.push(descriptor);
         } else {
-            prepared.filter = Some(filter);
+            prepared.filters = filters;
             let mut granted = grants.clone();
             granted.tmp = Some(tmp);
             policy::validate(&self.cwd, &granted, &protected)?;
-            prepared.landlock = Some(super::ruleset(&self.cwd, &granted, &protected).ok_or_else(
-                || std::io::Error::other("required Landlock protection unavailable"),
-            )?);
+            prepared.landlock = Some(
+                super::ruleset(&self.cwd, &granted, &protected, terminal).ok_or_else(|| {
+                    std::io::Error::other("required Landlock protection unavailable")
+                })?,
+            );
         }
         Ok(prepared)
     }
+}
+
+/// The abstract-socket scope bubblewrap runs under, so the jail cannot reach the host's abstract
+/// namespace. Without kernel support it is skipped, or refused when [`REQUIRED`] is set; so is a
+/// setuid launcher, which `no_new_privs` would stop.
+fn scope(bwrap: &Path) -> std::io::Result<Option<landlock::RulesetCreated>> {
+    use std::os::unix::fs::PermissionsExt;
+    let setuid = std::fs::metadata(bwrap)?.permissions().mode() & 0o4000 != 0;
+    let scoped = if setuid { None } else { super::scoped() };
+    if scoped.is_none() {
+        if std::env::var_os(REQUIRED).is_some() {
+            return Err(std::io::Error::other(
+                "required abstract Unix socket scoping unavailable",
+            ));
+        }
+        crate::noted!("jail: abstract Unix sockets are not scoped (setuid launcher={setuid})");
+    }
+    Ok(scoped)
 }
 
 impl Prepared {
@@ -117,8 +139,9 @@ impl Prepared {
             command.env_clear();
         }
         command.envs(self.env.iter().cloned());
-        if let Some(filter) = self.filter.take() {
-            crate::tied::confine(&mut command, filter);
+        let filters = std::mem::take(&mut self.filters);
+        if !filters.is_empty() {
+            crate::tied::confine(&mut command, filters);
         }
         if let Some(ruleset) = self.landlock.take() {
             crate::tied::restrict(&mut command, ruleset);
@@ -138,7 +161,7 @@ impl Prepared {
         command = command.envs(self.env.iter().cloned());
         crate::tied::on_a_screen(
             command,
-            self.filter.take(),
+            std::mem::take(&mut self.filters),
             self.landlock.take(),
             std::mem::take(&mut self.descriptors),
         )

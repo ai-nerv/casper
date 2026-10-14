@@ -12,6 +12,8 @@ mod lifecycle;
 mod paths;
 #[path = "containment/persistence.rs"]
 mod persistence;
+#[path = "containment/reach.rs"]
+mod reach;
 #[path = "containment/socket.rs"]
 mod socket;
 #[path = "containment/surface.rs"]
@@ -46,6 +48,7 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) {
     if variant == "persistence" {
         persistence::prepare(&dir);
     }
+    let reached = (variant == "reach").then(|| reach::prepare(&dir));
     let local = (variant == "unix-network").then(|| {
         std::fs::copy(
             std::env::current_exe().expect("test executable"),
@@ -152,6 +155,9 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) {
     if variant == "isolation-off" {
         command.env("CASPER_JAIL", "");
     }
+    if variant == "reach" {
+        command.env("CASPER_JAIL", r#"{"reach":true}"#);
+    }
     if variant == "broad-grant" {
         command.env(
             "CASPER_JAIL",
@@ -229,6 +235,12 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) {
         "HOST_UNCHANGED"
     );
     let mut packet = [0; 128];
+    if reached.is_some() {
+        network
+            .recv_from(&mut packet)
+            .expect("a reach grant keeps the network open");
+        return;
+    }
     let error = network
         .recv_from(&mut packet)
         .expect_err("jailed command reached host UDP socket");
@@ -327,6 +339,10 @@ fn contained_child() {
     }
     if variant == "unix-network" {
         script.push_str("\n./network-probe --exact unix_socket_probe --nocapture\n");
+    }
+    if variant == "reach" {
+        reach::own_a_terminal();
+        script.push_str("\n./reach-probe --exact reach::probe --nocapture\n");
     }
     if variant == "descriptor-probe" {
         script.push_str("\n./descriptor-probe --exact descriptor_probe --nocapture\n");
@@ -437,6 +453,15 @@ fn terminal_io(root: &Path) {
         std::fs::read_to_string(root.join("work/report")).expect("terminal report"),
         "37 111\nx\n"
     );
+}
+
+#[test]
+fn reach_opens_the_network_and_no_local_socket_or_terminal() {
+    for bubblewrap in [false, true] {
+        for mode in ["command", "socket"] {
+            fixture(mode, bubblewrap, "reach");
+        }
+    }
 }
 
 #[test]
