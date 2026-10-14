@@ -344,10 +344,28 @@ make.recipe{
   end,
 }
 
+-- Known advisories against the lockfile, from the advisory database already on this machine.
+make.recipe{
+  name = "audit",
+  desc = "no dependency with a known advisory (cargo audit, offline)",
+  run = function()
+    local ran = oslo.run{ "cargo", "audit", "--no-fetch" }
+    assert(ran.ok, "cargo audit failed")
+  end,
+}
+
 make.recipe{
   name = "verify",
   desc = "the whole local gate",
   deps = { "fmt-check", "check", "test", "check-all", "test-all", "clippy", "rustdoc", "gates", "gate-hermetic", "gate-family", "gate-role", "machete" },
+  -- Only where the tool is installed: a machine without it is not a failed audit.
+  run = function()
+    if oslo.run{ "cargo", "audit", "--version", capture = true }.ok then
+      make.run("audit")
+    else
+      print("audit: cargo audit is not installed here; skipped")
+    end
+  end,
 }
 make.alias("v", "verify")
 
