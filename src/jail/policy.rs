@@ -150,23 +150,29 @@ pub(super) fn bindings(
 ) -> std::io::Result<Vec<OwnedFd>> {
     let mut descriptors = Vec::new();
     let mut index = 0;
-    while index < args.len() {
-        if matches!(args[index].as_str(), "--bind" | "--ro-bind") {
-            let fd = validated_fd(Path::new(&args[index + 1]), protected)?;
-            if args[index] == "--bind"
-                && launcher.starts_with(super::credentials::opened_path(&fd)?)
-            {
-                return Err(std::io::Error::other(
-                    "sandbox launcher is inside a writable jail grant",
-                ));
+    let bind = |flag: &String| matches!(flag.as_str(), "--bind" | "--ro-bind");
+    while let Some(rest) = args.get_mut(index..) {
+        let (flag, source) = match rest {
+            [flag, source, ..] if bind(flag) => (flag, source),
+            [flag, ..] if bind(flag) => {
+                return Err(std::io::Error::other(format!("{flag} names no path")));
             }
-            args[index].push_str("-fd");
-            args[index + 1] = fd.as_raw_fd().to_string();
-            descriptors.push(fd);
-            index += 3;
-        } else {
-            index += 1;
+            [] => break,
+            _ => {
+                index += 1;
+                continue;
+            }
+        };
+        let fd = validated_fd(Path::new(source.as_str()), protected)?;
+        if flag == "--bind" && launcher.starts_with(super::credentials::opened_path(&fd)?) {
+            return Err(std::io::Error::other(
+                "sandbox launcher is inside a writable jail grant",
+            ));
         }
+        flag.push_str("-fd");
+        *source = fd.as_raw_fd().to_string();
+        descriptors.push(fd);
+        index += 3;
     }
     Ok(descriptors)
 }
