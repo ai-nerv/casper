@@ -210,7 +210,7 @@ impl Engine {
         });
     }
 
-    /// Run one chunk, stopped once it has spent [`BUDGET`] instructions.
+    /// Run one chunk, stopped once it has spent its instruction budget.
     ///
     /// # Errors
     /// When it will not compile, raises, or runs past its budget.
