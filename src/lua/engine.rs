@@ -711,6 +711,30 @@ mod tests {
     }
 
     #[test]
+    fn an_error_lends_no_metatable_that_would_enrol_every_later_error() {
+        let mut engine = declaring(
+            r#"casper.tool("raise", { run = function()
+                 local _, raised = pcall(string.rep)
+                 local shared = getmetatable(raised)
+                 if type(shared) == "table" then shared.__gc = function() end end
+                 for _ = 1, 50000 do pcall(string.rep) end
+                 return type(raised) .. " " .. type(shared)
+               end })"#,
+        );
+        engine.lua.gc_collect();
+        let before = engine.lua.total_memory();
+        let ran = engine.call("raise", &serde_json::Value::Null).expect("ran");
+        assert_eq!(ran.said, "userdata nil", "{ran:?}");
+        engine.lua.gc_collect();
+        engine.lua.gc_collect();
+        let after = engine.lua.total_memory();
+        assert!(
+            after < before + (1 << 20),
+            "{before} bytes before, {after} after"
+        );
+    }
+
+    #[test]
     fn a_surface_frame_that_loops_ends_the_surface() {
         let mut engine = declaring(
             r#"casper.tool("s", { surface = function() return function() while true do end end end })"#,

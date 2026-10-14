@@ -48,7 +48,27 @@ pub fn apply(lua: &mut Lua) {
         }
         guard(ctx, ctx.globals(), "load", binary);
         guard(ctx, ctx.globals(), "setmetatable", finalized);
+        hide_userdata_metatables(ctx, ctx.globals());
     });
+}
+
+/// `getmetatable`, answering `nil` for a userdata: luna attaches one shared metatable to every
+/// error it raises as a userdata.
+fn hide_userdata_metatables<'gc>(ctx: Context<'gc>, globals: Table<'gc>) {
+    let Value::Function(original) = globals.get_value(ctx, "getmetatable") else {
+        return;
+    };
+    let hidden = Callback::from_fn_with(&ctx, original, |original, ctx, _exec, mut stack| {
+        if matches!(stack.get(0), Value::UserData(_)) {
+            stack.replace(ctx, Value::Nil);
+            return Ok(CallbackReturn::Return);
+        }
+        Ok(CallbackReturn::Call {
+            function: *original,
+            then: None,
+        })
+    });
+    globals.set(ctx, "getmetatable", hidden).ok();
 }
 
 /// Whether `source` is a precompiled chunk: every Lua binary signature opens with an escape, and
