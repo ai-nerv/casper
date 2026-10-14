@@ -113,6 +113,22 @@ fn a_zero_length_frame_is_refused_and_the_next_call_answered() {
 }
 
 #[test]
+fn a_call_from_a_newer_family_is_refused_by_name_and_the_next_call_answered() {
+    let (_dir, path) = serving();
+    let mut stream = dial(&path);
+    for wire in [Wire::Json, Wire::Cbor] {
+        let mut newer = keyed("tools");
+        newer["family"] = serde_json::json!(crate::wire::FAMILY + 1);
+        let reply = ask(&mut stream, wire, newer);
+        assert!(!reply.ok, "{reply:?}");
+        assert!(reply.error.unwrap_or_default().contains("family 2"));
+    }
+    let mut older = keyed("tools");
+    older["family"] = serde_json::json!(crate::wire::FAMILY);
+    assert!(ask(&mut stream, Wire::Json, older).ok);
+}
+
+#[test]
 fn a_reply_over_the_cap_is_replaced_by_a_failure_and_the_connection_stays_in_step() {
     let (_dir, path) = serving();
     let mut stream = dial(&path);

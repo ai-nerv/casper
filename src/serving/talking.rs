@@ -3,7 +3,7 @@
 
 use super::key::{Key, REFUSED};
 use crate::framing::{self, MOST, Wire};
-use crate::wire::{Call, Reply};
+use crate::wire::{Call, FAMILY, Reply};
 use std::io::ErrorKind;
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
@@ -14,13 +14,24 @@ pub const IDLE: Duration = Duration::from_secs(300);
 /// How long the rest of a frame may take once its first byte has arrived, and a reply to go out.
 pub const MID_FRAME: Duration = Duration::from_secs(30);
 
-/// A call as it arrives on the socket: the family's call, and the key beside it.
+/// A call as it arrives on the socket: the family's call, the key beside it, and the revision it
+/// says it is written in, when it says one.
 #[derive(serde::Deserialize)]
 struct Keyed {
     #[serde(default)]
     key: Option<String>,
+    #[serde(default)]
+    family: Option<u64>,
     #[serde(flatten)]
     call: Call,
+}
+
+/// A call from a newer revision of the family is refused by name, before anything in it is read.
+fn newer(family: Option<u64>) -> Option<Reply> {
+    let family = family.filter(|family| *family > u64::from(FAMILY))?;
+    Some(Reply::refused(format!(
+        "the call is written in family {family}, newer than the {FAMILY} casper reads"
+    )))
 }
 
 /// Read calls and answer them until the peer closes, a deadline passes, or a frame cannot be
@@ -47,8 +58,13 @@ pub fn talk(
         };
         let wire = Wire::of(&body);
         let reply = match framing::decode::<Keyed>(&body) {
-            Ok(keyed) if !key.admits(keyed.key.as_deref()) => Reply::refused(REFUSED),
-            Ok(keyed) => handle(&keyed.call),
+            Ok(keyed) => newer(keyed.family).unwrap_or_else(|| {
+                if key.admits(keyed.key.as_deref()) {
+                    handle(&keyed.call)
+                } else {
+                    Reply::refused(REFUSED)
+                }
+            }),
             Err(why) => Reply::refused(format!("that is not a call: {why}")),
         };
         send(&mut stream, wire, &reply)?;
