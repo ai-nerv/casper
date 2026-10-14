@@ -29,36 +29,38 @@ const SETTLED: usize = 16;
 #[must_use]
 pub fn cut(path: &str, text: &str) -> Vec<Fragment> {
     let lines: Vec<&str> = text.lines().collect();
+    let mut rest = lines.as_slice();
     let mut out = Vec::new();
     let mut at = 0;
-    while at < lines.len() {
-        let end = (at + LINES).min(lines.len());
-        let cut = if end == lines.len() {
+    while !rest.is_empty() {
+        let end = LINES.min(rest.len());
+        let cut = if end == rest.len() {
             end
         } else {
-            breaking(&lines, at, end)
+            breaking(rest, end)
         };
-        let body = lines[at..cut].join("\n");
-        if body.trim().is_empty() {
-            at = cut;
-            continue;
+        let (taken, after) = rest.split_at_checked(cut).unwrap_or((rest, &[]));
+        let body = taken.join("\n");
+        if !body.trim().is_empty() {
+            out.push(Fragment {
+                path: path.to_owned(),
+                from: at + 1,
+                to: at + taken.len(),
+                text: body,
+            });
         }
-        out.push(Fragment {
-            path: path.to_owned(),
-            from: at + 1,
-            to: cut,
-            text: body,
-        });
-        at = cut;
+        at += taken.len();
+        rest = after;
     }
     out
 }
 
-/// Where to cut: the last blank line past the point a fragment stands on its own, or `end`.
-fn breaking(lines: &[&str], at: usize, end: usize) -> usize {
-    (at + SETTLED..end)
+/// Where to cut `lines`: the last blank line past the point a fragment stands on its own, or
+/// `end`.
+fn breaking(lines: &[&str], end: usize) -> usize {
+    (SETTLED..end)
         .rev()
-        .find(|nth| lines[*nth].trim().is_empty())
+        .find(|nth| lines.get(*nth).is_some_and(|line| line.trim().is_empty()))
         .map_or(end, |nth| nth + 1)
 }
 

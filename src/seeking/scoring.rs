@@ -93,18 +93,18 @@ pub fn against(asked: &[String], fragment: &Fragment, rarity: &HashMap<String, f
 pub fn shortlist(query: &str, fragments: &[Fragment], most: usize, of_each: usize) -> Vec<usize> {
     let asked = terms(query);
     let rarity = rarity(fragments);
-    let mut scored: Vec<(usize, f64)> = fragments
+    let mut scored: Vec<(usize, &Fragment, f64)> = fragments
         .iter()
         .enumerate()
-        .map(|(nth, fragment)| (nth, against(&asked, fragment, &rarity)))
-        .filter(|(_, score)| *score > 0.0)
+        .map(|(nth, fragment)| (nth, fragment, against(&asked, fragment, &rarity)))
+        .filter(|(_, _, score)| *score > 0.0)
         .collect();
-    scored.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    scored.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
 
     let mut taken: HashMap<&str, usize> = HashMap::new();
     let mut out = Vec::new();
-    for (nth, _) in scored {
-        let held = taken.entry(fragments[nth].path.as_str()).or_default();
+    for (nth, fragment, _) in scored {
+        let held = taken.entry(fragment.path.as_str()).or_default();
         if *held >= of_each {
             continue;
         }
