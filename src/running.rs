@@ -188,7 +188,7 @@ fn read_ready(pipes: &mut [Option<OwnedFd>; 2], held: &mut [Kept; 2], wait: Dura
             Ok(0) | Err(_) => *pipe = None,
             Ok(read) => {
                 let room = MOST.saturating_sub(kept.0.len()).min(read);
-                kept.0.extend_from_slice(&buffer[..room]);
+                kept.0.extend(buffer.iter().take(room));
                 kept.1 += read - room;
             }
         }
@@ -201,14 +201,15 @@ fn said(held: &[u8], dropped: usize) -> String {
         return String::from_utf8_lossy(held).into_owned();
     }
     // Back to where a character last ended: the hold stops wherever the room ran out.
-    let whole = match std::str::from_utf8(held) {
+    let valid = match std::str::from_utf8(held) {
         Ok(_) => held.len(),
         Err(bad) => bad.valid_up_to(),
     };
+    let (whole, cut) = held.split_at_checked(valid).unwrap_or((held, &[]));
     format!(
         "{}\n… {} more bytes, not shown",
-        String::from_utf8_lossy(&held[..whole]),
-        dropped + (held.len() - whole)
+        String::from_utf8_lossy(whole),
+        dropped + cut.len()
     )
 }
 
