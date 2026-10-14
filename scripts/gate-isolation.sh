@@ -7,7 +7,14 @@
 # milestone), and a gate that failed for the absence of a tool would fail every build on such a box.
 set -eu
 
-command -v bwrap >/dev/null 2>&1 || { echo "gate-isolation: no bwrap here — nothing to prove against"; exit 0; }
+if ! command -v bwrap >/dev/null 2>&1; then
+  if [ -n "${CASPER_REQUIRE_CONTAINMENT:-}" ]; then
+    echo "gate-isolation: CASPER_REQUIRE_CONTAINMENT is set and there is no bwrap" >&2
+    exit 1
+  fi
+  echo "gate-isolation: no bwrap here — nothing to prove against"
+  exit 0
+fi
 
 work=$(mktemp -d)
 home=$(mktemp -d)

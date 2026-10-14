@@ -592,9 +592,40 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_bubblewrap_fails_the_containment_test_when_containment_is_required() {
+        if std::env::var_os("CASPER_TEST_NO_BWRAP").is_some() {
+            return;
+        }
+        let name = "jail::tests::a_jailed_command_cannot_read_the_keys_or_reach_the_network";
+        let run = |required: bool| {
+            let mut command = std::process::Command::new(std::env::current_exe().expect("exe"));
+            command
+                .args(["--exact", name, "--nocapture"])
+                .env("PATH", "")
+                .env("CASPER_TEST_NO_BWRAP", "1")
+                .env_remove("CASPER_REQUIRE_CONTAINMENT")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            if required {
+                command.env("CASPER_REQUIRE_CONTAINMENT", "1");
+            }
+            command.status().expect("the containment test runs")
+        };
+        assert!(
+            run(false).success(),
+            "an unrequired jail is reported, not failed"
+        );
+        assert!(!run(true).success(), "a required jail without bwrap passed");
+    }
+
+    #[test]
     fn a_jailed_command_cannot_read_the_keys_or_reach_the_network() {
         let Some(bwrap) = which("bwrap") else {
-            eprintln!("skipping: no bwrap to build a jail with");
+            assert!(
+                std::env::var_os("CASPER_REQUIRE_CONTAINMENT").is_none(),
+                "required bubblewrap unavailable"
+            );
+            eprintln!("NOT VERIFIED: no bwrap to build a jail with");
             return;
         };
         let dir = Scratch::new("jail", "escape");
