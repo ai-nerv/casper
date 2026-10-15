@@ -31,16 +31,21 @@ casper.theme = {
 
 -- ── the manual ────────────────────────────────────────────────────────────────────────
 --
--- **What a session reaches for constantly is always in front of the model: `read`, `write`, `edit`,
--- `shell`, and the three that find things -- `ls`, `tree`, `sese`.** The rest are deferred: every
+-- **What a session reaches for constantly is always in front of the model: `read`, `code`, `write`,
+-- `edit`, `shell`, and the three that find things -- `ls`, `tree`, `sese`.** The rest are deferred: every
 -- card sent costs tokens on every request, and a game or a multiplexer probe is needed once a week. So they are listed here instead, as a tree `tools` walks one level at a time
 -- -- the groups, then a group, then a tool -- and reaching a deferred tool's page unlocks it.
 local MANUAL = {
-  { group = "files", about = "read, write and edit files; always available", tools = {
+  { group = "files", about = "read, outline, write and edit files; always available", tools = {
     { name = "read", page = [[
 read(path, offset?, limit?) -- text or a raster image attachment (PNG, JPEG, GIF, WebP, BMP).
 Images are resized for vision and are never returned as base64 text. For large text, `offset` (first line, from 1) and
 `limit` (most lines) pick a range, and a closing line says which lines came back of how many.]] },
+    { name = "code", page = [[
+code(path) -- a source file's skeleton: imports, type definitions, function signatures and
+structure, each with its line range in []. Use it first on a file, then `read` with `offset` and
+`limit` for the section you need. A directory answers with its entries. An unsupported language
+is an error: use `read` instead.]] },
     { name = "write", page = [[
 write(path, contents) -- replace the whole file with `contents`, creating the directories it needs.
 Prefer `edit` for a change to a file that exists: it cannot lose the parts you did not mean to touch.]] },
@@ -312,6 +317,43 @@ do -- read
         said = said, shown = shown,
         brief = ("read %s (%s)"):format(args.path, span),
         back = ("read %s"):format(args.path),
+      }
+    end,
+  })
+end
+
+do -- code
+  -- Parsed by casper itself, run as a command: inside the jail, where the file is exactly as
+  -- reachable as `read`'s `cat` would find it.
+  casper.tool("code", {
+    description = [[
+  Return a compact overview of a source file: imports, type definitions, function signatures and
+  structure, with line numbers in []. Much cheaper than reading the whole file.]],
+    parameters = {
+      type = "object",
+      properties = {
+        path = { type = "string", description = "The source file, or a directory to list." },
+      },
+      required = { "path" },
+    },
+    needs = "read",
+
+    run = function(args)
+      local done = casper.exec("casper", { "code", args.path })
+      local ok, reply = pcall(casper.json.decode, done.out)
+      if not ok or type(reply) ~= "table" then
+        return failure(done.err ~= "" and done.err or ("code: no answer for " .. args.path))
+      end
+      if not reply.ok then return failure(reply.error or ("code: refused " .. args.path)) end
+      local found = reply.result[1]
+      local said, span = found.skeleton, ("%d lines"):format(found.lines or 0)
+      if found.kind == "directory" then
+        said, span = found.listing, ("%d entries"):format(found.entries or 0)
+      end
+      return {
+        said = said,
+        brief = ("code %s (%s)"):format(args.path, span),
+        back = ("code %s"):format(args.path),
       }
     end,
   })

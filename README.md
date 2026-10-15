@@ -25,11 +25,13 @@ casper tools                 # every tool it offers, as declarations a harness c
 casper run <tool>            # run one; the call arrives as JSON on stdin
 casper surface <tool>        # hold rows on the harness's screen and draw into them
 casper image <path>          # one raster file through the jail, resized as an attachment
+casper code <path>           # a source file's skeleton, or a directory's entries
 ```
 
 | | |
 |---|---|
 | `read` `write` `edit` | read a file, write one, change one — a highlighted file or a coloured diff on screen; an image is read as a resized attachment |
+| `code` | a source file's skeleton — imports, types, signatures, each with its line range — parsed with tree-sitter by casper run inside the jail; a directory lists its entries |
 | `shell` | run a command, and remember where it ran for the session that called: the process that started casper, never a session a call names, and nothing remembered without one |
 | `web` | native Rust web search and bounded readable HTTP(S) page extraction, with source URLs |
 | `tools` | the manual for everything below: a tree the model walks, and a page unlocks its tool |
@@ -37,13 +39,16 @@ casper image <path>          # one raster file through the jail, resized as an a
 | `hexe` `oslo` `session` | ask the multiplexer, the shell, or the harness about themselves |
 | `dino` `birdy` | two games, because a surface that can draw a game can draw anything |
 
-The first four are always in front of the model. The rest are *deferred*: listed in the manual,
+The first five are always in front of the model. The rest are *deferred*: listed in the manual,
 and sent to the model only once a `tools` lookup reaches them, because every card sent costs tokens
 on every request.
 
 Every one of them is declared in `config/tools.lua`, in Lua, and nothing about them is compiled
 in as a declaration. Network operations are implemented in Rust behind those declarations. A
 tool of your own goes in the same file.
+
+`code` is a port of [maki](https://github.com/tontinton/maki)'s `index` tool, under its MIT
+license: see [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## MCP and web reading
 
