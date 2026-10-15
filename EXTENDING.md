@@ -157,9 +157,10 @@ calls are never put to the harness, so casper refuses one that writes, runs a co
 the network whatever the flag says. A tool that asks the person or the harness something, as
 `sese` does, cannot be answered from inside a script either; leave it off those.
 
-A result may also carry `images = { casper.image(path) }`. `casper.image` reads a PNG, JPEG, GIF,
-WebP or BMP file through the jail and answers it resized for vision as `{ data, media_type }`, or
-`nil` for a file that is not one of those. The base64 stays out of `said`.
+A result may also carry `images = { casper.image(path) }`. `casper.image` reads a PNG, JPEG, GIF
+or WebP file through the jail and answers it resized for vision as `{ data, media_type }`, `nil`
+for a file that is not an image, and an error for an image in any other format, a BMP among them.
+The base64 stays out of `said`.
 
 `casper.exec("casper", { … })` runs this casper, not whichever one `PATH` finds first, inside the
 same jail as any other program, with its own executable made readable there. `code` reaches its

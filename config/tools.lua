@@ -39,8 +39,8 @@ casper.theme = {
 local MANUAL = {
   { group = "files", about = "read, outline, write and edit files; always available", tools = {
     { name = "read", page = [[
-read(path, offset?, limit?) -- text or a raster image attachment (PNG, JPEG, GIF, WebP, BMP).
-Images are resized for vision and are never returned as base64 text. For large text, `offset` (first line, from 1) and
+read(path, offset?, limit?) -- text or a raster image attachment (PNG, JPEG, GIF, WebP).
+Images are resized for vision and are never returned as base64 text; a BMP is refused. For large text, `offset` (first line, from 1) and
 `limit` (most lines) pick a range, and a closing line says which lines came back of how many.]] },
     { name = "code", page = [[
 code(path) -- a source file's skeleton: imports, type definitions, function signatures and
@@ -277,8 +277,8 @@ do -- read
   -- colour would spend the model's context on nothing it can use.
   casper.tool("read", {
     description = [[
-  Read text or a raster image (PNG, JPEG, GIF, WebP, BMP). Images are resized and sent as image
-  attachments, not text; animated images use the first frame. For large text, `offset` and `limit` pick a range of lines, and a closing line says
+  Read text or a raster image (PNG, JPEG, GIF, WebP; a BMP is refused). Images are resized and sent
+  as image attachments, not text; animated images use the first frame. For large text, `offset` and `limit` pick a range of lines, and a closing line says
   which lines came back of how many.]],
     parameters = {
       type = "object",

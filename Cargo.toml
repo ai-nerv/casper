@@ -39,9 +39,7 @@ libc = "0.2.189"
 landlock = "0.4.4"
 # What `read`, `write` and `edit` show, in the file's own language: Sublime's grammars, read as
 # regexes, so no language is compiled in and none needs a program on the machine.
-syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
-# bat's own grammars on top of syntect's: TOML, Nix, TypeScript and the rest a project is made of.
-two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
+syntect = { version = "5", default-features = false, features = ["parsing", "regex-fancy"] }
 rmcp = { version = "3.5", default-features = false, features = ["server", "client", "transport-io", "transport-streamable-http-client-reqwest"] }
 # An MCP server's SSE stream, read one capped event at a time.
 sse-stream = "0.2.6"
@@ -55,7 +53,7 @@ webpki-roots = "1"
 scraper = "0.24"
 url = "2"
 base64 = "0.22"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 # No grammar is linked in: `code` runs a program per language that `casper grammar` builds from
 # Helix's pinned list. See `grammars.lock`.
 # The Python `execute` runs: an interpreter with no filesystem, network or imports of its own,
@@ -63,9 +61,16 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 monty = { git = "https://github.com/pydantic/monty.git", tag = "v0.0.23", version = "0.0.23" }
 monty-types = { git = "https://github.com/pydantic/monty.git", tag = "v0.0.23", version = "0.0.23" }
 
+# bat's grammars, as two-face ships them, cut down by `build.rs` to the languages highlighted.
+[build-dependencies]
+syntect = { version = "5", default-features = false, features = ["parsing", "regex-fancy"] }
+two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
+serde_json = "1.0"
+
 [dev-dependencies]
 rmcp = { version = "3.5", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-server"] }
 axum = "0.8"
+two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
 
 # The same gate the siblings are written under.
 [lints.rust]

@@ -122,6 +122,7 @@
               fileset = lib.fileset.unions [
                 ./Cargo.toml
                 ./Cargo.lock
+                ./build.rs
                 ./grammars.lock
                 ./src
                 ./config

@@ -24,14 +24,14 @@ is using it.
 casper tools                 # every tool it offers, as declarations a harness can register
 casper run <tool>            # run one; the call arrives as JSON on stdin
 casper surface <tool>        # hold rows on the harness's screen and draw into them
-casper image <path>          # one raster file through the jail, resized as an attachment
+casper image <path>          # one PNG, JPEG, GIF or WebP through the jail, resized as an attachment
 casper code <path>           # a source file's skeleton, or a directory's entries
 casper grammar fetch|build|list [lang…]   # the parsers code reads with, built here
 ```
 
 | | |
 |---|---|
-| `read` `write` `edit` | read a file, write one, change one — a highlighted file or a coloured diff on screen; an image is read as a resized attachment |
+| `read` `write` `edit` | read a file, write one, change one — a highlighted file or a coloured diff on screen (Rust, C, C++, Go, Python, JavaScript, TypeScript, Lua, Zig, Nix, shell, TOML, YAML, JSON and Markdown; anything else plain); a PNG, JPEG, GIF or WebP image is read as a resized attachment, a BMP is refused |
 | `code` | a source file's skeleton — imports, types, signatures, each with its line range — parsed with tree-sitter by casper run inside the jail, from grammars you build (below); a directory lists its entries |
 | `ls` `tree` `sese` | look around a directory, draw its shape, and search a repository by meaning |
 | `execute` | a Python script in which `read`, `code`, `ls` and `tree` are async functions: several looks, and filtering what they return, in one call |
