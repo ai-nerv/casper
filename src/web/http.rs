@@ -2,7 +2,23 @@ use super::Settings;
 use reqwest::blocking::Client;
 use std::io::Read;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::sync::Arc;
 use url::Url;
+
+/// TLS for a fetch: Mozilla's roots as webpki-roots bundles them, hostnames checked, HTTP/1.1.
+fn tls() -> Result<rustls::ClientConfig, String> {
+    let roots = rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|why| format!("TLS could not start: {why}"))?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(config)
+}
 
 pub(crate) struct Fetched {
     pub url: Url,
@@ -89,6 +105,7 @@ pub(crate) fn fetch(source: &str, settings: &Settings) -> Result<Fetched, String
             .checked_sub(began.elapsed())
             .ok_or("web request timed out")?;
         let client = Client::builder()
+            .tls_backend_preconfigured(tls()?)
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(remaining)
@@ -160,6 +177,76 @@ pub(crate) fn fetch(source: &str, settings: &Settings) -> Result<Fetched, String
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    #[test]
+    fn a_certificate_no_bundled_root_signed_is_refused() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        let port = listener.local_addr().expect("address").port();
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("versions")
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![
+                include_bytes!("../../tests/containment/tls/localhost.cert.der")
+                    .to_vec()
+                    .into(),
+            ],
+            rustls::pki_types::PrivateKeyDer::Pkcs8(
+                include_bytes!("../../tests/containment/tls/localhost.key.der")
+                    .to_vec()
+                    .into(),
+            ),
+        )
+        .expect("certificate");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let served = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(_) if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(why) => return Err(why),
+                }
+            };
+            stream.set_nonblocking(false)?;
+            let mut connection = rustls::ServerConnection::new(Arc::new(config)).expect("tls");
+            while connection.is_handshaking() {
+                connection.complete_io(&mut stream)?;
+            }
+            Ok::<_, std::io::Error>(())
+        });
+        let settings = super::Settings {
+            allow_private: true,
+            timeout: std::time::Duration::from_secs(10),
+            max_bytes: 1024,
+            searxng: None,
+        };
+        let fetched = super::fetch(&format!("https://localhost:{port}/"), &settings);
+        assert!(fetched.is_err(), "an untrusted certificate was accepted");
+        let refused = served
+            .join()
+            .expect("server")
+            .expect_err("handshake completed");
+        let alert = refused
+            .get_ref()
+            .and_then(|why| why.downcast_ref::<rustls::Error>());
+        assert!(
+            matches!(
+                alert,
+                Some(rustls::Error::AlertReceived(
+                    rustls::AlertDescription::UnknownCA
+                ))
+            ),
+            "{refused:?}"
+        );
+    }
+
     #[test]
     fn only_ordinary_public_destinations_are_allowed_without_private_permission() {
         for source in [

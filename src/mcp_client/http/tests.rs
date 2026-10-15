@@ -44,8 +44,10 @@ fn serving(body: String) -> (Arc<str>, Arc<AtomicUsize>) {
 
 fn client(cap: usize) -> (Bounded, Arc<AtomicBool>) {
     let over = Arc::new(AtomicBool::new(false));
-    let inner = mcp_http::Client::builder()
+    crate::web::crypto();
+    let inner = reqwest::Client::builder()
         .no_proxy()
+        .no_gzip()
         .build()
         .expect("client");
     (Bounded::new(inner, cap, Arc::clone(&over)), over)

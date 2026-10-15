@@ -5,6 +5,7 @@
 pub mod acknowledged;
 pub mod calling;
 pub mod framing;
+pub mod grammars;
 pub mod highlight;
 pub mod images;
 pub mod indexing;
@@ -23,6 +24,7 @@ pub mod scripting;
 pub mod seeking;
 pub mod serving;
 pub mod setup;
+pub mod shelf;
 pub mod surface;
 #[cfg(test)]
 mod testing;

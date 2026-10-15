@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures::StreamExt as _;
-use mcp_http::StatusCode;
-use mcp_http::header::{ACCEPT, CONTENT_TYPE, HeaderName, HeaderValue};
+use reqwest::StatusCode;
+use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderName, HeaderValue};
 use rmcp::model::{ClientJsonRpcMessage, ServerJsonRpcMessage};
 use rmcp::transport::common::client_side_sse::{
     BoxedSseResponse, ExponentialBackoff, SseRetryPolicy,
@@ -25,12 +25,12 @@ use rmcp::transport::streamable_http_client::{
 };
 use sse_stream::SseStream;
 
-type Failure = StreamableHttpError<mcp_http::Error>;
+type Failure = StreamableHttpError<reqwest::Error>;
 
 /// An HTTP client whose replies are refused past `cap` bytes, setting `over` when one is.
 #[derive(Clone)]
 pub(super) struct Bounded {
-    inner: mcp_http::Client,
+    inner: reqwest::Client,
     cap: usize,
     over: Arc<AtomicBool>,
 }
@@ -112,7 +112,7 @@ impl Event {
 }
 
 impl Bounded {
-    pub(super) const fn new(inner: mcp_http::Client, cap: usize, over: Arc<AtomicBool>) -> Self {
+    pub(super) const fn new(inner: reqwest::Client, cap: usize, over: Arc<AtomicBool>) -> Self {
         Self { inner, cap, over }
     }
 
@@ -127,10 +127,10 @@ impl Bounded {
     /// `request` with the headers every request carries. A custom header may not stand in for
     /// one of the transport's own.
     fn headed(
-        request: mcp_http::RequestBuilder,
+        request: reqwest::RequestBuilder,
         auth_header: Option<String>,
         custom_headers: HashMap<HeaderName, HeaderValue>,
-    ) -> Result<mcp_http::RequestBuilder, Failure> {
+    ) -> Result<reqwest::RequestBuilder, Failure> {
         let mut request = request.header(
             ACCEPT,
             format!("{EVENT_STREAM_MIME_TYPE}, {JSON_MIME_TYPE}"),
@@ -153,7 +153,7 @@ impl Bounded {
     }
 
     /// A body read whole.
-    async fn whole(&self, mut response: mcp_http::Response) -> Result<Vec<u8>, Failure> {
+    async fn whole(&self, mut response: reqwest::Response) -> Result<Vec<u8>, Failure> {
         if response
             .content_length()
             .is_some_and(|length| length > self.cap as u64)
@@ -171,7 +171,7 @@ impl Bounded {
     }
 
     /// An SSE body as the events it carries, ending in a failure at the first event past the cap.
-    fn events(&self, response: mcp_http::Response) -> BoxedSseResponse {
+    fn events(&self, response: reqwest::Response) -> BoxedSseResponse {
         let (cap, over) = (self.cap, Arc::clone(&self.over));
         let bytes = response
             .bytes_stream()
@@ -198,7 +198,7 @@ impl Bounded {
 }
 
 impl StreamableHttpClient for Bounded {
-    type Error = mcp_http::Error;
+    type Error = reqwest::Error;
 
     async fn post_message(
         &self,

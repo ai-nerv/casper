@@ -41,21 +41,28 @@ jobs:
         with:
           name: ai-nerv
           skipPush: true
-      - name: Build the package and run its install checks
+      - name: Build the packages and run their install checks
         run: |
-          nix build --accept-flake-config --no-update-lock-file --print-build-logs \
-            --no-link --print-out-paths .#casper > "$RUNNER_TEMP/casper-store-paths"
-      - name: Publish the runtime closure
+          for package in casper casper-grammars; do
+            nix build --accept-flake-config --no-update-lock-file --print-build-logs \
+              --no-link --print-out-paths ".#$package" > "$RUNNER_TEMP/$package-store-paths"
+          done
+      - name: Publish the runtime closures
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        run: cachix push ai-nerv < "$RUNNER_TEMP/casper-store-paths"
-      - name: Pin the release package
+        run: |
+          for package in casper casper-grammars; do
+            cachix push ai-nerv < "$RUNNER_TEMP/$package-store-paths"
+          done
+      - name: Pin the release packages
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           SYSTEM: ${{ matrix.system }}
         run: |
-          path=$(cat "$RUNNER_TEMP/casper-store-paths")
-          cachix pin ai-nerv "casper-$SYSTEM" "$path" --keep-revisions 5
+          for package in casper casper-grammars; do
+            path=$(cat "$RUNNER_TEMP/$package-store-paths")
+            cachix pin ai-nerv "$package-$SYSTEM" "$path" --keep-revisions 5
+          done
 
   verify-download:
     needs: publish
@@ -76,10 +83,12 @@ jobs:
         with:
           name: ai-nerv
           skipPush: true
-      - name: Download the package without local or remote builders
+      - name: Download the packages without local or remote builders
         run: |
           nix build --accept-flake-config --no-update-lock-file \
             --max-jobs 0 --builders '' .#casper
+          nix build --accept-flake-config --no-update-lock-file \
+            --max-jobs 0 --builders '' --out-link grammars .#casper-grammars
           home="$RUNNER_TEMP/home"
           mkdir -p "$home/run" "$home/config"
           chmod 700 "$home/run"
@@ -89,6 +98,7 @@ jobs:
             env -i PATH="$PATH" HOME="$home" XDG_CONFIG_HOME="$home/config" \
               XDG_DATA_HOME="$home/data" XDG_CACHE_HOME="$home/cache" \
               XDG_RUNTIME_DIR="$home/run" \
+              CASPER_GRAMMARS="$PWD/grammars/share/casper/grammars" \
               result/bin/casper "$@"
           }
           isolated verbs --json > "$RUNNER_TEMP/verbs.json"
@@ -96,3 +106,6 @@ jobs:
           isolated tools --json > "$RUNNER_TEMP/tools.json"
           grep -q '^{"ok":true,' "$RUNNER_TEMP/tools.json"
           grep -q '"name":"read"' "$RUNNER_TEMP/tools.json"
+          printf 'fn main() {}\n' > "$RUNNER_TEMP/smoke.rs"
+          isolated code "$RUNNER_TEMP/smoke.rs" > "$RUNNER_TEMP/code.json"
+          grep -q '^{"ok":true,' "$RUNNER_TEMP/code.json"

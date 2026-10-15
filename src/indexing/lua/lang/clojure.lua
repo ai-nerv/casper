@@ -39,6 +39,15 @@ return function(U)
 
   local function sym_text(sym, source)
     local name = sym:field("name")[1]
+    if not name then
+      -- The grammar Helix pins keeps the symbol as the literal's own text, after its metadata.
+      local kids = sym:children()
+      local from = select(3, (kids[#kids] or sym):end_())
+      if #kids == 0 then
+        from = select(3, sym:start())
+      end
+      return (source:sub(from + 1, select(3, sym:end_())):gsub("^%s+", ""))
+    end
     local text = name and get_text(name, source) or ""
     local ns = sym:field("namespace")[1]
     if ns then

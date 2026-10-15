@@ -238,6 +238,137 @@ make.recipe{
   end,
 }
 
+------------------------------------------------------------------------ grammars
+
+-- The Helix release whose `languages.toml` pins the grammars `code` parses with, and the
+-- tree-sitter runtime they are built against: its ABI range, 13 to 15, covers every pin.
+local HELIX = "25.07.1"
+local RUNTIME = { git = "https://github.com/tree-sitter/tree-sitter", tag = "v0.27.1" }
+
+-- Each parser the indexer asks for, and the Helix language whose grammar it is.
+local WANTED = {
+  bash = "bash", c = "c", c_sharp = "c-sharp", clojure = "clojure", containerfile = "dockerfile",
+  cpp = "cpp", css = "css", dart = "dart", elixir = "elixir", gleam = "gleam", go = "go",
+  hcl = "hcl", html = "html", java = "java", json = "json", kotlin = "kotlin", lua = "lua",
+  make = "make", markdown = "markdown", nix = "nix", php = "php", python = "python",
+  ruby = "ruby", rust = "rust", scala = "scala", sql = "sql", starlark = "starlark",
+  swift = "swift", toml = "toml", tsx = "tsx", typescript = "typescript", v = "v",
+  yaml = "yaml", zig = "zig",
+}
+
+-- Where Helix's pin is not the grammar the indexer reads: the pin used instead, and why.
+local OVERRIDES = {}
+
+local function must(argv, why)
+  argv.capture = true
+  local ran = oslo.run(argv)
+  assert(ran.ok, (why or table.concat(argv, " ")) .. "\n" .. (ran.err or "") .. (ran.out or ""))
+  return (ran.out or ""):gsub("%s+$", "")
+end
+
+-- A JSON string, for the few characters a pin can hold.
+local function quoted(text)
+  return '"' .. text:gsub('[\\"]', "\\%0") .. '"'
+end
+
+-- One pin as one line of JSON, its keys in a fixed order.
+local function pinned(pin)
+  local fields = {}
+  for _, key in ipairs{ "grammar", "git", "rev", "tag", "subpath", "symbol", "hash", "note" } do
+    if pin[key] then fields[#fields + 1] = quoted(key) .. ": " .. quoted(pin[key]) end
+  end
+  return "{ " .. table.concat(fields, ", ") .. " }"
+end
+
+make.recipe{
+  name = "grammars-lock",
+  desc = "regenerate grammars.lock from Helix's languages.toml",
+  run = function()
+    local temporary <close> = oslo.fs.mktempdir()
+    local work = tostring(temporary)
+    local url = ("https://raw.githubusercontent.com/helix-editor/helix/%s/languages.toml"):format(HELIX)
+    must({ "curl", "-sSfL", "-o", work .. "/languages.toml", url }, "could not fetch " .. url)
+    -- Into a file: a captured stream this size fills its pipe before anything reads it.
+    must{ "sh", "-c", 'nix --extra-experimental-features nix-command eval --impure --json --expr "$1" > "$2"',
+          "sh", ("builtins.fromTOML (builtins.readFile %s/languages.toml)"):format(work),
+          work .. "/languages.json" }
+    local helix = oslo.json.decode(assert(oslo.fs.read(work .. "/languages.json")))
+    local languages, grammars = {}, {}
+    for _, language in ipairs(helix.language) do languages[language.name] = language end
+    for _, grammar in ipairs(helix.grammar) do grammars[grammar.name] = grammar end
+
+    -- Each repository at its revision once: cloned, checked, and hashed as Nix's fetchgit would.
+    local hashes, n = {}, 0
+    local function fetched(pin, ref)
+      local key = pin.git .. "@" .. (ref or pin.rev)
+      if hashes[key] then return hashes[key] end
+      n = n + 1
+      local dir = ("%s/%d"):format(work, n)
+      must{ "git", "init", "-q", dir }
+      must{ "git", "-C", dir, "-c", "core.hooksPath=/dev/null", "fetch", "-q", "--depth", "1",
+            "--no-tags", pin.git, ref or pin.rev }
+      must{ "git", "-C", dir, "-c", "core.hooksPath=/dev/null", "checkout", "-q", "--detach", "FETCH_HEAD" }
+      local got = { rev = must{ "git", "-C", dir, "rev-parse", "HEAD" }, dir = dir }
+      must{ "rm", "-rf", dir .. "/.git" }
+      got.hash = must{ "nix", "--extra-experimental-features", "nix-command", "hash", "path", dir }
+      hashes[key] = got
+      return got
+    end
+
+    local runtime = fetched(RUNTIME, "refs/tags/" .. RUNTIME.tag)
+    local lines = {}
+    local names = {}
+    for name in pairs(WANTED) do names[#names + 1] = name end
+    table.sort(names)
+    for _, name in ipairs(names) do
+      local language = assert(languages[WANTED[name]], "Helix has no language " .. WANTED[name])
+      local grammar = language.grammar or language.name
+      local source = assert(grammars[grammar], "Helix has no grammar " .. grammar).source
+      local pin = OVERRIDES[name] or {
+        grammar = grammar, git = source.git, rev = source.rev, subpath = source.subpath }
+      pin.symbol = pin.symbol or ("tree_sitter_" .. pin.grammar:gsub("-", "_"))
+      local got = fetched(pin)
+      assert(got.rev == pin.rev, ("%s: %s is not %s"):format(name, got.rev, pin.rev))
+      local parser = oslo.fs.read(got.dir .. "/" .. (pin.subpath and pin.subpath .. "/" or "") .. "src/parser.c")
+      assert(parser and parser:find(pin.symbol .. "(", 1, true), name .. ": no " .. pin.symbol .. " in parser.c")
+      pin.hash = got.hash
+      lines[#lines + 1] = ("    %s: %s"):format(quoted(name), pinned(pin))
+    end
+    local text = table.concat({
+      "{",
+      '  "about": "generated by `make grammars-lock` from Helix\'s languages.toml; never edited by hand",',
+      ('  "helix": %s,'):format(quoted(HELIX)),
+      ('  "languages": %s,'):format(quoted(url)),
+      ('  "runtime": %s,'):format(pinned{ grammar = "tree-sitter", git = RUNTIME.git,
+                                          rev = runtime.rev, tag = RUNTIME.tag, hash = runtime.hash }),
+      '  "grammars": {',
+      table.concat(lines, ",\n"),
+      "  }",
+      "}",
+      "",
+    }, "\n")
+    oslo.fs.write("grammars.lock", text)
+    print(("grammars.lock: %d grammars from Helix %s, tree-sitter %s"):format(#names, HELIX, RUNTIME.tag))
+  end,
+}
+
+-- Outside Nix: every pinned grammar fetched and built into target/grammars, where the tests look
+-- when CASPER_GRAMMARS names nothing.
+make.recipe{
+  name = "grammars",
+  desc = "fetch and build every grammar into target/grammars, for the tests",
+  run = function()
+    local dir = oslo.sys.pwd() .. "/target/grammars"
+    for _, action in ipairs{ "fetch", "build" } do
+      local ran = oslo.run{ "cargo", "run", "--quiet", "--release", "--bin", NAME, "--",
+                            "grammar", action, "--dir", dir, capture = true }
+      assert(ran.ok and (ran.out or ""):find('"ok":true', 1, true),
+             ("casper grammar %s failed\n%s%s"):format(action, ran.err or "", ran.out or ""))
+    end
+    print("grammars built in " .. dir)
+  end,
+}
+
 make.recipe{ name = "test", desc = "the suite",
              run = function() sh.cargo("test", "--all-targets") end }
 make.alias("t", "test")

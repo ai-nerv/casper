@@ -110,7 +110,8 @@ return function(U)
     local el = find_child(node, "property_element")
     local name = "_"
     if el then
-      local nn = el:field("name")[1]
+      -- The grammar Helix pins does not name the field.
+      local nn = el:field("name")[1] or find_child(el, "variable_name")
       if nn then
         name = get_text(nn, source)
       end

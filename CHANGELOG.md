@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.8.1] - 2026-10-15
+
+### <!-- 0 -->⛰️  Features
+
+- Parse through built grammars
+- Fetch and build parsers
+- Pin Helix's grammar list
+
+### <!-- 3 -->📚 Documentation
+
+- Explain casper grammar
+
+### Build
+
+- Fewer syntaxes, no BMP decoder
+- One reqwest on ring, no aws-lc
+- Fat LTO, one codegen unit
+- Package casper-grammars
+
 ## [0.8.0] - 2026-10-15
 
 ### <!-- 0 -->⛰️  Features

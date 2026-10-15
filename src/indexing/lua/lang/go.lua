@@ -108,7 +108,8 @@ return function(U)
               local members = {}
               for _, m in ipairs(type_node:children()) do
                 local mkind = m:type()
-                if mkind == "method_elem" then
+                -- `method_spec` is the same node in the grammar Helix pins.
+                if mkind == "method_elem" or mkind == "method_spec" then
                   local mname_node = m:field("name")[1]
                   if mname_node then
                     local mname = get_text(mname_node, source)

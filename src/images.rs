@@ -37,7 +37,7 @@ pub fn encoded(data: &str, media_type: &str) -> Result<Image, String> {
     }
     if !matches!(
         media_type,
-        "image/png" | "image/jpeg" | "image/jpg" | "image/gif" | "image/webp" | "image/bmp"
+        "image/png" | "image/jpeg" | "image/jpg" | "image/gif" | "image/webp"
     ) {
         return Err(format!("unsupported image media type: {media_type}"));
     }
@@ -52,13 +52,12 @@ fn process(bytes: &[u8]) -> Result<Image, String> {
         return Err("image exceeds the 20 MiB source limit".into());
     }
     let format = image::guess_format(bytes).map_err(|e| e.to_string())?;
+    if format == ImageFormat::Bmp {
+        return Err("BMP images are not read: convert to PNG, JPEG, GIF or WebP".into());
+    }
     if !matches!(
         format,
-        ImageFormat::Png
-            | ImageFormat::Jpeg
-            | ImageFormat::Gif
-            | ImageFormat::WebP
-            | ImageFormat::Bmp
+        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Gif | ImageFormat::WebP
     ) {
         return Err("unsupported raster image format".into());
     }
@@ -82,7 +81,7 @@ fn process(bytes: &[u8]) -> Result<Image, String> {
         let mut out = Cursor::new(Vec::new());
         if alpha {
             resized
-                .write_to(&mut out, ImageFormat::Png)
+                .write_with_encoder(image::codecs::png::PngEncoder::new(&mut out))
                 .map_err(|e| e.to_string())?;
         } else {
             image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85)
@@ -132,5 +131,20 @@ mod tests {
         assert!(encoded("not base64!", "image/png").is_err());
         assert!(encoded("", "image/svg+xml").is_err());
         assert!(process(b"not an image").is_err());
+    }
+
+    #[test]
+    fn a_bmp_is_refused_by_name() {
+        let header = b"BM\x3a\0\0\0\0\0\0\0\x36\0\0\0\x28\0\0\0\x01\0\0\0\x01\0\0\0\x01\0\x18\0";
+        let refused = process(header).expect_err("a BMP");
+        assert!(refused.contains("BMP images are not read"), "{refused}");
+        let data = STANDARD.encode(header);
+        let named = encoded(&data, "image/bmp").expect_err("a BMP media type");
+        assert!(named.contains("image/bmp"), "{named}");
+        assert!(
+            encoded(&data, "image/png")
+                .expect_err("BMP bytes")
+                .contains("BMP")
+        );
     }
 }

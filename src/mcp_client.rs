@@ -133,9 +133,10 @@ impl Hub {
                     tokio::time::timeout(timeout, Client.serve(transport)).await
                 } else {
                     let url = server.url.as_deref().ok_or("MCP URL missing")?;
-                    let client = mcp_http::Client::builder()
+                    let client = reqwest::Client::builder()
                         .no_proxy()
-                        .redirect(mcp_http::redirect::Policy::none())
+                        .no_gzip()
+                        .redirect(reqwest::redirect::Policy::none())
                         .connect_timeout(Duration::from_secs(10))
                         .build()
                         .map_err(|why| format!("MCP HTTP client: {why}"))?;

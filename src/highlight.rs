@@ -29,10 +29,15 @@ const KINDS: [(&str, Role); 6] = [
     ),
 ];
 
-/// bat's grammars: syntect's own lack TOML, Nix and TypeScript, which is most of a project.
+/// bat's grammars for the languages `build.rs` keeps; any other file is plain.
 fn syntaxes() -> &'static SyntaxSet {
     static SET: OnceLock<SyntaxSet> = OnceLock::new();
-    SET.get_or_init(two_face::syntax::extra_newlines)
+    SET.get_or_init(|| {
+        syntect::dumps::from_binary(include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/syntaxes.packdump"
+        )))
+    })
 }
 
 /// A theme whose every colour is a role in disguise: the red channel is the role's place in
@@ -189,18 +194,66 @@ mod tests {
         assert_eq!(text(&lines[0]), "fn main() { let x = 1; } // done");
     }
 
+    /// Each kept language, its last line a comment.
+    const KEPT: [(&str, &str); 17] = [
+        ("main.rs", "fn main() { let x = 1; } // one"),
+        ("pyproject.toml", "name = \"x\" # the name"),
+        ("flake.nix", "{ pkgs, ... }: let x = 1; in x # one"),
+        ("init.lua", "local x = { 1, \"a\" } -- one"),
+        ("build.zig", "const x: u8 = 1; // one"),
+        ("README.md", "# Title\n\n```rust\nlet x = 1; // one"),
+        ("main.go", "func main() { x := 1 } // one"),
+        ("app.py", "def f(x): return re.match(r\"a+\", x)  # one"),
+        ("app.ts", "const x: number = 1; // one"),
+        ("app.tsx", "const x = <div>{1}</div>; // one"),
+        ("app.js", "const x = /a+/.test(\"a\"); // one"),
+        ("main.c", "int main(void) { return 0; } /* one */"),
+        ("api.h", "#include <stdio.h> /* one */"),
+        ("main.cpp", "auto main() -> int { return 0; } // one"),
+        ("run.sh", "echo \"$HOME\" | grep -c x # one"),
+        ("data.json", "{\"a\": [1, true]} // one"),
+        ("ci.yaml", "on: [push, 1] # one"),
+    ];
+
+    /// Each line of `text` as `set` styles it, by the role tag in the red channel.
+    fn styled(set: &SyntaxSet, file: &str, text: &str) -> Vec<Vec<(u8, String)>> {
+        let token = file.rsplit_once('.').map_or(file, |(_, ext)| ext);
+        let syntax = set.find_syntax_by_token(token).expect("a syntax");
+        let mut highlighter = HighlightLines::new(syntax, theme());
+        text.lines()
+            .map(|line| {
+                let ended = format!("{line}\n");
+                let ranges = highlighter
+                    .highlight_line(&ended, set)
+                    .expect("highlighted");
+                ranges
+                    .into_iter()
+                    .map(|(style, text)| (style.foreground.r, text.to_owned()))
+                    .collect()
+            })
+            .collect()
+    }
+
     #[test]
     fn the_files_a_project_is_made_of_are_highlighted_too() {
-        for (file, text) in [
-            ("pyproject.toml", "name = \"x\" # the name"),
-            ("flake.nix", "{ pkgs, ... }: let x = 1; in x # one"),
-            ("app.ts", "const x: number = 1; // one"),
-        ] {
+        for (file, text) in KEPT {
             let lines = code(text, file);
+            let last = lines.last().expect("a line");
             assert!(
-                lines[0].iter().any(|span| span.role == Role::Comment),
-                "{file} came out plain: {:?}",
-                lines[0]
+                last.iter().any(|span| span.role == Role::Comment),
+                "{file} came out plain: {last:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_kept_language_is_highlighted_as_bats_whole_set_does() {
+        let whole = two_face::syntax::extra_newlines();
+        for (file, text) in KEPT {
+            assert_eq!(
+                styled(syntaxes(), file, text),
+                styled(&whole, file, text),
+                "{file}"
             );
         }
     }
@@ -208,6 +261,10 @@ mod tests {
     #[test]
     fn a_language_nobody_knows_is_plain() {
         assert_eq!(code("a = b", "notes.zzz"), crate::paint::plain("a = b"));
+        assert_eq!(
+            code("x = 1 # one", "app.rb"),
+            crate::paint::plain("x = 1 # one")
+        );
     }
 
     #[test]

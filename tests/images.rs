@@ -76,6 +76,21 @@ fn read_delivers_a_typed_image_and_plain_text_still_works() {
 }
 
 #[test]
+fn read_refuses_a_bmp_by_name() {
+    let dir = fixture("bmp");
+    let bmp = dir.join("work/image.bmp");
+    std::fs::write(
+        &bmp,
+        b"BM\x3a\0\0\0\0\0\0\0\x36\0\0\0\x28\0\0\0\x01\0\0\0\x01\0\0\0\x01\0\x18\0",
+    )
+    .expect("bmp");
+    let ran = read(&dir, &bmp, false);
+    assert!(ran.failed, "{}", ran.said);
+    assert!(ran.images.is_empty());
+    assert!(ran.said.contains("BMP images are not read"), "{}", ran.said);
+}
+
+#[test]
 fn image_reads_cannot_cross_the_jail() {
     let dir = fixture("jail");
     let allowed = dir.join("work/allowed.png");

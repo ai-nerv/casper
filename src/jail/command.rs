@@ -72,6 +72,13 @@ impl Jail {
             path
         };
         prepared.env = policy::environment(&self.home, &tmp, extra);
+        let grammars = grammars(program, args, &crate::shelf::Shelf::from_env());
+        if let Some(roots) = std::env::join_paths(grammars.iter().filter_map(|bin| bin.parent()))
+            .ok()
+            .filter(|roots| !roots.is_empty())
+        {
+            prepared.env.push((crate::shelf::NAMED.into(), roots));
+        }
         let filters = vec![
             super::filter(grants.reach),
             super::filter::families(bwrap.is_some()),
@@ -84,9 +91,9 @@ impl Jail {
             use std::os::fd::AsRawFd;
             let bwrap = policy::launcher(Path::new(&bwrap), &protected)?;
             let mut wrapped = super::profile(&self.cwd, grants);
-            if let Some(own) = itself(program) {
-                let (at, own) = (wrapped.len() - 2, own.display().to_string());
-                wrapped.splice(at..at, ["--ro-bind".to_owned(), own.clone(), own]);
+            for run in itself(program).iter().chain(&grammars) {
+                let (at, run) = (wrapped.len() - 2, run.display().to_string());
+                wrapped.splice(at..at, ["--ro-bind".to_owned(), run.clone(), run]);
             }
             prepared.descriptors = policy::bindings(&mut wrapped, &protected, &bwrap)?;
             wrapped.truncate(wrapped.len() - 2);
@@ -114,12 +121,12 @@ impl Jail {
             let mut granted = grants.clone();
             granted.tmp = Some(tmp);
             policy::validate(&self.cwd, &granted, &protected)?;
-            let ruleset = super::ruleset(&self.cwd, &granted, &protected, terminal)
+            let mut ruleset = super::ruleset(&self.cwd, &granted, &protected, terminal)
                 .ok_or_else(|| std::io::Error::other("required Landlock protection unavailable"))?;
-            prepared.landlock = Some(match itself(program) {
-                Some(own) => policy::executable(ruleset, &own, &protected)?,
-                None => ruleset,
-            });
+            for run in itself(program).iter().chain(&grammars) {
+                ruleset = policy::executable(ruleset, run, &protected)?;
+            }
+            prepared.landlock = Some(ruleset);
             let persistent = super::persistent(&self.cwd, grants);
             prepared.guard = Some(super::guard::Guard::take(&self.cwd, persistent)?);
         }
@@ -132,6 +139,21 @@ impl Jail {
 fn itself(program: &str) -> Option<PathBuf> {
     let own = std::env::current_exe().ok()?;
     (Path::new(program) == own).then_some(own)
+}
+
+/// The grammar directories on `shelf` that `program` may read and run from: every one for
+/// `casper code`, and only its own when it is a grammar's program.
+fn grammars(program: &str, args: &[String], shelf: &crate::shelf::Shelf) -> Vec<PathBuf> {
+    let bins = shelf.bins();
+    if itself(program).is_some() && args.first().is_some_and(|verb| verb == "code") {
+        return bins;
+    }
+    let Ok(program) = std::fs::canonicalize(program) else {
+        return Vec::new();
+    };
+    bins.into_iter()
+        .filter(|bin| program.parent() == Some(bin.as_path()))
+        .collect()
 }
 
 /// The abstract-socket scope bubblewrap runs under, so the jail cannot reach the host's abstract
@@ -313,5 +335,29 @@ mod tests {
             Some(&Some(OsStr::new("/opt/bin")))
         );
         assert_eq!(env.len(), 2, "{env:?}");
+    }
+
+    #[test]
+    fn only_code_and_a_grammars_own_program_reach_the_grammar_directories() {
+        use crate::scratch::Scratch;
+        let (a, b) = (Scratch::new("grants", "a"), Scratch::new("grants", "b"));
+        for root in [&a, &b] {
+            std::fs::create_dir(root.join("bin")).expect("bin");
+        }
+        std::fs::write(b.join("bin/rust"), "").expect("rust");
+        let gone = PathBuf::from("/nonexistent");
+        let shelf = crate::shelf::Shelf::at(vec![a.to_path_buf(), b.to_path_buf(), gone]);
+        let bins = |program: &str, args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+            grammars(program, &args, &shelf)
+        };
+        let bin = |root: &Scratch| std::fs::canonicalize(root.join("bin")).expect("bin");
+        let own = std::env::current_exe().expect("this executable");
+        let own = own.display().to_string();
+        assert_eq!(bins(&own, &["code", "x.rs"]), [bin(&a), bin(&b)]);
+        assert!(bins(&own, &["image", "x.png"]).is_empty());
+        assert!(bins("sh", &["-c", "code"]).is_empty());
+        let rust = b.join("bin/rust").display().to_string();
+        assert_eq!(bins(&rust, &[]), [bin(&b)]);
     }
 }

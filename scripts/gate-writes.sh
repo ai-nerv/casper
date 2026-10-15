@@ -29,6 +29,10 @@
 #                         filesystem the casper process touches beyond the manifest and the log.
 #   src/jail/guard.rs     the Landlock path's guard. After a jailed command it puts back the files
 #                         bubblewrap would have bound read-only, and removes what appeared there.
+#   src/grammars/building.rs
+#                         `casper grammar build`, run by a person: the build and bin directories
+#                         under the grammars directory, the driver's source, and each program
+#                         moved into place once linked.
 #
 # And removal is narrower than writing: only the scratch helper, the socket door, the jail's
 # temporary directory and the guard may unlink, so a delete added elsewhere is a finding even in a
@@ -40,7 +44,7 @@ ROOT="${GATE_ROOT:-src}"
 
 # May write. Adding to this list is a deliberate act; the point is that it cannot happen by
 # accident.
-WRITERS='src/acknowledged.rs src/noted.rs src/scratch.rs src/serving.rs src/jail/temporary.rs src/jail/guard.rs'
+WRITERS='src/acknowledged.rs src/noted.rs src/scratch.rs src/serving.rs src/jail/temporary.rs src/jail/guard.rs src/grammars/building.rs'
 
 # May remove. The scratch helper owns what it removes; the socket door clears a dead daemon's file;
 # the guard removes what a jailed command left at a protected path.
@@ -80,7 +84,9 @@ without_tests() {
 found_outside() {
   allowed=$1
   pattern=$2
-  find "$ROOT" -name '*.rs' -not -path '*/target/*' | sort | while IFS= read -r file; do
+  # A `tests.rs` or `*_tests.rs` is a `#[cfg(test)]` module kept in a file of its own.
+  find "$ROOT" -name '*.rs' -not -path '*/target/*' -not -name 'tests.rs' -not -name '*_tests.rs' |
+    sort | while IFS= read -r file; do
     for ok in $allowed; do
       [ "$file" = "$ok" ] && continue 2
     done

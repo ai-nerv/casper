@@ -24,14 +24,15 @@ is using it.
 casper tools                 # every tool it offers, as declarations a harness can register
 casper run <tool>            # run one; the call arrives as JSON on stdin
 casper surface <tool>        # hold rows on the harness's screen and draw into them
-casper image <path>          # one raster file through the jail, resized as an attachment
+casper image <path>          # one PNG, JPEG, GIF or WebP through the jail, resized as an attachment
 casper code <path>           # a source file's skeleton, or a directory's entries
+casper grammar fetch|build|list [lang…]   # the parsers code reads with, built here
 ```
 
 | | |
 |---|---|
-| `read` `write` `edit` | read a file, write one, change one — a highlighted file or a coloured diff on screen; an image is read as a resized attachment |
-| `code` | a source file's skeleton — imports, types, signatures, each with its line range — parsed with tree-sitter by casper run inside the jail; a directory lists its entries |
+| `read` `write` `edit` | read a file, write one, change one — a highlighted file or a coloured diff on screen (Rust, C, C++, Go, Python, JavaScript, TypeScript, Lua, Zig, Nix, shell, TOML, YAML, JSON and Markdown; anything else plain); a PNG, JPEG, GIF or WebP image is read as a resized attachment, a BMP is refused |
+| `code` | a source file's skeleton — imports, types, signatures, each with its line range — parsed with tree-sitter by casper run inside the jail, from grammars you build (below); a directory lists its entries |
 | `ls` `tree` `sese` | look around a directory, draw its shape, and search a repository by meaning |
 | `execute` | a Python script in which `read`, `code`, `ls` and `tree` are async functions: several looks, and filtering what they return, in one call |
 | `shell` | run a command, and remember where it ran for the session that called: the process that started casper, never a session a call names, and nothing remembered without one |
@@ -65,6 +66,33 @@ tool of your own goes in the same file.
 
 `code` is a port of [maki](https://github.com/tontinton/maki)'s `index` tool, under its MIT
 license: see [THIRD_PARTY.md](THIRD_PARTY.md).
+
+## Grammars for `code`
+
+No tree-sitter grammar is compiled into casper. Like Helix's `hx --grammar fetch` and
+`hx --grammar build`, casper fetches each grammar's source and builds it on your machine, from
+the grammar list Helix pins: `grammars.lock` records Helix's release, each grammar's repository
+and revision, and the tree-sitter runtime they are built against. Nothing is hosted by this
+project, and the network is reached only when you run `fetch`.
+
+```sh
+casper grammar fetch           # clone every pinned revision, and the runtime, with git
+casper grammar build           # compile each with $CC or cc into one program per language
+casper grammar list            # each language: built, stale, fetched or missing
+casper grammar build rust go   # or only the languages named
+```
+
+They land in `$XDG_DATA_HOME/casper/grammars`: sources under `src/`, and `bin/<language>`, a
+program linked static where the machine can. It reads one file on stdin and writes its syntax
+tree on stdout, capped at 2 MiB in, 2^20 nodes and 48 MiB out. `--dir DIR` fetches and builds
+somewhere else. `CASPER_GRAMMARS` names more directories, separated as `PATH` is, searched before
+that one: how the Nix set below is found. Inside the jail, `casper code` may read and run the
+`bin` directories and nothing else of them.
+
+A language whose grammar is not built answers with what to run; one built from another revision
+than the lock pins says it is stale. `make grammars-lock` regenerates the lock from Helix's
+`languages.toml`; it is never edited by hand. `make grammars` fetches and builds every grammar
+into `target/grammars`, where the tests look when `CASPER_GRAMMARS` names nothing.
 
 ## MCP and web reading
 
@@ -259,5 +287,14 @@ nix build github:ai-nerv/casper
 The flake names the cache itself, so `--accept-flake-config` does the same as `cachix use`. In
 another flake, take `inputs.casper.packages.${system}.default`, and configure the cache on the
 consuming machine: an input's `nixConfig` is not inherited.
+
+`casper-grammars` is every pinned grammar, prebuilt: each fetched by Nix with the lock's hash and
+built static with casper's driver, under `share/casper/grammars/bin`. Point `CASPER_GRAMMARS` at
+`share/casper/grammars` and `code` needs no `casper grammar` at all; the dev shell does this.
+
+```sh
+nix build github:ai-nerv/casper#casper-grammars
+export CASPER_GRAMMARS=$PWD/result/share/casper/grammars
+```
 
 Here, `make nix-build` builds it into `result/`, and `make nix-check` checks the flake.
