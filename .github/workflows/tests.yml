@@ -41,6 +41,17 @@ jobs:
           restore-keys: |
             cargo-${{ runner.os }}-
 
+      # The grammars `code` parses with, fetched and built into target/grammars, where the suite
+      # looks: casper ships none, so a fresh runner has none. `make grammars` does the same.
+      - name: Grammars
+        run: |
+          nix develop --command cargo run --quiet --bin casper -- \
+            grammar fetch --dir "$PWD/target/grammars" > "$RUNNER_TEMP/grammars.json"
+          grep -q '^{"ok":true,' "$RUNNER_TEMP/grammars.json" || {
+            cat "$RUNNER_TEMP/grammars.json"
+            exit 1
+          }
+
       - name: Verify
         run: |
           nix develop --command cargo fmt --all -- --check

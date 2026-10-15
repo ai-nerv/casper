@@ -100,9 +100,11 @@ no rust grammar yet: run `casper grammar fetch rust` (or `casper grammar fetch` 
 that needs git and a C compiler
 ```
 
-One built from another revision than the lock pins says it is stale. `make grammars-lock` regenerates the lock from Helix's
-`languages.toml`; it is never edited by hand. `make grammars` fetches and builds every grammar
-into `target/grammars`, where the tests look when `CASPER_GRAMMARS` names nothing.
+One built from another revision than the lock pins says it is stale. `make grammars-lock`
+regenerates the lock from Helix's `languages.toml`; it is never edited by hand. `make grammars`
+fetches and builds every grammar into `target/grammars`, where the tests look when
+`CASPER_GRAMMARS` names nothing; `make test` and `make verify` run it first when
+`target/grammars/bin` is not there.
 
 ## MCP and web reading
 
