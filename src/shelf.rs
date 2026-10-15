@@ -1,6 +1,7 @@
 //! Where `code` finds the program it parses a language with: `bin/<language>` under each
 //! directory [`NAMED`] lists, then under `$XDG_DATA_HOME/casper/grammars`, where
-//! `casper grammar build` leaves them.
+//! `casper grammar build` leaves them, then under each `$XDG_DATA_DIRS` entry's
+//! `casper/grammars`, where a Nix profile or a system package puts a prebuilt set.
 //!
 //! Nothing here builds or runs one. The jail reads [`Shelf::bins`] to grant those directories, the
 //! indexer reads [`Shelf::find`], and `casper grammar` builds into [`home`].
@@ -18,10 +19,12 @@ pub struct Shelf {
 }
 
 impl Shelf {
-    /// [`NAMED`]'s directories, then [`home`].
+    /// [`NAMED`]'s directories, then [`home`], then [`shared`].
     #[must_use]
     pub fn from_env() -> Self {
-        Self::then(home())
+        let mut shelf = Self::then(home());
+        shelf.roots.extend(shared());
+        shelf
     }
 
     /// [`NAMED`]'s directories, then `last`.
@@ -96,6 +99,31 @@ pub fn home() -> Option<PathBuf> {
     Some(data.join("casper/grammars"))
 }
 
+/// `casper/grammars` under each `$XDG_DATA_DIRS` entry (`/usr/local/share:/usr/share` when unset),
+/// kept only where [`sealed`] holds for its `bin`.
+#[must_use]
+pub fn shared() -> Vec<PathBuf> {
+    let dirs = std::env::var_os("XDG_DATA_DIRS")
+        .filter(|dirs| !dirs.is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    std::env::split_paths(&dirs)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join("casper/grammars"))
+        .filter(|root| sealed(&root.join("bin")))
+        .collect()
+}
+
+/// Whether `dir` resolves to a directory owned by this user or root that nobody else can write.
+#[must_use]
+pub fn sealed(dir: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = std::fs::canonicalize(dir).and_then(std::fs::metadata) else {
+        return false;
+    };
+    let me = rustix::process::getuid().as_raw();
+    meta.is_dir() && (meta.uid() == 0 || meta.uid() == me) && meta.mode() & 0o022 == 0
+}
+
 /// A language name: letters, digits and `_`, and nothing a path could be built from.
 #[must_use]
 pub fn plain(language: &str) -> bool {
@@ -130,6 +158,26 @@ mod tests {
         assert_eq!(shelf.find("go"), Some(first.join("bin/go")));
         assert_eq!(shelf.find("zig"), None);
         assert_eq!(shelf.bins().len(), 2);
+    }
+
+    #[test]
+    fn a_shared_set_counts_only_when_nobody_else_can_change_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = Scratch::new("shelf", "shared");
+        let bin = root.join("bin");
+        std::fs::create_dir(&bin).expect("bin");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("755");
+        assert!(sealed(&bin), "a 0755 directory of this user's");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o777)).expect("777");
+        assert!(!sealed(&bin), "a directory anyone can write");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("755");
+        let link = root.join("profile");
+        std::os::unix::fs::symlink(&bin, &link).expect("symlink");
+        assert!(
+            sealed(&link),
+            "a profile's link is judged by what it points at"
+        );
+        assert!(!sealed(&root.join("absent")));
     }
 
     #[test]

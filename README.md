@@ -289,12 +289,16 @@ another flake, take `inputs.casper.packages.${system}.default`, and configure th
 consuming machine: an input's `nixConfig` is not inherited.
 
 `casper-grammars` is every pinned grammar, prebuilt: each fetched by Nix with the lock's hash and
-built static with casper's driver, under `share/casper/grammars/bin`. Point `CASPER_GRAMMARS` at
-`share/casper/grammars` and `code` needs no `casper grammar` at all; the dev shell does this.
+built static with casper's driver, under `share/casper/grammars/bin`. casper looks for it under
+every `$XDG_DATA_DIRS` entry, which a Nix profile already lists, so installing it is the whole
+setup and `code` needs no `casper grammar` at all:
 
 ```sh
-nix build github:ai-nerv/casper#casper-grammars
-export CASPER_GRAMMARS=$PWD/result/share/casper/grammars
+nix profile install github:ai-nerv/casper#casper-grammars
 ```
+
+Elsewhere, point `CASPER_GRAMMARS` at `share/casper/grammars`, as the dev shell does. It is
+searched first, then `~/.local/share/casper/grammars`, then the data directories. A data directory
+counts only when its `bin` is owned by you or root and nobody else can write it.
 
 Here, `make nix-build` builds it into `result/`, and `make nix-check` checks the flake.
