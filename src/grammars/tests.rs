@@ -104,6 +104,15 @@ fn each_language_lists_as_built_stale_fetched_or_missing() {
     std::fs::create_dir_all(root.join("bin")).expect("bin");
     std::fs::copy(built.find("rust").expect("rust"), root.join("bin/rust")).expect("rust");
     std::fs::copy(built.find("go").expect("go"), root.join("bin/json")).expect("json");
+    // `ETXTBSY` while a fork on another thread still holds a descriptor the copy wrote through.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    for copied in ["bin/rust", "bin/json"] {
+        let program = root.join(copied).display().to_string();
+        while crate::running::run(&program, &["--rev".to_owned()]).code != 0 {
+            assert!(std::time::Instant::now() < deadline, "{copied} never ran");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
     std::fs::create_dir_all(root.join("src/zig/.git")).expect("zig");
     std::fs::write(
         root.join("src/zig/.git/HEAD"),

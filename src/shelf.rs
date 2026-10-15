@@ -1,14 +1,14 @@
 //! Where `code` finds the program it parses a language with: `bin/<language>` under each
 //! directory [`NAMED`] lists, then under `$XDG_DATA_HOME/casper/grammars`, where
-//! `casper grammar build` leaves them.
+//! `casper grammar fetch` builds them.
 //!
 //! Nothing here builds or runs one. The jail reads [`Shelf::bins`] to grant those directories, the
 //! indexer reads [`Shelf::find`], and `casper grammar` builds into [`home`].
 
 use std::path::{Path, PathBuf};
 
-/// Directories searched before the data directory, separated as `PATH` is: how a set built by Nix
-/// is found.
+/// Directories searched before the data directory, separated as `PATH` is: how the tests and the
+/// jail name a set somewhere else.
 pub const NAMED: &str = "CASPER_GRAMMARS";
 
 /// The grammar directories, in the order they are searched.

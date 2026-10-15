@@ -208,6 +208,7 @@ fn fitted(text: String) -> String {
 /// The indexer's VM: casper's guarded VM, `treesitter`, and `require` over the embedded Lua.
 pub struct Indexer {
     lua: Lua,
+    unbuilt: treesitter::Unbuilt,
 }
 
 impl Indexer {
@@ -228,8 +229,9 @@ impl Indexer {
         shelf: crate::shelf::Shelf,
     ) -> Result<Self, String> {
         let mut lua = crate::lua::engine::guarded();
+        let unbuilt = treesitter::Unbuilt::default();
         lua.enter(|ctx| {
-            treesitter::install(ctx, until, shelf);
+            treesitter::install(ctx, until, shelf, std::rc::Rc::clone(&unbuilt));
             let modules = luna::Table::new(&ctx);
             for (name, source) in MODULES.iter().chain(more) {
                 let source = luna::String::from_slice(&ctx, source.as_bytes());
@@ -237,7 +239,7 @@ impl Indexer {
             }
             ctx.set_global("__modules", modules);
         });
-        let mut indexer = Self { lua };
+        let mut indexer = Self { lua, unbuilt };
         indexer.run(REQUIRE, "require")?;
         Ok(indexer)
     }
@@ -258,15 +260,20 @@ impl Indexer {
     /// The skeleton of `source`, read as `language`.
     ///
     /// # Errors
-    /// Why the indexer could not walk it.
+    /// Why the indexer could not walk it, or, when its grammar is not built, the command that
+    /// builds it as [`crate::grammars::unbuilt`] words it.
     pub fn index(&mut self, source: &[u8], language: &str) -> Result<String, String> {
+        self.unbuilt.take();
         self.set("__code_in", source);
         self.set("__code_lang", language.as_bytes());
         self.run(
             "__code_out, __code_why = require('code').index(__code_in, __code_lang)",
             "index",
         )?;
-        self.answer()
+        self.answer().map_err(|why| match self.unbuilt.take() {
+            Some(notice) if why.ends_with(&notice) => notice,
+            _ => why,
+        })
     }
 
     /// What the last call left: its answer, or why there was none.

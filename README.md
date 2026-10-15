@@ -76,23 +76,35 @@ and revision, and the tree-sitter runtime they are built against. Nothing is hos
 project, and the network is reached only when you run `fetch`.
 
 ```sh
-casper grammar fetch           # clone every pinned revision, and the runtime, with git
-casper grammar build           # compile each with $CC or cc into one program per language
+casper grammar fetch           # clone every pinned revision and the runtime with git, then build each
+casper grammar fetch rust go   # or only the languages named
+casper grammar build           # compile what is fetched again, with $CC or cc, one program per language
 casper grammar list            # each language: built, stale, fetched or missing
-casper grammar build rust go   # or only the languages named
 ```
+
+`fetch` is the one command that gets a language working: it needs git and a C compiler, and it
+builds whatever it fetched. `build` compiles sources already fetched again, without the network.
 
 They land in `$XDG_DATA_HOME/casper/grammars`: sources under `src/`, and `bin/<language>`, a
 program linked static where the machine can. It reads one file on stdin and writes its syntax
 tree on stdout, capped at 2 MiB in, 2^20 nodes and 48 MiB out. `--dir DIR` fetches and builds
 somewhere else. `CASPER_GRAMMARS` names more directories, separated as `PATH` is, searched before
-that one: how the Nix set below is found. Inside the jail, `casper code` may read and run the
-`bin` directories and nothing else of them.
+that one. Inside the jail, `casper code` may read and run the `bin` directories and nothing else
+of them.
 
-A language whose grammar is not built answers with what to run; one built from another revision
-than the lock pins says it is stale. `make grammars-lock` regenerates the lock from Helix's
-`languages.toml`; it is never edited by hand. `make grammars` fetches and builds every grammar
-into `target/grammars`, where the tests look when `CASPER_GRAMMARS` names nothing.
+A language whose grammar is not built answers with what to run, in the tool's result for the
+model and on screen for you:
+
+```text
+no rust grammar yet: run `casper grammar fetch rust` (or `casper grammar fetch` for every language)
+that needs git and a C compiler
+```
+
+One built from another revision than the lock pins says it is stale. `make grammars-lock`
+regenerates the lock from Helix's `languages.toml`; it is never edited by hand. `make grammars`
+fetches and builds every grammar into `target/grammars`, where the tests look when
+`CASPER_GRAMMARS` names nothing; `make test` and `make verify` run it first when
+`target/grammars/bin` is not there.
 
 ## MCP and web reading
 
@@ -288,13 +300,7 @@ The flake names the cache itself, so `--accept-flake-config` does the same as `c
 another flake, take `inputs.casper.packages.${system}.default`, and configure the cache on the
 consuming machine: an input's `nixConfig` is not inherited.
 
-`casper-grammars` is every pinned grammar, prebuilt: each fetched by Nix with the lock's hash and
-built static with casper's driver, under `share/casper/grammars/bin`. Point `CASPER_GRAMMARS` at
-`share/casper/grammars` and `code` needs no `casper grammar` at all; the dev shell does this.
-
-```sh
-nix build github:ai-nerv/casper#casper-grammars
-export CASPER_GRAMMARS=$PWD/result/share/casper/grammars
-```
+The package carries no grammars, and Nix builds none: the first time `code` meets a language it
+says to run `casper grammar fetch`, as anywhere else.
 
 Here, `make nix-build` builds it into `result/`, and `make nix-check` checks the flake.

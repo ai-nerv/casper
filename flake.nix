@@ -23,8 +23,6 @@
     { nixpkgs, flake-utils, nixgl, rust-overlay, ... }:
     let
       manifest = builtins.fromTOML (builtins.readFile ./Cargo.toml);
-      # The grammars `code` parses with, as `make grammars-lock` pinned them from Helix's list.
-      grammarLock = builtins.fromJSON (builtins.readFile ./grammars.lock);
 
       # The static binary, with the shipped configuration beside it.
       packaged = flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (
@@ -32,81 +30,6 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
           lib = pkgs.lib;
-          static = pkgs.pkgsStatic;
-          # Build paths in objects name /build, wherever the build ran.
-          remap = ''
-            export NIX_CFLAGS_COMPILE="''${NIX_CFLAGS_COMPILE:-} -ffile-prefix-map=$NIX_BUILD_TOP=/build"
-          '';
-
-          # One fixed-output fetch per pin, its hash from the lock.
-          fetched =
-            pin:
-            pkgs.fetchgit {
-              url = pin.git;
-              inherit (pin) rev hash;
-              fetchSubmodules = false;
-            };
-          treeSitter = fetched grammarLock.runtime;
-          runtimeObject = static.stdenv.mkDerivation {
-            pname = "casper-grammar-runtime";
-            version = grammarLock.runtime.tag;
-            src = treeSitter;
-            dontConfigure = true;
-            buildPhase = ''
-              ${remap}
-              $CC -c -O2 -w -std=c11 -D_POSIX_C_SOURCE=200112L -D_DEFAULT_SOURCE \
-                -Ilib/include -Ilib/src -Ilib/src/wasm lib/src/lib.c -o tree-sitter.o
-            '';
-            installPhase = "install -Dm644 tree-sitter.o $out/tree-sitter.o";
-          };
-          # A language's program, compiled as `casper grammar build` compiles it.
-          grammar =
-            language: pin:
-            static.stdenv.mkDerivation {
-              pname = "casper-grammar-${language}";
-              version = builtins.substring 0 12 pin.rev;
-              src = fetched pin;
-              dontConfigure = true;
-              buildPhase = ''
-                ${remap}
-                g=${if pin ? subpath then "${pin.subpath}/src" else "src"}
-                link=$CC
-                $CC -c -O2 -w -std=gnu11 -I"$g" "$g/parser.c" -o parser_c.o
-                if [ -f "$g/scanner.c" ]; then
-                  $CC -c -O2 -w -std=gnu11 -I"$g" "$g/scanner.c" -o scanner_c.o
-                fi
-                if [ -f "$g/scanner.cc" ]; then
-                  $CXX -c -O2 -w -std=c++14 -I"$g" "$g/scanner.cc" -o scanner_cc.o
-                  link=$CXX
-                fi
-                $CC -c -O2 -std=c11 -D_POSIX_C_SOURCE=200809L -I${treeSitter}/lib/include \
-                  -DCASPER_LANGUAGE=${pin.symbol} '-DCASPER_REV="${pin.rev}"' \
-                  ${./src/grammars/driver.c} -o driver.o
-                $link -static -s -o program ./*.o ${runtimeObject}/tree-sitter.o
-              '';
-              installPhase = "install -Dm755 program $out/bin/${language}";
-            };
-          casperGrammars = pkgs.runCommand "casper-grammars-${manifest.package.version}" {
-            meta = {
-              description = "The parsers casper's code tool reads with, one static program per language";
-              license = with lib.licenses; [
-                mit
-                asl20
-                cc0
-              ];
-              platforms = [
-                "x86_64-linux"
-                "aarch64-linux"
-              ];
-            };
-          } ''
-            mkdir -p $out/share/casper/grammars/bin
-            ${lib.concatStrings (
-              lib.mapAttrsToList (language: pin: ''
-                cp ${grammar language pin}/bin/${language} $out/share/casper/grammars/bin/
-              '') grammarLock.grammars
-            )}
-          '';
           # rustc 1.95, the floor monty sets, for the static target: this nixpkgs ships 1.94.
           toolchain =
             (rust-overlay.lib.mkRustBin { } pkgs.pkgsStatic.buildPackages).stable."1.95.0".minimal;
@@ -180,14 +103,10 @@
               test -s "$out/share/casper/config/clients/hexe.lua"
               test "$(ls "$out/bin")" = casper
 
-              # `code` names a grammar nobody built, and reads one that is.
+              # `code` names a grammar nobody fetched, and the command that fetches it.
               printf 'fn main() {}\n' > "$TMPDIR/smoke.rs"
               isolated code "$TMPDIR/smoke.rs" > "$TMPDIR/unbuilt.json"
-              grep -q 'no rust grammar built' "$TMPDIR/unbuilt.json"
-              env -i PATH="$PATH" HOME="$home" \
-                CASPER_GRAMMARS=${casperGrammars}/share/casper/grammars \
-                "$binary" code "$TMPDIR/smoke.rs" > "$TMPDIR/code.json"
-              grep -q '"skeleton":"fns:\\n  main() \[1\]"' "$TMPDIR/code.json"
+              grep -q 'no rust grammar yet: run `casper grammar fetch rust`' "$TMPDIR/unbuilt.json"
 
               if readelf -l "$binary" | grep -q 'program interpreter'; then
                 echo "error: $binary requests a dynamic loader" >&2
@@ -222,7 +141,6 @@
           packages = {
             default = casper;
             inherit casper;
-            casper-grammars = casperGrammars;
           };
           apps = {
             default = app;
@@ -230,7 +148,6 @@
           };
           checks = {
             inherit casper;
-            casper-grammars = casperGrammars;
           };
         }
       );
@@ -303,7 +220,7 @@
         };
       in
       {
-        devShells.default = pkgs.mkShell ({
+        devShells.default = pkgs.mkShell {
           packages = [
             rust
             pkgs.rust-analyzer
@@ -352,10 +269,7 @@
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath guiLibs;
           WGPU_VALIDATION = "0";
           WGPU_DEBUG = "0";
-        } // pkgs.lib.optionalAttrs (packaged.packages ? ${system}) {
-          # The grammars the suite parses with, prebuilt: see `casper grammar`.
-          CASPER_GRAMMARS = "${packaged.packages.${system}.casper-grammars}/share/casper/grammars";
-        });
+        };
       }
     ));
 }

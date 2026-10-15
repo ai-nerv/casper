@@ -352,25 +352,31 @@ make.recipe{
   end,
 }
 
--- Outside Nix: every pinned grammar fetched and built into target/grammars, where the tests look
--- when CASPER_GRAMMARS names nothing.
+-- Every pinned grammar fetched and built into target/grammars, where the tests look when
+-- CASPER_GRAMMARS names nothing. Needs the network, git and a C compiler.
 make.recipe{
   name = "grammars",
   desc = "fetch and build every grammar into target/grammars, for the tests",
   run = function()
     local dir = oslo.sys.pwd() .. "/target/grammars"
-    for _, action in ipairs{ "fetch", "build" } do
-      local ran = oslo.run{ "cargo", "run", "--quiet", "--release", "--bin", NAME, "--",
-                            "grammar", action, "--dir", dir, capture = true }
-      assert(ran.ok and (ran.out or ""):find('"ok":true', 1, true),
-             ("casper grammar %s failed\n%s%s"):format(action, ran.err or "", ran.out or ""))
-    end
+    local ran = oslo.run{ "cargo", "run", "--quiet", "--bin", NAME, "--",
+                          "grammar", "fetch", "--dir", dir, capture = true }
+    assert(ran.ok and (ran.out or ""):find('"ok":true', 1, true),
+           ("casper grammar fetch failed\n%s%s"):format(ran.err or "", ran.out or ""))
     print("grammars built in " .. dir)
   end,
 }
 
+-- The grammars the suite parses with, fetched first when nothing names a set and none is built.
+local function grammars_if_missing()
+  local named = os.getenv("CASPER_GRAMMARS")
+  if (named == nil or named == "") and not oslo.fs.exists("target/grammars/bin") then
+    make.run("grammars")
+  end
+end
+
 make.recipe{ name = "test", desc = "the suite",
-             run = function() sh.cargo("test", "--all-targets") end }
+             run = function() grammars_if_missing(); sh.cargo("test", "--all-targets") end }
 make.alias("t", "test")
 
 make.recipe{ name = "test-pty-lifecycle", desc = "PTY EOF and process exit boundaries",
@@ -383,7 +389,10 @@ make.recipe{ name = "test-containment", desc = "command and PTY jail boundaries"
              run = function() sh.cargo("test", "--test", "containment", "--", "--nocapture") end }
 
 make.recipe{ name = "test-all", desc = "the suite, with every feature on",
-             run = function() sh.cargo("test", "--all-targets", "--all-features") end }
+             run = function()
+               grammars_if_missing()
+               sh.cargo("test", "--all-targets", "--all-features")
+             end }
 
 make.recipe{ name = "check", desc = "type-check every target",
              run = function() sh.cargo("check", "--all-targets") end }

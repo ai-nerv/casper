@@ -73,9 +73,9 @@ compiling them in, is how Helix's `hx --grammar fetch` and `hx --grammar build` 
 
 ## tree-sitter and the grammars
 
-`casper grammar build` and the `casper-grammars` Nix package compile each grammar with the
-[tree-sitter](https://github.com/tree-sitter/tree-sitter) runtime, tag `v0.27.1`, MIT, and
-`src/grammars/driver.c`. casper itself contains none of them. Each grammar is under its own
-repository's license: MIT for most, Apache-2.0 for `tree-sitter-elixir`, `tree-sitter-gleam` and
-`tree-sitter-hcl`, and CC0-1.0 for `tree-sitter-clojure`. The `casper-grammars` package
-distributes programs built from them.
+`casper grammar fetch` and `casper grammar build` compile each grammar on the user's machine with
+the [tree-sitter](https://github.com/tree-sitter/tree-sitter) runtime, tag `v0.27.1`, MIT, and
+`src/grammars/driver.c`. casper itself contains none of them, and this project distributes no
+program built from them. Each grammar is under its own repository's license: MIT for most,
+Apache-2.0 for `tree-sitter-elixir`, `tree-sitter-gleam` and `tree-sitter-hcl`, and CC0-1.0 for
+`tree-sitter-clojure`.
