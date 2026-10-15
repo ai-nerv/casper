@@ -45,6 +45,7 @@ fn main() -> std::process::ExitCode {
         );
         return std::process::ExitCode::SUCCESS;
     }
+    casper::web::crypto();
     let verb = args.first().map_or("help", String::as_str);
     if verb == "mcp" {
         let runtime = match tokio::runtime::Builder::new_multi_thread()

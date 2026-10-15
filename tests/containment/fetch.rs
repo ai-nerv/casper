@@ -94,8 +94,9 @@ fn probe() {
         resolved.iter().any(|at| at.ip().is_loopback()),
         "{resolved:?}"
     );
+    casper::web::crypto();
     let client = reqwest::blocking::Client::builder()
-        .danger_accept_invalid_certs(true)
+        .tls_danger_accept_invalid_certs(true)
         .timeout(Duration::from_secs(15))
         .build()
         .expect("HTTPS client");

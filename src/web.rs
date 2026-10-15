@@ -49,6 +49,12 @@ impl Settings {
     }
 }
 
+/// ring as the process's rustls provider, which an HTTP client that names none builds on. The
+/// first call installs it; a later one finds it there.
+pub fn crypto() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 pub fn run(arguments: Value, configuration: Option<&Value>) -> Result<Value, String> {
     if !crate::jail::Jail::from_env().allows_network() {
         return Err("web access requires the jail's reach grant".into());
