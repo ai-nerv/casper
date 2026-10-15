@@ -3,9 +3,11 @@
 //!
 //! The model never reaches this in casper's own process. The `code` tool runs `casper code PATH`
 //! through [`crate::lua::exec`], so the file is read and parsed inside the jail, by a process that
-//! sees only what a command could. The Lua is maki's, embedded: see `THIRD_PARTY.md`.
+//! sees only what a command could. The tree comes from the language's program, which
+//! `casper grammar` built; see [`crate::grammars`]. The Lua is maki's, embedded: see
+//! `THIRD_PARTY.md`.
 
-mod grammars;
+mod tree;
 mod treesitter;
 
 use luna::{Closure, Executor, Lua, Value};
@@ -214,15 +216,20 @@ impl Indexer {
     /// # Errors
     /// When the embedded Lua will not load, which is a build that should not have shipped.
     pub fn new() -> Result<Self, String> {
-        Self::with(&[], Instant::now() + crate::running::READING)
+        let until = Instant::now() + crate::running::READING;
+        Self::with(&[], until, crate::shelf::Shelf::from_env())
     }
 
     /// A VM holding `more` beside the embedded modules, under the same `require`, whose tree
-    /// calls refuse once `until` has passed.
-    fn with(more: &[(&str, &str)], until: Instant) -> Result<Self, String> {
+    /// calls refuse once `until` has passed and whose parsers are found on `shelf`.
+    fn with(
+        more: &[(&str, &str)],
+        until: Instant,
+        shelf: crate::shelf::Shelf,
+    ) -> Result<Self, String> {
         let mut lua = crate::lua::engine::guarded();
         lua.enter(|ctx| {
-            treesitter::install(ctx, until);
+            treesitter::install(ctx, until, shelf);
             let modules = luna::Table::new(&ctx);
             for (name, source) in MODULES.iter().chain(more) {
                 let source = luna::String::from_slice(&ctx, source.as_bytes());

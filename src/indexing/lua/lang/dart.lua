@@ -20,21 +20,97 @@ return function(U)
     operator_signature = true,
   }
 
+  -- The grammar Helix pins writes a type as its parts, unwrapped and unnamed.
+  local TYPE_KINDS = {
+    type_identifier = true,
+    type_arguments = true,
+    nullable_type = true,
+    function_type = true,
+    void_type = true,
+    record_type = true,
+  }
+
+  local function byte_at(node)
+    return select(3, node:start())
+  end
+
   local function type_params(node, source)
     local tp_node = node:field("type_parameters")[1]
     return tp_node and get_text(tp_node, source) or ""
   end
 
+  -- The sibling after `node`, for Helix's grammar, which puts a body beside its signature.
+  local function next_sibling(node)
+    local parent = node:parent()
+    if not parent then
+      return nil
+    end
+    local kids = parent:children()
+    for i, kid in ipairs(kids) do
+      if byte_at(kid) == byte_at(node) and kid:type() == node:type() then
+        return kids[i + 1]
+      end
+    end
+    return nil
+  end
+
+  local function body_of(node)
+    local after = next_sibling(node)
+    return after and after:type() == "function_body" and after or nil
+  end
+
+  -- The text of the type parts among `node`'s children, or nil when it has none.
+  local function bare_type(node, source)
+    local first, last
+    for _, child in ipairs(node:children()) do
+      if TYPE_KINDS[child:type()] then
+        first = first or child
+        last = child
+      end
+    end
+    if not first then
+      return nil
+    end
+    return source:sub(byte_at(first) + 1, select(3, last:end_()))
+  end
+
   local function signature_name(sig_node, source)
     local name_nodes = sig_node:field("name")
     if #name_nodes == 0 then
-      return nil
+      local parts = {}
+      for _, n in ipairs(sig_node:children()) do
+        if n:type() == "identifier" then
+          parts[#parts + 1] = get_text(n, source)
+        end
+      end
+      return #parts > 0 and table.concat(parts, ".") or nil
     end
     local parts = {}
     for _, n in ipairs(name_nodes) do
       parts[#parts + 1] = get_text(n, source)
     end
     return table.concat(parts)
+  end
+
+  -- A signature's return type: its field, or in Helix's grammar what comes before its name.
+  local function return_type(sig_node, source)
+    local ret_node = sig_node:field("return_type")[1]
+    if ret_node then
+      return get_text(ret_node, source)
+    end
+    local name = sig_node:field("name")[1]
+    if not name then
+      return nil
+    end
+    local stop = byte_at(name)
+    for _, child in ipairs(sig_node:children()) do
+      local ck = child:type()
+      if (ck == "get" or ck == "set" or ck == "operator") and byte_at(child) < stop then
+        stop = byte_at(child)
+      end
+    end
+    local text = source:sub(byte_at(sig_node) + 1, stop):match("^%s*(.-)%s*$")
+    return text ~= "" and text or nil
   end
 
   local function signature_text(sig_node, source)
@@ -54,8 +130,8 @@ return function(U)
     local tp = tp_node and get_text(tp_node, source) or ""
 
     if kind == "getter_signature" then
-      local ret_node = sig_node:field("return_type")[1]
-      local ret = ret_node and (" " .. get_text(ret_node, source)) or ""
+      local ret_text = return_type(sig_node, source)
+      local ret = ret_text and (" " .. ret_text) or ""
       return compact_ws("get " .. name .. ret)
     end
 
@@ -63,8 +139,7 @@ return function(U)
       return compact_ws("set " .. name .. params)
     end
 
-    local ret_node = sig_node:field("return_type")[1]
-    local ret = ret_node and get_text(ret_node, source)
+    local ret = return_type(sig_node, source)
     if ret == "set" then
       return compact_ws("set " .. name .. params)
     elseif ret == "get" and params == "()" then
@@ -106,14 +181,14 @@ return function(U)
     if id_node:type() == "identifier" then
       name = get_text(id_node, source)
     else
-      local name_node = id_node:field("name")[1]
+      local name_node = id_node:field("name")[1] or find_child(id_node, "identifier")
       if not name_node then
         return nil
       end
       name = get_text(name_node, source)
     end
     if type_node then
-      return name .. " " .. get_text(type_node, source)
+      return name .. " " .. (type(type_node) == "string" and type_node or get_text(type_node, source))
     end
     return name
   end
@@ -127,7 +202,7 @@ return function(U)
   end
 
   local function extract_field_like(node, source, out)
-    local type_node = find_child(node, "type")
+    local type_node = find_child(node, "type") or bare_type(node, source)
     for _, child in ipairs(node:children()) do
       local ckind = child:type()
       local list_kind = FIELD_LIST_KINDS[ckind]
@@ -162,6 +237,14 @@ return function(U)
       return {}
     end
     local kind = actual:type()
+    if kind == "method_signature" then
+      local sig = find_signature(actual)
+      local text = sig and signature_text(sig, source)
+      if not text then
+        return {}
+      end
+      return { ranged(text, format_range(line_start(actual), line_end(body_of(actual) or actual))) }
+    end
     if kind == "method_declaration" or kind == "declaration" then
       local sig = find_signature(actual)
       if sig then
@@ -226,9 +309,17 @@ return function(U)
     extract_nodes = function(node, source, _attrs)
       local kind = node:type()
 
-      if kind == "class_declaration" then
+      if kind == "class_declaration" or kind == "class_definition" then
         local e = extract_classlike(node, source, "class")
         return e and { e } or {}
+      elseif SIG_KINDS[kind] then
+        local text = signature_text(node, source)
+        if not text then
+          return {}
+        end
+        local e = new_entry(SECTION.Function, node, text)
+        e.line_end = line_end(body_of(node) or node)
+        return { e }
       elseif kind == "mixin_declaration" then
         local e = extract_classlike(node, source, "mixin")
         return e and { e } or {}

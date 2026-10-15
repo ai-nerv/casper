@@ -12,6 +12,23 @@ return function(U)
 
   local DEFINE_TRUNCATE = 40
 
+  -- A directive's last line, its own newline included and any blank lines after it not: the
+  -- grammar Helix pins folds those into the directive's newline token.
+  local function directive_end(node)
+    local kids = node:children()
+    for i = #kids, 1, -1 do
+      if kids[i]:type() ~= "\n" then
+        return math.min(U.line_end(node), U.line_end(kids[i]) + 1)
+      end
+    end
+    return U.line_end(node)
+  end
+
+  local function directive(entry, node)
+    entry.line_end = directive_end(node)
+    return entry
+  end
+
   local function extract_include(node, source)
     local path_node = node:field("path")[1]
     if not path_node then
@@ -23,7 +40,7 @@ return function(U)
     for p in cleaned:gmatch("[^/]+") do
       parts[#parts + 1] = p
     end
-    return new_import_entry(node, { parts })
+    return directive(new_import_entry(node, { parts }), node)
   end
 
   local function unwrap_to_fn_declarator(node)
@@ -143,8 +160,9 @@ return function(U)
     end
     local name = get_text(name_node, source)
     local val_node = node:field("value")[1]
-    local val_str = val_node and (" " .. truncate(get_text(val_node, source), DEFINE_TRUNCATE)) or ""
-    return new_entry(SECTION.Constant, node, name .. val_str)
+    local value = val_node and get_text(val_node, source):match("^%s*(.-)%s*$")
+    local val_str = val_node and (" " .. truncate(value, DEFINE_TRUNCATE)) or ""
+    return directive(new_entry(SECTION.Constant, node, name .. val_str), node)
   end
 
   local function extract_declaration(node, source)
@@ -193,7 +211,7 @@ return function(U)
       local name = get_text(name_node, source)
       local params_node = node:field("parameters")[1]
       local params = params_node and get_text(params_node, source) or ""
-      return { new_entry(SECTION.Macro, node, name .. params) }
+      return { directive(new_entry(SECTION.Macro, node, name .. params), node) }
     elseif kind == "function_definition" then
       local sig = build_fn_sig(node, source)
       return sig and { new_entry(SECTION.Function, node, sig) } or {}

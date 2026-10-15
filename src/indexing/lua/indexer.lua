@@ -927,7 +927,10 @@ local function index_source(source, lang_name)
   if not extractor then
     return nil, "unsupported language: " .. tostring(lang_name)
   end
-  local parser = treesitter.get_parser(source, parser_name(lang_name))
+  local parser, missing = treesitter.get_parser(source, parser_name(lang_name))
+  if not parser then
+    return nil, missing
+  end
   local root = parser:parse()[1]:root()
   local skeleton, meta = extractor(source, root)
   -- An empty skeleton reads as "this file declares nothing", and that is the

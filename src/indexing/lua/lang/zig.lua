@@ -113,7 +113,8 @@ return function(U)
     local label = "enum" .. (name ~= "" and (" " .. name) or "")
     local entry = new_entry(SECTION.Type, node, label)
     entry.children = extract_fields_truncated(node, source, "container_field", function(f, src)
-      local field_name_node = f:field("name")[1]
+      -- The grammar Helix pins reads a bare variant as a field's type.
+      local field_name_node = f:field("name")[1] or f:field("type")[1]
       return field_name_node and get_text(field_name_node, src) or "_"
     end)
     entry.child_kind = CHILD_BRIEF

@@ -55,6 +55,59 @@ fn binary_by(
     Ok(bytes)
 }
 
+/// `program` fed `input`, answering its standard output: at most `most` bytes, within `limit`.
+///
+/// # Errors
+/// The first line it wrote to standard error when it failed, or that it wrote too much or ran out
+/// of time.
+pub fn piped(
+    program: &str,
+    input: Vec<u8>,
+    most: usize,
+    limit: Duration,
+) -> Result<Vec<u8>, String> {
+    let jail = crate::jail::Jail::from_env();
+    let mut prepared = jail
+        .prepare(program, &[], None, &[], false)
+        .map_err(|e| format!("jail refused: {e}"))?;
+    let mut command = prepared.command();
+    command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("{program} could not be run: {e}"))?;
+    if let Some(mut pipe) = child.stdin.take() {
+        std::thread::spawn(move || {
+            use std::io::Write as _;
+            let _ = pipe.write_all(&input);
+        });
+    }
+    let ([(out, past), (err, _)], code, overran) = drained(&mut child, limit, most);
+    let restored = prepared.restored();
+    if !restored.is_empty() {
+        return Err(restored.join("; "));
+    }
+    let why = String::from_utf8_lossy(&err)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    if overran {
+        return Err(format!("stopped after {}s", limit.as_secs()));
+    }
+    if past > 0 {
+        return Err(format!("wrote more than {most} bytes"));
+    }
+    match code {
+        Some(0) => Ok(out),
+        Some(code) if !why.is_empty() => Err(format!("{why} (exit {code})")),
+        Some(code) => Err(format!("exited {code}")),
+        None => Err("killed".to_owned()),
+    }
+}
+
 /// One read off a pipe.
 const CHUNK: usize = 8 * 1024;
 

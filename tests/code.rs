@@ -6,19 +6,48 @@
 use casper::scratch::Scratch;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/code/golden");
 
+/// The grammars the suite parses with, as `CASPER_GRAMMARS` carries them: its own value, or where
+/// `make grammars` builds them. Every pinned language must be built there.
+fn grammars() -> OsString {
+    let named = std::env::var_os("CASPER_GRAMMARS")
+        .unwrap_or_else(|| concat!(env!("CARGO_MANIFEST_DIR"), "/target/grammars").into());
+    let shelf = casper::shelf::Shelf::at(std::env::split_paths(&named).collect());
+    let missing: Vec<&str> = casper::grammars::lock()
+        .grammars
+        .keys()
+        .map(String::as_str)
+        .filter(|language| shelf.find(language).is_none())
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "no grammar built for {}: run `oslo make grammars`, or enter `nix develop`, whose \
+         CASPER_GRAMMARS names the casper-grammars package",
+        missing.join(" ")
+    );
+    named
+}
+
 /// What `casper code` answers for `path`, run from `cwd` with no jail.
 fn verb(cwd: &Path, path: &Path) -> Value {
+    verb_with(cwd, path, &grammars())
+}
+
+/// [`verb`], finding its grammars in `named` alone.
+fn verb_with(cwd: &Path, path: &Path, named: &OsStr) -> Value {
     let out = Command::new(env!("CARGO_BIN_EXE_casper"))
         .arg("code")
         .arg(path)
         .current_dir(cwd)
         .env_remove("CASPER_CONFIGURE")
         .env_remove("CASPER_JAIL")
+        .env("CASPER_GRAMMARS", named)
+        .env("XDG_DATA_HOME", "/nonexistent")
         .output()
         .expect("casper");
     serde_json::from_slice(&out.stdout).expect("a reply")
@@ -57,6 +86,7 @@ fn tool(dir: &Scratch, args: Value, jail: Jail) -> Value {
         .env("XDG_CONFIG_HOME", dir.join("config"))
         .env("XDG_DATA_HOME", dir.join("data"))
         .env("HOME", dir.join("home"))
+        .env("CASPER_GRAMMARS", grammars())
         .env_remove("CASPER_CONFIGURE")
         .env_remove("CASPER_JAIL")
         .stdin(Stdio::piped())
@@ -272,4 +302,59 @@ fn a_skeleton_too_large_for_one_read_arrives_cut_and_says_so() {
         &said[said.len() - 80..]
     );
     assert_eq!(ran["brief"], "code sig.rs (3001 lines)");
+}
+
+#[test]
+fn a_language_whose_grammar_is_not_built_says_how_to_build_it() {
+    let dir = fixture("unbuilt");
+    std::fs::write(dir.join("work/lib.rs"), "fn a() {}\n").expect("source");
+    let reply = verb_with(
+        &dir.join("work"),
+        Path::new("lib.rs"),
+        dir.join("bin").as_os_str(),
+    );
+    assert_eq!(
+        reply["error"],
+        "error: no rust grammar built: run `casper grammar fetch rust && casper grammar build rust`"
+    );
+}
+
+/// What `casper grammar ARGS` answers, with `env` set.
+fn grammar(args: &[&str], env: &[(&str, &OsStr)]) -> Value {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_casper"));
+    command.arg("grammar").args(args).env_remove("CASPER_JAIL");
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let out = command.output().expect("casper");
+    serde_json::from_slice(&out.stdout).expect("a reply")
+}
+
+#[test]
+fn fetching_without_git_or_building_without_a_compiler_names_what_is_missing() {
+    let dir = Scratch::new("grammar", "tools");
+    let at = dir.display().to_string();
+    let reply = grammar(
+        &["fetch", "--dir", &at, "rust"],
+        &[("PATH", dir.join("bin").as_os_str())],
+    );
+    assert_eq!(reply["ok"], false, "{reply}");
+    let said = reply["error"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("git is not installed or not on PATH"),
+        "{said}"
+    );
+    let head = dir.join("src/tree-sitter/.git");
+    std::fs::create_dir_all(&head).expect("a checkout");
+    let rev = &casper::grammars::lock().runtime.rev;
+    std::fs::write(head.join("HEAD"), format!("{rev}\n")).expect("its head");
+    let reply = grammar(
+        &["build", "--dir", &at, "rust"],
+        &[("CC", OsStr::new("casper-no-such-cc"))],
+    );
+    let said = reply["error"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("casper-no-such-cc is not installed or not on PATH"),
+        "{said}"
+    );
 }

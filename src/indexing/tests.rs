@@ -11,7 +11,7 @@ fn spec(name: &str, source: &str, cases: usize) {
         ("tests/helpers", HELPERS),
         (module.as_str(), source),
     ];
-    let mut indexer = Indexer::with(&modules, Instant::now() + crate::running::READING)
+    let mut indexer = Indexer::with(&modules, deadline(), crate::testing::grammars())
         .unwrap_or_else(|why| panic!("the indexer loads: {why}"));
     let chunk = format!(
         "require('tests.{}')\n__code_out = tostring(require('maki.test_helpers').report())",
@@ -49,9 +49,18 @@ fn indexer_core() {
     );
 }
 
+fn deadline() -> Instant {
+    Instant::now() + crate::running::READING
+}
+
+/// An indexer parsing with the suite's grammars.
+fn indexer() -> Indexer {
+    Indexer::with(&[], deadline(), crate::testing::grammars()).expect("the indexer loads")
+}
+
 /// What one expression evaluates to inside a fresh indexer.
 fn probe(expression: &str) -> String {
-    let mut indexer = Indexer::new().expect("the indexer loads");
+    let mut indexer = indexer();
     indexer
         .run(&format!("__code_out = tostring({expression})"), "probe.lua")
         .expect("the probe runs");
@@ -114,7 +123,8 @@ fn the_tree_sitter_surface_is_the_one_the_indexer_reads() {
 
 #[test]
 fn past_its_deadline_the_indexer_stops_rather_than_walks_on() {
-    let mut indexer = Indexer::with(&[], Instant::now()).expect("the indexer loads");
+    let mut indexer =
+        Indexer::with(&[], Instant::now(), crate::testing::grammars()).expect("the indexer loads");
     let why = indexer.index(b"fn a() {}\n", "rust").expect_err("stopped");
     assert!(why.contains("the most one index may take"), "{why}");
 }

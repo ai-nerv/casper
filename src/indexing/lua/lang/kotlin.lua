@@ -15,16 +15,26 @@ return function(U)
 
   local function modifiers_text(node, source)
     local mods = find_child(node, "modifiers")
-    if not mods then
-      return ""
-    end
     local parts = {}
-    for _, child in ipairs(mods:children()) do
+    for _, child in ipairs(mods and mods:children() or {}) do
       if child:type() ~= "annotation" then
         parts[#parts + 1] = get_text(child, source)
       end
     end
+    -- The grammar Helix pins keeps `enum` outside the modifiers.
+    if find_child(node, "enum") then
+      parts[#parts + 1] = "enum"
+    end
     return table.concat(parts, " ")
+  end
+
+  -- A declaration's name, under either grammar's spelling of it.
+  local function name_of(node)
+    return node:field("simple_identifier")[1]
+      or node:field("name")[1]
+      or find_child(node, "identifier")
+      or find_child(node, "simple_identifier")
+      or find_child(node, "type_identifier")
   end
 
   local function tparams_text(node, source)
@@ -34,7 +44,20 @@ return function(U)
 
   local function delegation_text(node, source)
     local ds = find_child(node, "delegation_specifiers")
-    return ds and (" : " .. get_text(ds, source)) or ""
+    if ds then
+      return " : " .. get_text(ds, source)
+    end
+    local first, last
+    for _, child in ipairs(node:children()) do
+      if child:type() == "delegation_specifier" then
+        first = first or child
+        last = child
+      end
+    end
+    if not first then
+      return ""
+    end
+    return " : " .. source:sub(select(3, first:start()) + 1, select(3, last:end_()))
   end
 
   local function extract_import(node, source)
@@ -46,7 +69,7 @@ return function(U)
     end
     local parts = {}
     for _, child in ipairs(qi:children()) do
-      if child:type() == "identifier" then
+      if child:type() == "identifier" or child:type() == "simple_identifier" then
         parts[#parts + 1] = get_text(child, source)
       end
     end
@@ -77,7 +100,7 @@ return function(U)
   local function fn_sig(node, source)
     local mods = modifiers_text(node, source)
     local tparams = tparams_text(node, source)
-    local name_node = node:field("simple_identifier")[1] or node:field("name")[1] or find_child(node, "identifier")
+    local name_node = name_of(node)
     if not name_node then
       return nil
     end
@@ -169,7 +192,7 @@ return function(U)
 
   local function extract_class(node, source)
     local mods = modifiers_text(node, source)
-    local name_node = node:field("simple_identifier")[1] or node:field("name")[1] or find_child(node, "identifier")
+    local name_node = name_of(node)
     if not name_node then
       return nil
     end
@@ -217,7 +240,7 @@ return function(U)
 
   local function extract_object(node, source)
     local mods = modifiers_text(node, source)
-    local name_node = node:field("simple_identifier")[1] or node:field("name")[1] or find_child(node, "identifier")
+    local name_node = name_of(node)
     if not name_node then
       return nil
     end
@@ -235,7 +258,7 @@ return function(U)
   local function extract_type_alias(node, source)
     local vis_node = find_child(node, "modifiers")
     local vis = vis_node and get_text(vis_node, source) or ""
-    local name_node = node:field("type_alias_name")[1] or node:field("name")[1] or find_child(node, "identifier")
+    local name_node = node:field("type_alias_name")[1] or name_of(node)
     if not name_node then
       return nil
     end

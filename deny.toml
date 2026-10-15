@@ -30,10 +30,6 @@ allow = [
   "Unicode-DFS-2016",
 ]
 confidence-threshold = 0.9
-exceptions = [
-  # The Clojure grammar `code` parses with, dedicated to the public domain.
-  { allow = ["CC0-1.0"], crate = "tree-sitter-clojure-orchard" },
-]
 
 [bans]
 multiple-versions = "warn"
