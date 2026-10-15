@@ -164,7 +164,8 @@ WebP or BMP file through the jail and answers it resized for vision as `{ data, 
 `casper.exec("casper", { … })` runs this casper, not whichever one `PATH` finds first, inside the
 same jail as any other program, with its own executable made readable there. `code` reaches its
 indexer that way: `casper code PATH` parses the file in a process that sees only what a command
-could.
+could, and for it alone the jail also lets it read and run the grammar programs' `bin`
+directories (see `casper grammar` in the README).
 
 ### melchior — a provider or a wire protocol
 
