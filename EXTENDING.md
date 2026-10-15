@@ -154,6 +154,11 @@ A result may also carry `images = { casper.image(path) }`. `casper.image` reads 
 WebP or BMP file through the jail and answers it resized for vision as `{ data, media_type }`, or
 `nil` for a file that is not one of those. The base64 stays out of `said`.
 
+`casper.exec("casper", { … })` runs this casper, not whichever one `PATH` finds first, inside the
+same jail as any other program, with its own executable made readable there. `code` reaches its
+indexer that way: `casper code PATH` parses the file in a process that sees only what a command
+could.
+
 ### melchior — a provider or a wire protocol
 
 ```lua

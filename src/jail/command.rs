@@ -84,6 +84,10 @@ impl Jail {
             use std::os::fd::AsRawFd;
             let bwrap = policy::launcher(Path::new(&bwrap), &protected)?;
             let mut wrapped = super::profile(&self.cwd, grants);
+            if let Some(own) = itself(program) {
+                let (at, own) = (wrapped.len() - 2, own.display().to_string());
+                wrapped.splice(at..at, ["--ro-bind".to_owned(), own.clone(), own]);
+            }
             prepared.descriptors = policy::bindings(&mut wrapped, &protected, &bwrap)?;
             wrapped.truncate(wrapped.len() - 2);
             if terminal {
@@ -110,16 +114,24 @@ impl Jail {
             let mut granted = grants.clone();
             granted.tmp = Some(tmp);
             policy::validate(&self.cwd, &granted, &protected)?;
-            prepared.landlock = Some(
-                super::ruleset(&self.cwd, &granted, &protected, terminal).ok_or_else(|| {
-                    std::io::Error::other("required Landlock protection unavailable")
-                })?,
-            );
+            let ruleset = super::ruleset(&self.cwd, &granted, &protected, terminal)
+                .ok_or_else(|| std::io::Error::other("required Landlock protection unavailable"))?;
+            prepared.landlock = Some(match itself(program) {
+                Some(own) => policy::executable(ruleset, &own, &protected)?,
+                None => ruleset,
+            });
             let persistent = super::persistent(&self.cwd, grants);
             prepared.guard = Some(super::guard::Guard::take(&self.cwd, persistent)?);
         }
         Ok(prepared)
     }
+}
+
+/// The program, when it is this executable: made readable inside the jail, so casper can run itself
+/// there to parse what it must not parse outside.
+fn itself(program: &str) -> Option<PathBuf> {
+    let own = std::env::current_exe().ok()?;
+    (Path::new(program) == own).then_some(own)
 }
 
 /// The abstract-socket scope bubblewrap runs under, so the jail cannot reach the host's abstract
