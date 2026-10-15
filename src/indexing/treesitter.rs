@@ -167,10 +167,7 @@ impl Parsing {
             }
             let lang = &self.language;
             if why.starts_with("was built") {
-                return format!(
-                    "the {lang} grammar {why}: run `casper grammar fetch {lang} && casper grammar \
-                     build {lang}`"
-                );
+                return format!("the {lang} grammar {why}: run `casper grammar fetch {lang}`");
             }
             format!("the {lang} grammar: {why}")
         })?;

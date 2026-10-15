@@ -76,11 +76,14 @@ and revision, and the tree-sitter runtime they are built against. Nothing is hos
 project, and the network is reached only when you run `fetch`.
 
 ```sh
-casper grammar fetch           # clone every pinned revision, and the runtime, with git
-casper grammar build           # compile each with $CC or cc into one program per language
+casper grammar fetch           # clone every pinned revision and the runtime with git, then build each
+casper grammar fetch rust go   # or only the languages named
+casper grammar build           # compile what is fetched again, with $CC or cc, one program per language
 casper grammar list            # each language: built, stale, fetched or missing
-casper grammar build rust go   # or only the languages named
 ```
+
+`fetch` is the one command that gets a language working: it needs git and a C compiler, and it
+builds whatever it fetched. `build` compiles sources already fetched again, without the network.
 
 They land in `$XDG_DATA_HOME/casper/grammars`: sources under `src/`, and `bin/<language>`, a
 program linked static where the machine can. It reads one file on stdin and writes its syntax

@@ -2,7 +2,7 @@
 //! from the grammar list Helix pins: nothing of a grammar is compiled into casper.
 //!
 //! ```text
-//! casper grammar fetch [lang…]   clone each pinned revision, and the tree-sitter runtime
+//! casper grammar fetch [lang…]   clone each pinned revision and the runtime, then build each
 //! casper grammar build [lang…]   compile each into bin/<lang>, a program that prints a tree
 //! casper grammar list            each language: built, stale, fetched or missing
 //! ```
@@ -159,7 +159,7 @@ pub fn verb(args: &[String]) -> Reply {
         Err(why) => return Reply::refused(why),
     };
     match action.as_str() {
-        "fetch" => fetching::fetch(&root, &chosen),
+        "fetch" => fetched_and_built(&root, &chosen),
         "build" => building::build(&root, &chosen),
         "list" => listed(&Shelf::then(Some(root.clone())), &root, &chosen),
         other => Reply::refused(format!("no such grammar action: {other}\n{USAGE}")),
@@ -167,6 +167,35 @@ pub fn verb(args: &[String]) -> Reply {
 }
 
 const USAGE: &str = "casper grammar fetch|build|list [--dir DIR] [language…]";
+
+/// Fetch the chosen languages, then build each whose sources are in place: one command gets a
+/// language working, and a language that failed to fetch does not hold back the rest.
+fn fetched_and_built(root: &Path, chosen: &[(&str, &Pin)]) -> Reply {
+    let fetched = fetching::fetch(root, chosen);
+    let ready: Vec<(&str, &Pin)> = chosen
+        .iter()
+        .copied()
+        .filter(|(_, pin)| pin.fetched(root))
+        .collect();
+    if ready.is_empty() || !lock().runtime.fetched(root) {
+        return fetched;
+    }
+    let built = building::build(root, &ready);
+    if fetched.ok {
+        return built;
+    }
+    if built.result.is_empty() {
+        let why: Vec<String> = [fetched.error, built.error].into_iter().flatten().collect();
+        return Reply::failed(why.join("\n"));
+    }
+    let mut rows: Vec<serde_json::Value> = fetched
+        .result
+        .into_iter()
+        .filter(|row| row["state"] == "failed")
+        .collect();
+    rows.extend(built.result);
+    reported(rows)
+}
 
 /// The languages `named` asks for, or every one when it names none.
 fn chosen(named: &[String]) -> Result<Vec<(&'static str, &'static Pin)>, String> {
