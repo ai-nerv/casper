@@ -1,0 +1,7 @@
+headings:
+  # Main Title [1-15]
+  ## Section 1 [3-10]
+  ### Subsection 1.1 [7-10]
+  ## Section 2 [11-12]
+  ## Heading in setext [13-15]
+  # Footer Title [16-19]

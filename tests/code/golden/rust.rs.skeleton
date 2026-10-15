@@ -1,0 +1,37 @@
+module doc: [1]
+
+imports: [2-4]
+  std::{collections::HashMap, fs, io, net}
+
+mod: [40-41]
+  pub utils, internal
+
+consts:
+  MAX: usize [6]
+  static COUNTER: AtomicU64 [7]
+
+types:
+  #[derive(Debug, Clone)]
+  pub struct Config [9-14]
+    pub name: String
+    pub port: u16
+  enum Color [16-19]
+    Red, Green
+  pub type Result = std::result::Result<T, MyError> [21]
+
+traits:
+  pub Handler [23-25]
+    handle(&self, req: Request) -> Response [24]
+
+impls:
+  Config [27-34]
+    pub new(name: String) -> Self [28-30]
+    validate(&self) -> bool [31-33]
+
+fns:
+  pub process(input: &str) -> Result<String> [36-38]
+
+macros:
+  my_macro! [43-45]
+
+tests: [48]

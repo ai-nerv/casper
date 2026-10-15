@@ -1,0 +1,12 @@
+imports: [2-5]
+  alias: Phoenix.Controller
+  Plug.Conn
+  require: Logger
+  use: MyApp.Web
+
+classes:
+  defmodule MyApp.Web [1-15]
+    def process(conn, params) [8-10]
+    defp validate(data) [12-14]
+  defmodule MyApp.Helpers [17-21]
+    def format_name(name) [18-20]

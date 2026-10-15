@@ -1,0 +1,22 @@
+imports: [1-2]
+  std
+  std/mem.zig
+
+consts:
+  const MAX_SIZE [4]
+  var global_counter: u32 [6]
+
+types:
+  struct Point [8-11]
+    x: f32
+    y: f32
+  enum Color [13-17]
+    red, green, blue
+  error MyError [19-22]
+    OutOfMemory, InvalidArgument
+
+fns:
+  add(a: i32, b: i32) i32 [24-26]
+  internal_helper() [28]
+
+tests: [30]

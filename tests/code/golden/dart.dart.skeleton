@@ -1,0 +1,13 @@
+types:
+  enum Mood [16]
+
+fns:
+  topLevelGreet(String name) String [18-20]
+
+classes:
+  class Person [3-14]
+    name String [4]
+    age int [5]
+    Person(this.name, this.age) [7]
+    greet() String [9-11]
+    get yearsUntil100 int [13]

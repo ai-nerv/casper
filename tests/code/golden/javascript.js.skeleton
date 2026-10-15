@@ -1,0 +1,15 @@
+imports: [1]
+  fs from 'fs'
+
+consts:
+  path = require('path') [2]
+  export LIMIT = 10 [4]
+
+fns:
+  export render(props) [11-13]
+  helper(x) [15-17]
+
+classes:
+  export Reader [6-9]
+    constructor(root) [7]
+    read(name) [8]

@@ -1,0 +1,9 @@
+imports: [1]
+  url("base.css")
+
+rules:
+  :root [3-5]
+  .card [7-9]
+  @media (max-width: 600px) [11-18]
+    .card [12-14]
+    #nav [15-17]

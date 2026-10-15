@@ -1,0 +1,19 @@
+imports: [1-2]
+  { Request, Response } from 'express'
+
+consts:
+  export PORT: number = 3000 [13]
+
+types:
+  export interface Config [4-7]
+    port: number
+    host: string
+  export type ID = string | number [9]
+  export enum Direction [11]
+
+fns:
+  export handler(req: Request): Response [19-20]
+
+classes:
+  export Service [15-17]
+    process(input: string): string [16]

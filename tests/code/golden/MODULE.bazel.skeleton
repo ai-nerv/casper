@@ -1,0 +1,15 @@
+module:
+  "@casper" [1-5]
+
+bazel_deps:
+  "@rules_rust": "0.56.0" [7]
+  "@bazel_skylib": "1.7.1", dev=True [8]
+
+module_extensions:
+  rust: "@rules_rust//rust:extensions.bzl", "rust" [10]
+
+module_extensions.tags:
+  rust.toolchain: [11]
+
+repos:
+  rust: "@rust_toolchains" [12]

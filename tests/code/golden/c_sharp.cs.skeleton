@@ -1,0 +1,23 @@
+imports: [1-2]
+  System
+  System.Collections.Generic
+
+mod: [4]
+  MyApp.Services
+
+types:
+  public enum Status [20-25]
+    Active, Inactive, Pending
+  public record Point(int X, int Y) [27]
+
+traits:
+  public interface IRepository : IEnumerable<T> [14-18]
+    T GetById(int id) [16]
+    void Save(T entity) [17]
+
+classes:
+  public class UserService : BaseService, IDisposable [6-12]
+    private string _name [8]
+    public UserService(string name) [9]
+    public void Dispose() [10]
+    public static string Format(int id) [11]

@@ -1,0 +1,20 @@
+imports: [3-4]
+  java.{io.IOException, util.List}
+
+mod: [1]
+  com.example
+
+types:
+  public enum Direction implements Displayable [19-21]
+    UP, DOWN, LEFT, RIGHT
+
+traits:
+  public interface Handler extends Comparable<Handler> [14-17]
+    void handle(String request) [16]
+
+classes:
+  public class Service extends BaseService implements Runnable, Serializable [6-12]
+    private String name [7]
+    public Service(String name) [8]
+    @Override public String toString() [9-10]
+    public void process(List<String> items) [11]

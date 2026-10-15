@@ -1,0 +1,28 @@
+imports: [4]
+  App\Models\User
+
+mod: [2]
+  App\Services
+
+consts:
+  VERSION [6]
+
+types:
+  enum Status [28-32]
+    Active, Inactive
+
+traits:
+  Repository [16-20]
+    public function getById(int $id): mixed [18]
+    public function save(object $entity): void [19]
+  Loggable [22-24]
+
+fns:
+  function helper(string $input): string [26]
+
+classes:
+  UserService extends BaseService implements Serializable [8-14]
+    private string $name [10]
+    public function __construct(string $name) [11]
+    public function find(int $id): ?User [12]
+    public static function create(array $data): self [13]

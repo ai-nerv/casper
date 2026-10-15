@@ -1,0 +1,24 @@
+imports: [2-4]
+  java.util.{Calendar, Date}
+  require: clojure.set :refer [union]
+  require: clojure.string :as str
+
+mod: [1-4]
+  my.app
+
+consts:
+  ^:private answer = 42 [6]
+  cache = (atom {}) [8]
+
+types:
+  P [19-20]
+    size [this] [20]
+  Point [x y] [22-24]
+    size [this] [24]
+
+fns:
+  greet [name] [10-13]
+  helper [x] [15]
+
+macros:
+  with-thing [& body] [17]

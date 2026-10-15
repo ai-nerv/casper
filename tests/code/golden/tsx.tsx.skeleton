@@ -1,0 +1,14 @@
+imports: [1]
+  { useState } from 'react'
+
+types:
+  export interface Props [3-5]
+    title: string
+  export type ID = string | number [7]
+
+fns:
+  export App({ title }: Props) [13-16]
+
+classes:
+  export Widget [9-11]
+    render(): Element [10]

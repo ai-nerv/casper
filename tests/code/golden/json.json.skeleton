@@ -1,0 +1,7 @@
+consts:
+  "name" [2]
+  "version" [3]
+  "scripts" [4-7]
+    "test" [5]
+    "build" [6]
+  "files" [8]

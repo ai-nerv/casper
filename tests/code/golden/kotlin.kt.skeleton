@@ -1,0 +1,23 @@
+imports: [3-4]
+  java.io.File
+  kotlin.collections.List
+
+mod: [1]
+  com.example
+
+consts:
+  const val MAX_SIZE [6]
+  val SOME_CONST [7]
+
+types:
+  typealias StringList = List<String> [9]
+
+fns:
+  fun topLevel(x: Int) [19]
+
+classes:
+  data class User(val name: String, val age: Int) : Comparable<User> [11-13]
+    fun greet() [12]
+  object Singleton [15-17]
+    fun instance() [16]
+  enum enum class Color [21-23]

@@ -1,0 +1,15 @@
+build doc: [1]
+
+loads:
+  "@bazel_skylib//:bzl_library.bzl": bzl_library [3]
+
+exports_files:
+    ["arch.bzl"] [7]
+
+variable bindings:
+    FOOBAR: 42 [9]
+
+targets:
+    arch: bzl_library [11-14]
+    foo_lib: cc_library [16-20]
+    foo_lib_test: cc_test [22-26]

@@ -1,0 +1,12 @@
+imports: [4]
+  config.mk
+
+consts:
+  BIN := app [1]
+  CFLAGS = -O2 -Wall [2]
+  define msg [6-8]
+
+targets:
+  build: [10-12]
+  install: [14-15]
+  .PHONY: [17]

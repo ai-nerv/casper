@@ -1,0 +1,29 @@
+imports: [1-4]
+  iostream
+  mylib.h
+  std::string
+
+mod: [8-10]
+  utils
+
+consts:
+  MAX_BUF 1024 [6-7]
+
+types:
+  struct Point [20-23]
+    double x [21]
+    double y [22]
+  enum Color [25]
+    Red, Green, Blue
+  typedef unsigned long ulong [32]
+
+fns:
+  void helper(int x) [9]
+  template<typename T> T identity(T val) [27-28]
+  void process(const string& input) [30]
+
+classes:
+  class Shape [12-18]
+    virtual double area() const = 0 [14]
+    void describe() [15]
+    int id [17]
