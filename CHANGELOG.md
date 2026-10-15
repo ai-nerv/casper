@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.8.2] - 2026-10-15
+
+### <!-- 0 -->⛰️  Features
+
+- Say how to fetch a missing grammar
+- Fetch builds what it fetched
+- Find a set under XDG_DATA_DIRS
+
+### <!-- 6 -->🧪 Testing
+
+- Wait out ETXTBSY on copied programs
+
+### <!-- 9 -->◀️ Revert
+
+- Drop the XDG_DATA_DIRS search
+
+### Build
+
+- Fetch grammars before the suite
+- Drop the casper-grammars package
+
 ## [0.8.1] - 2026-10-15
 
 ### <!-- 0 -->⛰️  Features
