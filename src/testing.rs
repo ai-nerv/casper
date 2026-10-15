@@ -21,8 +21,8 @@ pub(crate) fn grammars() -> crate::shelf::Shelf {
         .collect();
     assert!(
         missing.is_empty(),
-        "no grammar built for {}: run `oslo make grammars`, or enter `nix develop`, whose \
-         CASPER_GRAMMARS names the casper-grammars package",
+        "no grammar built for {}: run `oslo make grammars`, which fetches and builds them into \
+         target/grammars, or name a directory holding them in CASPER_GRAMMARS",
         missing.join(" ")
     );
     shelf

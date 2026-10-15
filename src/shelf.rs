@@ -7,8 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// Directories searched before the data directory, separated as `PATH` is: how a set built by Nix
-/// is found.
+/// Directories searched before the data directory, separated as `PATH` is: how the tests and the
+/// jail name a set somewhere else.
 pub const NAMED: &str = "CASPER_GRAMMARS";
 
 /// The grammar directories, in the order they are searched.

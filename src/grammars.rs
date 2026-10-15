@@ -41,7 +41,7 @@ pub struct Pin {
     /// The grammar's `tree_sitter_<name>` function.
     #[serde(default)]
     pub symbol: Option<String>,
-    /// The fetched tree's hash, for Nix's fixed-output fetch.
+    /// The fetched tree's hash, as `nix hash path` gives it.
     pub hash: String,
     /// Why this pin is not Helix's, when it is not.
     #[serde(default)]
