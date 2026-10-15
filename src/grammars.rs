@@ -86,6 +86,15 @@ pub fn pinned(language: &str) -> Option<&'static Pin> {
     lock().grammars.get(language)
 }
 
+/// What `code` answers for a `language` whose program is not built: the command that builds it.
+#[must_use]
+pub fn unbuilt(language: &str) -> String {
+    format!(
+        "no {language} grammar yet: run `casper grammar fetch {language}` (or `casper grammar \
+         fetch` for every language)\nthat needs git and a C compiler"
+    )
+}
+
 impl Pin {
     fn empty() -> Self {
         Self {

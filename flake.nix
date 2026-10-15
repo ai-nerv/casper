@@ -183,7 +183,7 @@
               # `code` names a grammar nobody built, and reads one that is.
               printf 'fn main() {}\n' > "$TMPDIR/smoke.rs"
               isolated code "$TMPDIR/smoke.rs" > "$TMPDIR/unbuilt.json"
-              grep -q 'no rust grammar built' "$TMPDIR/unbuilt.json"
+              grep -q 'no rust grammar yet: run `casper grammar fetch rust`' "$TMPDIR/unbuilt.json"
               env -i PATH="$PATH" HOME="$home" \
                 CASPER_GRAMMARS=${casperGrammars}/share/casper/grammars \
                 "$binary" code "$TMPDIR/smoke.rs" > "$TMPDIR/code.json"

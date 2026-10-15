@@ -78,6 +78,11 @@ enum Jail {
 
 /// The `code` tool's result for `args`, through `casper run`.
 fn tool(dir: &Scratch, args: Value, jail: Jail) -> Value {
+    tool_with(dir, args, jail, &grammars())
+}
+
+/// [`tool`], finding its grammars in `named` alone.
+fn tool_with(dir: &Scratch, args: Value, jail: Jail, named: &OsStr) -> Value {
     use std::io::Write as _;
     let mut command = Command::new(env!("CARGO_BIN_EXE_casper"));
     command
@@ -86,7 +91,7 @@ fn tool(dir: &Scratch, args: Value, jail: Jail) -> Value {
         .env("XDG_CONFIG_HOME", dir.join("config"))
         .env("XDG_DATA_HOME", dir.join("data"))
         .env("HOME", dir.join("home"))
-        .env("CASPER_GRAMMARS", grammars())
+        .env("CASPER_GRAMMARS", named)
         .env_remove("CASPER_CONFIGURE")
         .env_remove("CASPER_JAIL")
         .stdin(Stdio::piped())
@@ -305,18 +310,40 @@ fn a_skeleton_too_large_for_one_read_arrives_cut_and_says_so() {
 }
 
 #[test]
-fn a_language_whose_grammar_is_not_built_says_how_to_build_it() {
+fn a_language_whose_grammar_is_not_built_says_how_to_fetch_it() {
     let dir = fixture("unbuilt");
     std::fs::write(dir.join("work/lib.rs"), "fn a() {}\n").expect("source");
+    let notice = "no rust grammar yet: run `casper grammar fetch rust` (or `casper grammar fetch` \
+                  for every language)\nthat needs git and a C compiler";
     let reply = verb_with(
         &dir.join("work"),
         Path::new("lib.rs"),
         dir.join("bin").as_os_str(),
     );
-    assert_eq!(
-        reply["error"],
-        "error: no rust grammar built: run `casper grammar fetch rust && casper grammar build rust`"
-    );
+    assert_eq!(reply["error"], notice, "{reply}");
+    for jail in [Jail::Off, Jail::Landlock] {
+        let ran = tool_with(
+            &dir,
+            json!({"path": "lib.rs"}),
+            jail,
+            dir.join("bin").as_os_str(),
+        );
+        if matches!(jail, Jail::Landlock)
+            && ran["said"]
+                .as_str()
+                .is_some_and(|said| said.contains("Landlock"))
+        {
+            excused("Landlock");
+            continue;
+        }
+        assert_eq!(ran["said"], notice, "{jail:?}: {ran}");
+        assert_eq!(ran["failed"], true, "{jail:?}: {ran}");
+        assert_eq!(
+            ran["brief"],
+            notice.lines().next().unwrap_or_default(),
+            "{jail:?}"
+        );
+    }
 }
 
 /// What `casper grammar ARGS` answers, with `env` set.

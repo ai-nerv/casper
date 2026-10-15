@@ -107,11 +107,14 @@ const NODE: &[(&str, Method)] = &[
     }),
 ];
 
+/// The notice for the last language `get_parser` found no program for, held for the indexer.
+pub type Unbuilt = Rc<RefCell<Option<String>>>;
+
 /// Put `treesitter` in front of the indexer: `get_parser` and `get_node_text`, and behind them
-/// the methods of a parser, a tree and a node. A parse finds its driver on `shelf`. Past `until`,
-/// every node call raises: the time a wide tree costs is spent in these calls, where no
-/// instruction budget sees it.
-pub fn install(ctx: Context<'_>, until: Instant, shelf: Shelf) {
+/// the methods of a parser, a tree and a node. A parse finds its driver on `shelf`, and a language
+/// with none there leaves its notice in `unbuilt`. Past `until`, every node call raises: the time
+/// a wide tree costs is spent in these calls, where no instruction budget sees it.
+pub fn install(ctx: Context<'_>, until: Instant, shelf: Shelf, unbuilt: Unbuilt) {
     let (nodes, node_methods) = class(ctx);
     for (name, method) in NODE {
         node_methods
@@ -139,7 +142,11 @@ pub fn install(ctx: Context<'_>, until: Instant, shelf: Shelf) {
 
     let treesitter = Table::new(&ctx);
     treesitter
-        .set(ctx, "get_parser", get_parser(ctx, parsers, until, shelf))
+        .set(
+            ctx,
+            "get_parser",
+            get_parser(ctx, parsers, until, shelf, unbuilt),
+        )
         .ok();
     treesitter
         .set(ctx, "get_node_text", get_node_text(ctx, until))
@@ -183,6 +190,7 @@ fn get_parser<'gc>(
     parsers: Table<'gc>,
     until: Instant,
     shelf: Shelf,
+    unbuilt: Unbuilt,
 ) -> Callback<'gc> {
     Callback::from_fn_with(&ctx, parsers, move |parsers, ctx, _exec, mut stack| {
         let (Value::String(source), Value::String(lang)) = (stack.get(0), stack.get(1)) else {
@@ -193,10 +201,9 @@ fn get_parser<'gc>(
             .ok_or_else(|| format!("no language registered: {lang}"))
             .and_then(|pin| {
                 let driver = shelf.find(&lang).ok_or_else(|| {
-                    format!(
-                        "no {lang} grammar built: run `casper grammar fetch {lang} && casper \
-                         grammar build {lang}`"
-                    )
+                    let notice = crate::grammars::unbuilt(&lang);
+                    unbuilt.replace(Some(notice.clone()));
+                    notice
                 })?;
                 Ok((driver, pin.rev.clone()))
             });
