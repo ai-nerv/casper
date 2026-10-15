@@ -105,6 +105,19 @@ fn main() -> std::process::ExitCode {
                 },
             )
         }
+        "code" => {
+            let reply = args
+                .get(1)
+                .ok_or_else(|| "code needs a file or directory path".to_owned())
+                .and_then(|path| casper::indexing::path(path));
+            say(
+                how,
+                &match reply {
+                    Ok(indexed) => Reply::of(serde_json::to_value(indexed).unwrap_or_default()),
+                    Err(why) => Reply::refused(why),
+                },
+            )
+        }
         "run" => say(how, &ran()),
         "serve" => serve(how, &args),
         "needs" => say(how, &listing(needs())),
@@ -583,6 +596,7 @@ fn usage() -> bool {
         "casper — the tooling interface\n\
          \n\
          \x20 casper tools        every tool it offers, with schemas\n\
+         \x20 casper code PATH    a source file's skeleton, or a directory's entries\n\
          \x20 casper image PATH   read and resize a raster attachment\n\
          \x20 casper mcp          expose configured tools over MCP stdio\n\
          \x20 casper run          one call on stdin, one result on stdout\n\
