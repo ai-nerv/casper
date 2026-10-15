@@ -21,6 +21,9 @@ pub struct Card {
     /// Which branch of the manual it sits under: `files`, `finding`, `shell`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub group: String,
+    /// Declared callable from an `execute` script. Never on the wire; see [`crate::scripting`].
+    #[serde(skip)]
+    pub script: bool,
 }
 
 /// One call, as it arrives.
@@ -297,6 +300,7 @@ mod tests {
             needs: Some("run".to_owned()),
             deferred: false,
             group: String::new(),
+            script: false,
         };
         let wire = serde_json::to_string(&card).expect("encodes");
         assert!(!wire.contains("allow") && !wire.contains("grant"), "{wire}");

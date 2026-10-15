@@ -508,6 +508,7 @@ fn card<'gc>(ctx: luna::Context<'gc>, name: &str, spec: Table<'gc>) -> Option<Ca
         needs: text("needs"),
         deferred: matches!(spec.get_value(ctx, "deferred"), Value::Boolean(true)),
         group: text("group").unwrap_or_default(),
+        script: matches!(spec.get_value(ctx, "script"), Value::Boolean(true)),
     })
 }
 

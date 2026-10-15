@@ -3,6 +3,7 @@
 //! has a view and no result, a `shell` has a result and no view.
 
 pub mod acknowledged;
+pub mod calling;
 pub mod framing;
 pub mod highlight;
 pub mod images;
@@ -18,6 +19,7 @@ pub mod plugins;
 pub mod pty;
 pub mod running;
 pub mod scratch;
+pub mod scripting;
 pub mod seeking;
 pub mod serving;
 pub mod setup;

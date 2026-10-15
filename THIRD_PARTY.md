@@ -2,10 +2,9 @@
 
 ## maki
 
-The `code` tool is a port of the `index` tool from
-[maki](https://github.com/tontinton/maki), at commit `54a1529`.
+Two tools are ports from [maki](https://github.com/tontinton/maki), at commit `54a1529`.
 
-These files derive from maki's `plugins/index/`:
+The `code` tool is a port of maki's `index` tool. These files derive from maki's `plugins/index/`:
 
 | casper | maki |
 |---|---|
@@ -20,6 +19,13 @@ These files derive from maki's `plugins/index/`:
 What changed in the Lua: `maki.treesitter` is the global `treesitter`, and `maki.split` and
 `table.find` are local functions in `indexer.lua`. The specs still `require("maki.test_helpers")`,
 which casper's test harness answers with `tests/code/test_helpers.lua`.
+
+`execute` is a port of maki's `code_execution` tool: its interpreter runner, the allocator that
+holds a script to its memory limit, the conversion between JSON and Python values, the Python
+preamble and `gather` helper, the tool description, the output limits, and the tests that came
+with them. The ported code lives in `src/scripting.rs` and `src/scripting/`.
+
+maki's license:
 
 ```
 MIT License
@@ -44,3 +50,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## monty
+
+The Python interpreter itself is [monty](https://github.com/pydantic/monty), tag `v0.0.23`, used
+as a dependency under its own MIT license.

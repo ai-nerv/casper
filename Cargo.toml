@@ -88,6 +88,10 @@ tree-sitter-typescript = "0.23"
 tree-sitter-vlang = "0.1"
 tree-sitter-yaml = "0.7.2"
 tree-sitter-zig = "1.1"
+# The Python `execute` runs: an interpreter with no filesystem, network or imports of its own,
+# run in-process. Whatever a script reaches, it reaches through casper's own tools.
+monty = { git = "https://github.com/pydantic/monty.git", tag = "v0.0.23", version = "0.0.23" }
+monty-types = { git = "https://github.com/pydantic/monty.git", tag = "v0.0.23", version = "0.0.23" }
 
 [dev-dependencies]
 rmcp = { version = "3.5", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-server"] }

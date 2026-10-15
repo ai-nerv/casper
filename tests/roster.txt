@@ -4,6 +4,7 @@ code
 dino
 doom
 edit
+execute
 games
 hexe
 ls

@@ -32,6 +32,8 @@ casper code <path>           # a source file's skeleton, or a directory's entrie
 |---|---|
 | `read` `write` `edit` | read a file, write one, change one — a highlighted file or a coloured diff on screen; an image is read as a resized attachment |
 | `code` | a source file's skeleton — imports, types, signatures, each with its line range — parsed with tree-sitter by casper run inside the jail; a directory lists its entries |
+| `ls` `tree` `sese` | look around a directory, draw its shape, and search a repository by meaning |
+| `execute` | a Python script in which `read`, `code`, `ls` and `tree` are async functions: several looks, and filtering what they return, in one call |
 | `shell` | run a command, and remember where it ran for the session that called: the process that started casper, never a session a call names, and nothing remembered without one |
 | `web` | native Rust web search and bounded readable HTTP(S) page extraction, with source URLs |
 | `tools` | the manual for everything below: a tree the model walks, and a page unlocks its tool |
@@ -39,9 +41,23 @@ casper code <path>           # a source file's skeleton, or a directory's entrie
 | `hexe` `oslo` `session` | ask the multiplexer, the shell, or the harness about themselves |
 | `dino` `birdy` | two games, because a surface that can draw a game can draw anything |
 
-The first five are always in front of the model. The rest are *deferred*: listed in the manual,
-and sent to the model only once a `tools` lookup reaches them, because every card sent costs tokens
-on every request.
+The files, finding and `shell` tools are always in front of the model. The rest are *deferred*:
+listed in the manual, and sent to the model only once a `tools` lookup reaches them, because every
+card sent costs tokens on every request.
+
+## Scripts
+
+`execute` runs Python in [monty](https://github.com/pydantic/monty), a sandboxed interpreter with
+no filesystem, network or imports of its own, inside casper's process. A tool declared
+`script = true` is an async function there, called through the same path as a direct call: the
+same jail, deadlines, output cap and log line. Only a tool with `needs = "read"` can be called that
+way, whatever its declaration says, because the harness gates `execute` once, as a call with no
+path, and never sees what the script calls. Writing, commands and the network stay with their own
+tools. A script gets 30 seconds of its own time (time spent waiting on tools does not count) and
+50 MiB of memory, and what it prints comes back cut at 2000 lines or 50 KiB.
+
+It is a port of [maki](https://github.com/tontinton/maki)'s `code_execution`, with thanks to Tony
+Solomonik; see `THIRD_PARTY.md`. `code` is a port of maki's `index`, likewise.
 
 Every one of them is declared in `config/tools.lua`, in Lua, and nothing about them is compiled
 in as a declaration. Network operations are implemented in Rust behind those declarations. A

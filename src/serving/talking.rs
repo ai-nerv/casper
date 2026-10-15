@@ -60,7 +60,7 @@ pub fn talk(
         let reply = match framing::decode::<Keyed>(&body) {
             Ok(keyed) => newer(keyed.family).unwrap_or_else(|| {
                 if key.admits(keyed.key.as_deref()) {
-                    handle(&keyed.call)
+                    super::answering(&stream, || handle(&keyed.call))
                 } else {
                     Reply::refused(REFUSED)
                 }
