@@ -132,6 +132,10 @@ impl Reply {
 pub const CLI_VERBS: &[(&str, &str)] = &[
     ("image", "read and resize one raster attachment"),
     ("code", "a source file's skeleton, or a directory's entries"),
+    (
+        "grammar",
+        "fetch, build or list the parsers code reads with",
+    ),
     ("mcp", "expose configured tools over MCP JSON-RPC stdio"),
     ("verbs", "what this program answers, and on which door"),
     (

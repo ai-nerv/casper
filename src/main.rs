@@ -117,6 +117,7 @@ fn main() -> std::process::ExitCode {
                 },
             )
         }
+        "grammar" => say(how, &casper::grammars::verb(&args)),
         "run" => say(how, &ran()),
         "serve" => serve(how, &args),
         "needs" => say(how, &listing(needs())),
@@ -458,6 +459,8 @@ fn usage() -> bool {
          \n\
          \x20 casper tools        every tool it offers, with schemas\n\
          \x20 casper code PATH    a source file's skeleton, or a directory's entries\n\
+         \x20 casper grammar fetch|build|list [--dir DIR] [LANG...]\n\
+         \x20                     the parsers code reads with, built here as Helix does\n\
          \x20 casper image PATH   read and resize a raster attachment\n\
          \x20 casper mcp          expose configured tools over MCP stdio\n\
          \x20 casper run          one call on stdin, one result on stdout\n\

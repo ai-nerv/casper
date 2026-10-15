@@ -167,6 +167,8 @@ for file in $(find "$ROOT" -name '*.rs' -not -name 'tests.rs' -not -path '*/targ
     "$ROOT/acknowledged.rs") ;;
     # a test's 0700 scratch directory, in the system temporary directory
     "$ROOT/scratch.rs") ;;
+    # `casper grammar build`'s build and bin directories, under the grammars directory
+    "$ROOT/grammars/building.rs") ;;
     *) broke "$file makes a directory, and is not on this gate's list" ;;
   esac
 done
