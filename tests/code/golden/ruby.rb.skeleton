@@ -1,0 +1,23 @@
+imports: [1-2]
+  lib/helper
+  net/http
+
+mod: [7-12]
+  Utilities
+
+consts:
+  MAX_RETRIES = 3 [4]
+  TIMEOUT = 30 [5]
+
+fns:
+  standalone(x, y) [30-31]
+
+classes:
+  Parser [8-11]
+    parse(input) [9-10]
+  Animal [14-20]
+    initialize(name) [15-16]
+    speak() [18-19]
+  Dog < Animal [22-28]
+    self.create(name) [23-24]
+    fetch(item) [26-27]

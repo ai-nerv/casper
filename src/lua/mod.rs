@@ -11,6 +11,7 @@ pub mod fs;
 pub mod images;
 pub mod json;
 pub mod keying;
+pub mod metering;
 pub mod paint;
 pub mod sandbox;
 pub mod seek;

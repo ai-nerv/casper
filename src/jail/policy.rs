@@ -177,6 +177,19 @@ pub(super) fn bindings(
     Ok(descriptors)
 }
 
+/// `created`, with the one file at `path` readable and executable and nothing beside it.
+pub(super) fn executable(
+    created: landlock::RulesetCreated,
+    path: &Path,
+    protected: &[PathBuf],
+) -> std::io::Result<landlock::RulesetCreated> {
+    use landlock::{AccessFs, PathBeneath, RulesetCreatedAttr};
+    let fd = validated_fd(path, protected)?;
+    created
+        .add_rule(PathBeneath::new(fd, AccessFs::Execute | AccessFs::ReadFile))
+        .map_err(std::io::Error::other)
+}
+
 pub(super) fn launcher(path: &Path, protected: &[PathBuf]) -> std::io::Result<PathBuf> {
     let fd = validated_fd(path, protected)?;
     let metadata = rustix::fs::fstat(&fd)?;

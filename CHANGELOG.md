@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.8.0] - 2026-10-15
+
+### <!-- 0 -->⛰️  Features
+
+- Run Python over read-only tools
+- Notice when a socket peer hangs up
+- Declare the code tool
+- Index source files with tree-sitter
+- Let casper run itself in the jail
+
+### <!-- 2 -->🚜 Refactor
+
+- Move the call path into the lib
+- Share the guarded VM and metering
+
+### <!-- 3 -->📚 Documentation
+
+- Credit maki and document scripts
+
+### <!-- 6 -->🧪 Testing
+
+- Golden skeletons and jailed tool calls
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- The execute tool
+
+### Build
+
+- Move to rustc 1.95
+
 ## [0.7.1] - 2026-10-14
 
 ### <!-- 7 -->⚙️ Miscellaneous Tasks

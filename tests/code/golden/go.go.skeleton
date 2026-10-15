@@ -1,0 +1,23 @@
+imports: [3-6]
+  fmt
+  os
+
+consts:
+  MaxRetries [8]
+  A [11]
+  B [12]
+  var GlobalVar [15]
+
+types:
+  struct Point [17-20]
+    X int
+    Y int
+  interface Reader [22-24]
+    Read(p []byte) (int, error) [23]
+  type Alias = int [26]
+
+impls:
+  (p *Point) Distance() float64 [28-31]
+
+fns:
+  main() [33-35]

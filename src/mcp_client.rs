@@ -242,6 +242,7 @@ impl Session {
                             needs: Some(server.needs.clone()),
                             deferred: false,
                             group: format!("mcp:{alias}"),
+                            script: false,
                         },
                         Target::Tool(tool.name.into_owned()),
                     )?;
@@ -253,7 +254,7 @@ impl Session {
                 name: format!("mcp_{alias}_resources"),
                 description: format!("List or read MCP resources and resource templates from {alias}"),
                 parameters: json!({"type":"object","properties":{"action":{"type":"string","enum":["list","templates","read"]},"uri":{"type":"string"}},"required":["action"],"additionalProperties":false}),
-                needs: Some(server.needs.clone()), deferred: false, group: format!("mcp:{alias}"),
+                needs: Some(server.needs.clone()), deferred: false, group: format!("mcp:{alias}"), script: false,
             }, Target::Resources)?;
         }
         if has_prompts && server.tools.is_none() {
@@ -261,7 +262,7 @@ impl Session {
                 name: format!("mcp_{alias}_prompts"),
                 description: format!("List or retrieve MCP prompt templates from {alias}"),
                 parameters: json!({"type":"object","properties":{"action":{"type":"string","enum":["list","get"]},"name":{"type":"string"},"arguments":{"type":"object","additionalProperties":{"type":"string"}}},"required":["action"],"additionalProperties":false}),
-                needs: Some(server.needs.clone()), deferred: false, group: format!("mcp:{alias}"),
+                needs: Some(server.needs.clone()), deferred: false, group: format!("mcp:{alias}"), script: false,
             }, Target::Prompts)?;
         }
         Ok(())

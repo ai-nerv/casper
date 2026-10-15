@@ -5,6 +5,7 @@
 //! ```lua
 //! local done = casper.exec("bat", { "--color=always", path })
 //! casper.exec("sh", { "-c", 'cat > "$1"', "sh", path }, contents)  -- a third argument is stdin
+//! casper.exec("casper", { "code", path })  -- this casper, run inside the same jail
 //! ```
 
 use luna::{Callback, CallbackReturn, Table, Value};
@@ -24,7 +25,7 @@ pub fn table(ctx: luna::Context<'_>) -> Callback<'_> {
                 "casper.exec(program, args): a program name first",
             ));
         };
-        let program = String::from_utf8_lossy(program.as_bytes()).into_owned();
+        let program = itself(String::from_utf8_lossy(program.as_bytes()).into_owned());
 
         let mut argv: Vec<String> = Vec::new();
         if let Value::Table(args) = args {
@@ -57,6 +58,14 @@ pub fn table(ctx: luna::Context<'_>) -> Callback<'_> {
         stack.replace(ctx, out);
         Ok(CallbackReturn::Return)
     })
+}
+
+/// `casper` is this executable, whichever one `PATH` would have found first.
+fn itself(program: String) -> String {
+    if program != "casper" {
+        return program;
+    }
+    std::env::current_exe().map_or(program, |own| own.display().to_string())
 }
 
 fn raise<'gc>(ctx: luna::Context<'gc>, message: &str) -> luna::Error<'gc> {

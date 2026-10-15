@@ -1,0 +1,9 @@
+{
+  "name": "app",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "cargo test",
+    "build": "cargo build"
+  },
+  "files": ["src", "config"]
+}

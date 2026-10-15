@@ -1,0 +1,15 @@
+name: casper
+version: "0.7.1"
+description: the tooling interface
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build
+  test:
+    runs-on: ubuntu-latest
+
+env:
+  RUST_LOG: debug

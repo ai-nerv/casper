@@ -16,7 +16,7 @@
 //! `os.execute` and `io.popen` stay removed: [`crate::lua::exec`] is the only way to a process.
 
 use crate::tools::{Card, Ran};
-use luna::{Callback, CallbackReturn, Closure, Executor, Fuel, Lua, StashedExecutor, Table, Value};
+use luna::{Callback, CallbackReturn, Closure, Executor, Lua, Table, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -71,6 +71,16 @@ pub struct Declared {
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
+/// A VM with the standard library trimmed and the memory ceiling set, and nothing of casper's on
+/// it: the one place a VM is built, for the declarations and for the indexer alike.
+#[must_use]
+pub fn guarded() -> Lua {
+    let mut lua = Lua::full();
+    lua.set_memory_limit(Some(CEILING));
+    crate::lua::sandbox::apply(&mut lua);
+    lua
+}
+
 /// A VM with casper's surface installed.
 pub struct Engine {
     lua: Lua,
@@ -100,11 +110,9 @@ impl Engine {
     #[must_use]
     pub fn with_configuration(configuration: Option<serde_json::Value>) -> Self {
         let mut engine = Self {
-            lua: Lua::full(),
+            lua: guarded(),
             declared: Rc::new(RefCell::new(Declared::default())),
         };
-        engine.lua.set_memory_limit(Some(CEILING));
-        crate::lua::sandbox::apply(&mut engine.lua);
         engine.install(configuration);
         engine
     }
@@ -287,57 +295,10 @@ impl Engine {
             file: file.to_owned(),
             message,
         };
-        self.metered(&executor, BUDGET).map_err(runtime)?;
+        crate::lua::metering::metered(&mut self.lua, &executor, BUDGET).map_err(runtime)?;
         self.lua
             .try_enter(|ctx| ctx.fetch(&executor).take_result::<()>(ctx)?)
             .map_err(|why| runtime(why.to_string()))
-    }
-
-    /// Step `executor` to the end in slices, stopping it once `budget` instructions are spent.
-    /// No `__gc` handler runs: the sandbox refuses a metatable carrying one.
-    fn metered(&mut self, executor: &StashedExecutor, budget: u64) -> Result<(), String> {
-        const SLICE: i32 = 4096;
-        let mut spent: u64 = 0;
-        loop {
-            let mut fuel = Fuel::with(SLICE);
-            let finished = self
-                .lua
-                .enter(|ctx| ctx.fetch(executor).step(ctx, &mut fuel))
-                .map_err(|why| why.to_string())?;
-            spent += u64::try_from(SLICE.saturating_sub(fuel.remaining())).unwrap_or(0);
-            if self.lua.enter(|ctx| ctx.fetch(executor).is_waiting()) {
-                self.lua.enter(|ctx| ctx.fetch(executor).stop(&ctx));
-                return Err("a declaration cannot wait on a future here".to_owned());
-            }
-            if let Some(ceiling) = self.over_ceiling() {
-                self.lua.enter(|ctx| ctx.fetch(executor).stop(&ctx));
-                crate::noted!("lua: stopped over {ceiling} bytes of memory");
-                return Err(format!(
-                    "held more than its {} MiB of memory and was stopped",
-                    ceiling >> 20
-                ));
-            }
-            if finished {
-                return Ok(());
-            }
-            if spent > budget {
-                self.lua.enter(|ctx| ctx.fetch(executor).stop(&ctx));
-                crate::noted!("lua: stopped after {spent} instructions");
-                return Err(format!(
-                    "ran past its budget of {budget} instructions and was stopped"
-                ));
-            }
-        }
-    }
-
-    /// The ceiling, when the VM still holds more than it after a full collection.
-    fn over_ceiling(&mut self) -> Option<usize> {
-        let ceiling = self.lua.memory_limit()?;
-        if self.lua.total_memory() <= ceiling {
-            return None;
-        }
-        self.lua.gc_collect();
-        (self.lua.total_memory() > ceiling).then_some(ceiling)
     }
 
     /// What has been declared so far.
@@ -547,6 +508,7 @@ fn card<'gc>(ctx: luna::Context<'gc>, name: &str, spec: Table<'gc>) -> Option<Ca
         needs: text("needs"),
         deferred: matches!(spec.get_value(ctx, "deferred"), Value::Boolean(true)),
         group: text("group").unwrap_or_default(),
+        script: matches!(spec.get_value(ctx, "script"), Value::Boolean(true)),
     })
 }
 

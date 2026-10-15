@@ -1,0 +1,15 @@
+module doc: [1]
+
+loads:
+  "@bazel_skylib//lib:paths.bzl": paths [3]
+
+variable bindings:
+  VISIBILITY = ["//visibility:public"] [5]
+  stamp = rule( [11-14]
+      implementation = _impl,
+      attrs = {"s
+  [truncated]
+
+functions:
+  _impl(ctx) [7-9]
+  stamped(name, src, **kwargs) [16-17]

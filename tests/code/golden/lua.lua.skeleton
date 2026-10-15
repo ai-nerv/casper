@@ -1,0 +1,14 @@
+imports: [1-3]
+  bar
+  cjson
+  foo
+  init
+
+consts:
+  MAX_SIZE = 100 [5]
+  M = {} [8]
+
+fns:
+  process(data, opts) [10-12]
+  M.helper(x) [14-15]
+  M:method(val) [17-18]

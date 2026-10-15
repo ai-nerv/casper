@@ -1,0 +1,27 @@
+imports: [1-2]
+  Foundation
+  UIKit
+
+types:
+  public struct Point [10-13]
+    var x : Double [11]
+    var y : Double [12]
+  public enum Direction [15-18]
+    case north [16], case south [17]
+
+traits:
+  public protocol Drawable [20-22]
+    func draw() [21]
+
+impls:
+  extension Vehicle: Drawable [24-26]
+    func draw() [25]
+
+fns:
+  public func process() [28]
+
+classes:
+  public class Vehicle [4-8]
+    public var name : String [5]
+    public init init() [6]
+    public func start() [7]

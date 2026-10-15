@@ -1,0 +1,20 @@
+module doc: [1]
+
+imports: [3-4]
+  os
+  typing.Optional
+
+consts:
+  MAX_RETRIES = 3 [6]
+  MY_VAR = 10 [7]
+
+fns:
+  process(data: list) -> dict [24-25]
+  test_process() [28-29]
+
+classes:
+  MyClass [10-12]
+  AuthService [15-21]
+    __init__(self, secret: str) [16-17]
+    @staticmethod
+    validate(token: str) -> bool [20-21]

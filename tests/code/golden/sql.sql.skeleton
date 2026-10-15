@@ -1,0 +1,14 @@
+types:
+  VIEW active_users [9-10]
+    SELECT id, name FROM public.users WHERE email IS NOT NULL
+
+fns:
+  INDEX users_email ON public.users(email) [7]
+  FUNCTION add(a integer, b integer) LANGUAGE SQL [12-14]
+    AS $$ SELECT a + b; $$
+
+classes:
+  TABLE public.users [1-5]
+    id INT
+    name VARCHAR(255)
+    email VARCHAR(255)

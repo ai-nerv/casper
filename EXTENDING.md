@@ -38,7 +38,7 @@ Working examples live in each repository under `examples/plugin/`. They are run 
 repository's test suite, so an example that does not load fails the build rather than wasting
 your afternoon.
 
-**casper's thirteen live in `~/.config/casper/tools.lua`**, like every other sibling's
+**casper's own tools live in `~/.config/casper/tools.lua`**, like every other sibling's
 declarations. `oslo make install` puts them there and overwrites them on every install, so keep
 your own in `plugin/` or `after/plugin/`, which it never touches. Editing `tools.lua` changes the
 tools on the next call — no rebuild.
@@ -139,6 +139,7 @@ casper.tool("name", {
   description = "…",
   parameters = { … },
   needs = "read",
+  script = true,                      -- callable from `execute`; only with needs = "read"
   run = function(args)                -- { said = … } or { said = …, failed = true }
     local done = casper.exec("jq", { args.filter, args.path })
     …
@@ -150,9 +151,20 @@ casper.tool("name", {
 colour — and a tool never names a colour, it names what its output *means* (`added`, `keyword`,
 `path`) and the harness resolves that against its own palette.
 
+`script = true` makes the tool an async function inside `execute`'s Python, listed with a
+signature read off `parameters`. It takes only on a tool with `needs = "read"`: a script's inner
+calls are never put to the harness, so casper refuses one that writes, runs a command or reaches
+the network whatever the flag says. A tool that asks the person or the harness something, as
+`sese` does, cannot be answered from inside a script either; leave it off those.
+
 A result may also carry `images = { casper.image(path) }`. `casper.image` reads a PNG, JPEG, GIF,
 WebP or BMP file through the jail and answers it resized for vision as `{ data, media_type }`, or
 `nil` for a file that is not one of those. The base64 stays out of `said`.
+
+`casper.exec("casper", { … })` runs this casper, not whichever one `PATH` finds first, inside the
+same jail as any other program, with its own executable made readable there. `code` reaches its
+indexer that way: `casper code PATH` parses the file in a process that sees only what a command
+could.
 
 ### melchior — a provider or a wire protocol
 

@@ -1,0 +1,7 @@
+consts:
+  MAX_RETRIES = 5 [5]
+  LOG_DIR = "/var/log" [6]
+
+fns:
+  my_func() [8-10]
+  process() [12-14]

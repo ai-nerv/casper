@@ -1,0 +1,26 @@
+"""BUILD docs."""
+
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["arch.bzl"])
+
+FOOBAR = 42
+
+bzl_library(
+    name = "arch",
+    srcs = ["arch.bzl"],
+)
+
+cc_library(
+    name = "foo_lib",
+    srcs = ["foo_lib.cc"],
+    hdrs = ["foo_lib.h"],
+)
+
+cc_test(
+    name = "foo_lib_test",
+    srcs = ["foo_lib_test.cc"],
+    deps = [":foo_lib"],
+)

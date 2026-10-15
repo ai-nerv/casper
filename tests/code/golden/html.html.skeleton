@@ -1,0 +1,13 @@
+structure:
+  <html> [2-14]
+    <head> [3-7]
+      <style> [6]
+    <body> [8-13]
+      <header> [9]
+        <nav> [9]
+          <ul> [9]
+      <main> [10]
+        <section> [10]
+          <div> [10]
+      <footer> [11]
+      <script> [12]

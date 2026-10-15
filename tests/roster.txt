@@ -1,8 +1,10 @@
 # Every tool casper ships, one per line. Editing this list is how a tool is added or removed.
 birdy
+code
 dino
 doom
 edit
+execute
 games
 hexe
 ls

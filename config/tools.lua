@@ -31,16 +31,22 @@ casper.theme = {
 
 -- ── the manual ────────────────────────────────────────────────────────────────────────
 --
--- **What a session reaches for constantly is always in front of the model: `read`, `write`, `edit`,
--- `shell`, and the three that find things -- `ls`, `tree`, `sese`.** The rest are deferred: every
+-- **What a session reaches for constantly is always in front of the model: `read`, `code`, `write`,
+-- `edit`, `shell`, the three that find things -- `ls`, `tree`, `sese` -- and `execute`, which
+-- scripts several looks into one call.** The rest are deferred: every
 -- card sent costs tokens on every request, and a game or a multiplexer probe is needed once a week. So they are listed here instead, as a tree `tools` walks one level at a time
 -- -- the groups, then a group, then a tool -- and reaching a deferred tool's page unlocks it.
 local MANUAL = {
-  { group = "files", about = "read, write and edit files; always available", tools = {
+  { group = "files", about = "read, outline, write and edit files; always available", tools = {
     { name = "read", page = [[
 read(path, offset?, limit?) -- text or a raster image attachment (PNG, JPEG, GIF, WebP, BMP).
 Images are resized for vision and are never returned as base64 text. For large text, `offset` (first line, from 1) and
 `limit` (most lines) pick a range, and a closing line says which lines came back of how many.]] },
+    { name = "code", page = [[
+code(path) -- a source file's skeleton: imports, type definitions, function signatures and
+structure, each with its line range in []. Use it first on a file, then `read` with `offset` and
+`limit` for the section you need. A directory answers with its entries. An unsupported language
+is an error: use `read` instead.]] },
     { name = "write", page = [[
 write(path, contents) -- replace the whole file with `contents`, creating the directories it needs.
 Prefer `edit` for a change to a file that exists: it cannot lose the parts you did not mean to touch.]] },
@@ -48,7 +54,7 @@ Prefer `edit` for a change to a file that exists: it cannot lose the parts you d
 edit(path, old, new) -- replace `old` with `new`. `old` must appear exactly once; include enough of
 the surrounding lines to make it unique. Answers with a unified diff of what changed.]] },
   } },
-  { group = "finding", about = "look around a directory, and search a repository by meaning; always available", tools = {
+  { group = "finding", about = "look around a directory, search a repository by meaning, and script several looks at once; always available", tools = {
     { name = "ls", page = [[
 ls(path?, all?) -- what one directory holds, directories first, with a size against each file and a
 closing count. Build output, dependency trees and version control's own directories are named rather
@@ -71,6 +77,11 @@ The second kind scores half the repository alike and tells you nothing.
 
 `read` the passages it ranked highest -- that is where the answer is. When you already know the
 string you are after, `grep` through `shell` is faster and exact.]] },
+    { name = "execute", page = [[
+execute(code, timeout?) -- run Python in which `read`, `code`, `ls` and `tree` are async functions, for
+several looks in one call: `text = await read(path='a.rs')`, and `gather(...)` to run calls at
+once. Prints and the returned value come back, capped. Nothing in a script writes, runs a command or
+reaches the network.]] },
   } },
   { group = "shell", about = "commands, and programs that need a terminal", tools = {
     { name = "shell", page = [[
@@ -282,6 +293,7 @@ do -- read
       required = { "path" },
     },
     needs = "read",
+    script = true,
 
     run = function(args)
       local ok, image = pcall(casper.image, args.path)
@@ -317,6 +329,44 @@ do -- read
   })
 end
 
+do -- code
+  -- Parsed by casper itself, run as a command: inside the jail, where the file is exactly as
+  -- reachable as `read`'s `cat` would find it.
+  casper.tool("code", {
+    description = [[
+  Return a compact overview of a source file: imports, type definitions, function signatures and
+  structure, with line numbers in []. Much cheaper than reading the whole file.]],
+    parameters = {
+      type = "object",
+      properties = {
+        path = { type = "string", description = "The source file, or a directory to list." },
+      },
+      required = { "path" },
+    },
+    needs = "read",
+    script = true,
+
+    run = function(args)
+      local done = casper.exec("casper", { "code", args.path })
+      local ok, reply = pcall(casper.json.decode, done.out)
+      if not ok or type(reply) ~= "table" then
+        return failure(done.err ~= "" and done.err or ("code: no answer for " .. args.path))
+      end
+      if not reply.ok then return failure(reply.error or ("code: refused " .. args.path)) end
+      local found = reply.result[1]
+      local said, span = found.skeleton, ("%d lines"):format(found.lines or 0)
+      if found.kind == "directory" then
+        said, span = found.listing, ("%d entries"):format(found.entries or 0)
+      end
+      return {
+        said = said,
+        brief = ("code %s (%s)"):format(args.path, span),
+        back = ("code %s"):format(args.path),
+      }
+    end,
+  })
+end
+
 do -- ls, tree
   -- Both are one walk drawn two ways, and the walk happens inside the jail: `casper.dirs` runs the
   -- walker the way `read` cats a file, so a listing can only name what a command could have reached.
@@ -345,6 +395,7 @@ do -- ls, tree
   count. Build output, dependency trees and version control's own directories are named, not opened.]],
     parameters = { type = "object", properties = { path = PLACE, all = ALL } },
     needs = "read",
+    script = true,
     run = looking("list", function() return 1 end, false),
   })
 
@@ -361,6 +412,7 @@ do -- ls, tree
       },
     },
     needs = "read",
+    script = true,
     run = looking("tree", function(args) return math.floor(tonumber(args.depth) or 3) end, true),
   })
 end
@@ -369,6 +421,7 @@ do -- sese
   -- **Two calls, one search.** The first reads the repository and comes back with a question for
   -- a model rather than an answer; the harness answers it out of the session and runs this again
   -- with what it said. casper never learns which model that was, and holds no key to reach one.
+  -- Not `script = true` for the same reason: inside `execute` there is no harness to answer it.
   casper.tool("sese", {
     description = [[
   Find WHERE something lives in this repository, by meaning rather than by string. Answers with a
@@ -401,6 +454,58 @@ do -- sese
         said = out.said, shown = out.shown,
         brief = out.brief, back = ("sese: %s"):format(args.query),
       }
+    end,
+  })
+end
+
+do -- execute
+  -- **Many calls for the price of one.** A Python script, run by monty inside casper, in which
+  -- every tool declared `script = true` is an async function. casper adds their signatures to
+  -- this description, and refuses a tool that writes, runs a command or reaches the network
+  -- whatever its declaration says: magi's gate sees `execute`, never what the script calls.
+  casper.tool("execute", {
+    description = [[
+  Execute Python in a sandbox where every tool listed below is an async function.
+
+  Use it for chained or dependent tool calls, and to filter what they return: one script is one
+  call, where the same work done step by step is a call per step.
+
+  - Tools are async and return strings: `text = await read(path='src/main.rs')`. Parse what
+    comes back yourself.
+  - Tool results are complete. Only what you print or return is capped, at 2000 lines and 50 KiB.
+  - Concurrency: `a, b = await gather(read(path='a.py'), ls(path='src'))`. A failed call comes
+    back as `[ERROR] ...` and the others still finish. Pass calls directly, never wrapped in
+    `async def`.
+  - re, asyncio, sys, os and json are imported already. No network, and no imports beyond
+    monty's small standard library. `open()` reads a text file the way `read` does; nothing
+    writes.
+  - Only the tools below are callable, and none of them writes, runs a command or reaches the
+    network: call those tools directly.
+  - A fresh sandbox each run: nothing persists between calls.
+  - 30s of script time (`timeout` changes it); time spent awaiting tools does not count. 50 MiB
+    of memory.
+  - Skip it when a single tool call needs no transformation. It is not a scratchpad: reason in
+    your reply.]],
+    parameters = {
+      type = "object",
+      additionalProperties = false,
+      properties = {
+        code = {
+          type = "string",
+          description = "Python code. Tools return strings, not objects, and every call must be "
+            .. "awaited: `text = await read(path='src/main.rs')`.",
+        },
+        timeout = {
+          type = "integer", minimum = 1, maximum = 600,
+          description = "Script execution timeout in seconds (default 30).",
+        },
+      },
+      required = { "code" },
+    },
+    needs = "read",
+
+    run = function(args)
+      return casper.python(args.code, { timeout = args.timeout })
     end,
   })
 end

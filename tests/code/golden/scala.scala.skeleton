@@ -1,0 +1,26 @@
+imports: [3-4]
+  java.io.File
+  scala.collection.mutable.Map
+
+mod: [1]
+  com.example
+
+consts:
+  val MaxRetries [6]
+
+types:
+  type Callback = String => Unit [23]
+
+traits:
+  trait Handler [17-19]
+    def handle(req: Request): Response [18]
+
+fns:
+  def helper(x: Int): String [21]
+
+classes:
+  class Service extends Base with Logging [8-11]
+    def process(input: String): Boolean [9]
+    def shutdown(): Unit [10]
+  object Config [13-15]
+    def load(path: String): Config [14]

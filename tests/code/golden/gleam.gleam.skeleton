@@ -1,0 +1,14 @@
+imports: [1-2]
+  gleam/{io, option/Some, None as opt}
+
+consts:
+  const max_size [4]
+
+types:
+  type Shape [6-9]
+    Circle, Rectangle
+  type Color [11-12]
+
+fns:
+  fn greet(name: String) -> String [14-16]
+  fn helper(x: Int) -> Int [18-20]

@@ -1,0 +1,9 @@
+consts:
+  name [1]
+  version [2]
+  description [3]
+  jobs [5-12]
+    build [6-10]
+    test [11-12]
+  env [14-16]
+    RUST_LOG [15]

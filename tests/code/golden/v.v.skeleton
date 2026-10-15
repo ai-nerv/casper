@@ -1,0 +1,23 @@
+imports: [3-6]
+  encoding.json
+  os
+
+consts:
+  pub const max_size [6]
+
+types:
+  pub struct Point [8-11]
+    x f64
+    y f64
+  pub interface Drawable [13-15]
+    draw() string
+  pub enum Color [17-21]
+    red, green, blue
+  pub type Number = int | f64 [23]
+
+impls:
+  pub (point Point) distance() f64 [29-31]
+
+fns:
+  pub add(a int, b int) int [25-27]
+  main() [33-35]

@@ -1,0 +1,8 @@
+instructions:
+  FROM rust:1.94 AS build [2]
+  WORKDIR /app [3]
+  COPY . . [4]
+  RUN cargo build --release [5]
+  FROM scratch [7]
+  COPY --from=build /app/target/release/app /app [8]
+  ENTRYPOINT ["/app"] [9]
