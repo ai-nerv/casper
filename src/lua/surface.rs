@@ -2,6 +2,7 @@
 //!
 //! ```lua
 //! run = function(args)
+//!   -- place: "prompt" rows (the default), the whole "float", or rows in its own call's "block"
 //!   return casper.surface{ rows = 8, about = "the dinosaur game", tick = 60 }
 //! end,
 //! surface = function(args, size)
@@ -27,10 +28,13 @@ pub fn table(ctx: luna::Context<'_>) -> Callback<'_> {
         };
 
         // A surface asking for the float is given the whole of it, so it need not say how many rows.
-        let float = matches!(
-            asked.get_value(ctx, "place"),
-            Value::String(place) if place.as_bytes() == b"float"
-        );
+        // One asking for its own block is drawn in the transcript, and says how many it wants.
+        let place = match asked.get_value(ctx, "place") {
+            Value::String(place) if place.as_bytes() == b"float" => Some(&b"float"[..]),
+            Value::String(place) if place.as_bytes() == b"block" => Some(&b"block"[..]),
+            _ => None,
+        };
+        let float = place == Some(&b"float"[..]);
         let rows = match asked.get_value(ctx, "rows") {
             Value::Integer(rows) if rows > 0 => rows,
             _ if float => 1,
@@ -58,9 +62,9 @@ pub fn table(ctx: luna::Context<'_>) -> Callback<'_> {
         {
             surface.set(ctx, "tick", tick).ok();
         }
-        if float {
+        if let Some(place) = place {
             surface
-                .set(ctx, "place", luna::String::from_slice(&ctx, b"float"))
+                .set(ctx, "place", luna::String::from_slice(&ctx, place))
                 .ok();
         }
         // Another tool's surface to open in these rows: a picker handing over to what was picked.
@@ -155,6 +159,34 @@ mod tests {
         assert_eq!(out["shown"]["place"], "float", "{out}");
         assert_eq!(out["shown"]["rows"], 1, "{out}");
         assert_eq!(out["shown"]["tenant"], "doom", "{out}");
+    }
+
+    #[test]
+    fn a_surface_can_ask_for_its_own_block() {
+        let out = asked(
+            r#"casper.tool("t", { description = "d", parameters = {},
+                 run = function() return casper.surface{ place = "block", rows = 6, about = "a game" } end })"#,
+        );
+        assert_eq!(out["shown"]["place"], "block", "{out}");
+        assert_eq!(out["shown"]["rows"], 6, "{out}");
+    }
+
+    #[test]
+    fn a_block_surface_still_says_how_many_rows() {
+        let out = asked(
+            r#"casper.tool("t", { description = "d", parameters = {},
+                 run = function() return casper.surface{ place = "block", about = "a game" } end })"#,
+        );
+        assert_eq!(out["failed"], true, "{out}");
+    }
+
+    #[test]
+    fn a_place_nobody_knows_is_the_prompt() {
+        let out = asked(
+            r#"casper.tool("t", { description = "d", parameters = {},
+                 run = function() return casper.surface{ place = "elsewhere", rows = 2, about = "x" } end })"#,
+        );
+        assert!(out["shown"].get("place").is_none(), "{out}");
     }
 
     #[test]

@@ -151,7 +151,7 @@ pub struct Surface {
     /// Milliseconds between ticks. `None` for a surface that only redraws when input arrives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tick: Option<u16>,
-    /// Where it is drawn: `prompt` rows, or the whole `float`, sized by the terminal.
+    /// Where it is drawn: `prompt` rows, the whole `float`, or rows in its own call's `block`.
     #[serde(default, skip_serializing_if = "Place::is_prompt")]
     pub place: Place,
     /// The tool whose surface fills it, when not the one asking: a picker handing over.
@@ -166,6 +166,7 @@ pub enum Place {
     #[default]
     Prompt,
     Float,
+    Block,
 }
 
 impl Place {
