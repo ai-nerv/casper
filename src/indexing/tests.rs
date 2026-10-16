@@ -130,6 +130,16 @@ fn past_its_deadline_the_indexer_stops_rather_than_walks_on() {
 }
 
 #[test]
+fn a_signature_written_over_several_lines_is_one_tidy_line() {
+    let source = b"fn spread(\n    first: u8,\n    rest: &[u8],\n) -> u8 {\n    first\n}\n";
+    let skeleton = indexer().index(source, "rust").expect("indexed");
+    assert!(
+        skeleton.contains("spread(first: u8, rest: &[u8]) -> u8 [1-6]"),
+        "{skeleton}"
+    );
+}
+
+#[test]
 fn a_file_type_it_does_not_read_is_named_with_what_to_use_instead() {
     let mut indexer = Indexer::new().expect("the indexer loads");
     for (path, read_as) in [

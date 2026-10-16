@@ -149,8 +149,9 @@ local function find_child(node, kind)
   return nil
 end
 
+-- One line, with no space just inside a bracket and no comma trailing a list.
 local function compact_ws(s)
-  return (s:gsub("%s+", " "))
+  return (s:gsub("%s+", " "):gsub("([%(%[]) ", "%1"):gsub(",? ([%)%]])", "%1"))
 end
 
 local function truncate(s, max)
