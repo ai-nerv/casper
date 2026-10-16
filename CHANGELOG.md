@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.8.3] - 2026-10-16
+
+### <!-- 0 -->⛰️  Features
+
+- Monty 1.0.1 on rust 1.96
+- Run detached in its own block
+- A surface may ask for its own block
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Say why a file could not be read
+- One tidy line per signature
+
+### <!-- 3 -->📚 Documentation
+
+- Say what the sandbox runs and lacks
+
 ## [0.8.2] - 2026-10-15
 
 ### <!-- 0 -->⛰️  Features
