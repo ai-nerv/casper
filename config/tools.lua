@@ -43,10 +43,17 @@ read(path, offset?, limit?) -- text or a raster image attachment (PNG, JPEG, GIF
 Images are resized for vision and are never returned as base64 text; a BMP is refused. For large text, `offset` (first line, from 1) and
 `limit` (most lines) pick a range, and a closing line says which lines came back of how many.]] },
     { name = "code", page = [[
-code(path) -- a source file's skeleton: imports, type definitions, function signatures and
-structure, each with its line range in []. Use it first on a file, then `read` with `offset` and
-`limit` for the section you need. A directory answers with its entries. An unsupported language
-is an error: use `read` instead.]] },
+code(path) -- a source file's skeleton: imports, types with their fields, functions with their
+signatures, constants and tests, each with its line range in []. It costs a fraction of `read`,
+so outline a file first, then `read` with `offset` and `limit` for the part you need. Markdown
+answers with its headings and their ranges; a directory with its entries.
+
+Languages: Rust, Python, TypeScript and JavaScript (JSX, TSX), Go, C, C++, C#, Java, Kotlin,
+Scala, Swift, Dart, Ruby, PHP, Elixir, Gleam, Clojure, Lua, Zig, V, Nix, Bash, SQL, HTML, CSS,
+JSON, TOML, YAML, HCL, Markdown, Make, Bazel and Containerfile. Any other file is an error that
+says so: `read` it instead.
+
+Inside `execute` it is `await code(path=...)`, to outline several files in one call.]] },
     { name = "write", page = [[
 write(path, contents) -- replace the whole file with `contents`, creating the directories it needs.
 Prefer `edit` for a change to a file that exists: it cannot lose the parts you did not mean to touch.]] },
@@ -78,10 +85,50 @@ The second kind scores half the repository alike and tells you nothing.
 `read` the passages it ranked highest -- that is where the answer is. When you already know the
 string you are after, `grep` through `shell` is faster and exact.]] },
     { name = "execute", page = [[
-execute(code, timeout?) -- run Python in which `read`, `code`, `ls` and `tree` are async functions, for
-several looks in one call: `text = await read(path='a.rs')`, and `gather(...)` to run calls at
-once. Prints and the returned value come back, capped. Nothing in a script writes, runs a command or
-reaches the network.]] },
+execute(code, timeout?) -- run a Python script in which `read`, `code`, `ls` and `tree` are async
+functions, for several looks in one call. Nothing in a script writes, runs a command or reaches
+the network; those tools are called on their own.
+
+Calling tools
+  text = await read(path='src/main.rs')        keyword arguments; every result is a string
+  a, b = await gather(read(path='a'), ls())    at once; a failed one is an "[ERROR] ..." string
+  outs = await gather([code(path=p) for p in paths])         a list works too
+  try: await read(path='x') / except RuntimeError as e: ...  a failure outside gather raises
+  `async def` helpers work, and `gather` runs them together. A positional argument, a missing
+  `await` or a tool not in the list is an error, not a result.
+
+What comes back
+  Everything printed, then `return: <value>` when the last line is a bare expression. Cut at 2000
+  lines or 50 KiB; a tool's result inside the script is never cut. On an error or a timeout you get
+  what was printed before it, then why, and no value: print as you go.
+
+Limits
+  30 seconds of script time (`timeout`, up to 600); time awaiting tools does not count. 50 MiB of
+  memory, calls nested 100 deep, 1000 tool calls a script, 8 running at once. Every call is a fresh
+  interpreter: nothing carries over.
+
+The Python: monty, a subset of CPython 3.14
+  Works: def, async def, lambda, closures, comprehensions, try/except/finally, with, f-strings,
+  str.format, plain classes (__init__, __repr__, __eq__, __iter__ ...) and @dataclass.
+  Fails the whole script before any of it runs: class inheritance, decorators on methods
+  (@property, @staticmethod, @classmethod), yield, match, del, async with and async for, and
+  `from m import *`.
+  Not there: eval, exec, compile, __import__, globals, locals, dir, vars, super, format(), `%`
+  formatting, sys.stdout.write and exception classes of your own. getattr and hasattr do not see
+  built-in methods. map, zip, filter, enumerate and generator expressions build lists at once.
+
+Modules -- plain `import x` or `from x import y`; nothing else can be imported
+  asyncio (run, gather), base64, binascii, collections (deque, Counter, defaultdict, namedtuple),
+  dataclasses, datetime (no now()), functools (reduce, partial), itertools (no groupby, product,
+  permutations, combinations), json, math, os, pathlib, re (no bytes patterns, no VERBOSE), sys,
+  typing, unicodedata. re, asyncio, sys, os and json are imported already. Not there: time,
+  random, subprocess, enum, copy, string, operator, hashlib, csv, io and the rest.
+
+Files
+  open(path).read(), .readlines(), `with open(path) as f`, and Path(path).read_text() read text,
+  up to 8 MiB, from the session's directory. exists(), is_file(), iterdir(), stat(), listdir() and
+  every write are refused: list with `ls` or `tree`. A Path's name, stem, suffix, parent and `/`
+  work. os has no environ, getenv, getcwd or path.]] },
   } },
   { group = "shell", about = "commands, and programs that need a terminal", tools = {
     { name = "shell", page = [[
@@ -334,8 +381,11 @@ do -- code
   -- reachable as `read`'s `cat` would find it.
   casper.tool("code", {
     description = [[
-  Return a compact overview of a source file: imports, type definitions, function signatures and
-  structure, with line numbers in []. Much cheaper than reading the whole file.]],
+  A source file's skeleton: imports, types with their fields, functions with their signatures,
+  constants and tests, each with its line range in []. It costs a fraction of `read`: outline a
+  file first, then `read` it with `offset` and `limit` for the part you need. Markdown answers with
+  its headings, a directory with its entries. A file in a language it does not know is an error
+  that says so: `read` it instead. The languages: tools(path='files/code').]],
     parameters = {
       type = "object",
       properties = {
@@ -465,39 +515,47 @@ do -- execute
   -- whatever its declaration says: magi's gate sees `execute`, never what the script calls.
   casper.tool("execute", {
     description = [[
-  Execute Python in a sandbox where every tool listed below is an async function.
+  Run a Python script in which the tools listed below are async functions: one call for a chain of
+  dependent looks, or to filter, count and compare what they return. Skip it when one tool call
+  answers as it is. It is not a scratchpad: reason in your reply.
 
-  Use it for chained or dependent tool calls, and to filter what they return: one script is one
-  call, where the same work done step by step is a call per step.
+  Calling tools
+  - `text = await read(path='src/main.rs')`: keyword arguments, always awaited, and every result
+    is a string to parse yourself.
+  - `a, b = await gather(read(path='a.py'), ls(path='src'))`, or a list, runs calls at once; a
+    failed one comes back as an `[ERROR] ...` string and the others finish. Outside `gather` a
+    failure raises RuntimeError. `async def` helpers work.
+  - Only the tools below are callable; none writes, runs a command or reaches the network.
 
-  - Tools are async and return strings: `text = await read(path='src/main.rs')`. Parse what
-    comes back yourself.
-  - Tool results are complete. Only what you print or return is capped, at 2000 lines and 50 KiB.
-  - Concurrency: `a, b = await gather(read(path='a.py'), ls(path='src'))`. A failed call comes
-    back as `[ERROR] ...` and the others still finish. Pass calls directly, never wrapped in
-    `async def`.
-  - re, asyncio, sys, os and json are imported already. No network, and no imports beyond
-    monty's small standard library. `open()` reads a text file the way `read` does; nothing
-    writes.
-  - Only the tools below are callable, and none of them writes, runs a command or reaches the
-    network: call those tools directly.
-  - A fresh sandbox each run: nothing persists between calls.
-  - 30s of script time (`timeout` changes it); time spent awaiting tools does not count. 50 MiB
-    of memory.
-  - Skip it when a single tool call needs no transformation. It is not a scratchpad: reason in
-    your reply.]],
+  What comes back: everything printed, then `return: <value>` if the last line is a bare
+  expression, cut at 2000 lines and 50 KiB. On an error or a timeout you get what was printed
+  before it and the reason, never the value: print as you go.
+
+  The Python is monty, a subset of 3.14, fresh on every call.
+  - Modules, by plain `import` or `from ... import`: asyncio, base64, binascii, collections,
+    dataclasses, datetime, functools, itertools, json, math, os, pathlib, re, sys, typing,
+    unicodedata. re, asyncio, sys, os and json are imported already. Nothing else exists: no
+    time, random or subprocess.
+  - Missing: eval, exec, compile, __import__, globals, locals, dir, vars, super, format() and `%`
+    formatting (use f-strings). Class inheritance, @property, @staticmethod, yield, match and del
+    fail the whole script before it runs; plain classes and @dataclass work.
+  - Files: `open(path).read()` and `Path(path).read_text()` read text. exists, iterdir, listdir,
+    stat and every write are refused: use ls or tree. os has no environ, getenv or path.
+  - 30s of script time (`timeout`, up to 600), not counting time awaiting tools; 50 MiB.
+
+  The rest of what it lacks: tools(path='finding/execute').]],
     parameters = {
       type = "object",
       additionalProperties = false,
       properties = {
         code = {
           type = "string",
-          description = "Python code. Tools return strings, not objects, and every call must be "
-            .. "awaited: `text = await read(path='src/main.rs')`.",
+          description = "Python in monty's subset. Tools return strings, not objects, and every "
+            .. "call is awaited with keyword arguments: `text = await read(path='src/main.rs')`.",
         },
         timeout = {
           type = "integer", minimum = 1, maximum = 600,
-          description = "Script execution timeout in seconds (default 30).",
+          description = "Seconds of script time, not counting time awaiting tools (default 30).",
         },
       },
       required = { "code" },

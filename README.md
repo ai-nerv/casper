@@ -48,8 +48,9 @@ card sent costs tokens on every request.
 
 ## Scripts
 
-`execute` runs Python in [monty](https://github.com/pydantic/monty), a sandboxed interpreter with
-no filesystem, network or imports of its own, inside casper's process. A tool declared
+`execute` runs Python in [monty](https://github.com/pydantic/monty), a sandboxed subset of
+CPython 3.14 with sixteen standard modules and no filesystem or network of its own, inside casper's
+process. Its manual page, `tools(path='finding/execute')`, lists what that subset leaves out. A tool declared
 `script = true` is an async function there, called through the same path as a direct call: the
 same jail, deadlines, output cap and log line. Only a tool with `needs = "read"` can be called that
 way, whatever its declaration says, because the harness gates `execute` once, as a call with no
