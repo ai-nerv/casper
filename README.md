@@ -49,14 +49,14 @@ card sent costs tokens on every request.
 ## Scripts
 
 `execute` runs Python in [monty](https://github.com/pydantic/monty), a sandboxed subset of
-CPython 3.14 with sixteen standard modules and no filesystem or network of its own, inside casper's
+CPython 3.14 with nineteen standard modules and no filesystem or network of its own, inside casper's
 process. Its manual page, `tools(path='finding/execute')`, lists what that subset leaves out. A tool declared
 `script = true` is an async function there, called through the same path as a direct call: the
 same jail, deadlines, output cap and log line. Only a tool with `needs = "read"` can be called that
 way, whatever its declaration says, because the harness gates `execute` once, as a call with no
 path, and never sees what the script calls. Writing, commands and the network stay with their own
 tools. A script gets 30 seconds of its own time (time spent waiting on tools does not count) and
-50 MiB of memory, and what it prints comes back cut at 2000 lines or 50 KiB.
+50 MiB of memory, cannot sleep, and what it prints comes back cut at 2000 lines or 50 KiB.
 
 It is a port of [maki](https://github.com/tontinton/maki)'s `code_execution`, with thanks to Tony
 Solomonik; see `THIRD_PARTY.md`. `code` is a port of maki's `index`, likewise.

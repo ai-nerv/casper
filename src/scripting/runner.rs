@@ -24,6 +24,7 @@ pub(super) const SCRIPT_NAME: &str = "script.py";
 const OS_CALLS_DENIED: &str = "OS calls are not permitted";
 const BINARY_FILES: &str = "binary files are not supported, open in text mode";
 const READ_ONLY: &str = "a script cannot write files: call the write tool as a tool of its own";
+const NO_WAITING: &str = "a script cannot sleep: time.sleep and asyncio.sleep are refused";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Failed {
@@ -131,8 +132,15 @@ fn drive(
     limits: ResourceLimits,
     writer: &mut PrintWriter<'_>,
 ) -> Result<Option<Value>, Failed> {
-    let runner = MontyRun::new(script, SCRIPT_NAME, vec![], CompileOptions::default())
+    let mut runner = MontyRun::new(script, SCRIPT_NAME, vec![], CompileOptions::default())
         .map_err(|e| Failed::Parse(e.to_string()))?;
+    // Relative paths resolve where casper runs, the session's own directory, not at `/`.
+    if let Some(here) = std::env::current_dir()
+        .ok()
+        .and_then(|dir| dir.to_str().map(str::to_owned))
+    {
+        runner.set_cwd(&here);
+    }
     let mut progress = runner
         .start(vec![], ResourceTracker::new(limits), writer.reborrow())
         .map_err(runtime)?;
@@ -140,18 +148,22 @@ fn drive(
     loop {
         progress = match progress {
             RunProgress::Complete(obj) => {
-                return Ok((!matches!(obj, MontyObject::None)).then(|| monty_to_json(&obj)));
+                let value = obj.as_ref();
+                return Ok((value.type_name() != "NoneType").then(|| monty_to_json(value)));
             }
             RunProgress::FunctionCall(call) => {
                 let name = call.function_name.clone();
                 if bridge.callable.contains(&name) {
                     let pending = PendingCall {
                         call_id: call.call_id,
-                        args: call.args.iter().map(monty_to_json).collect(),
+                        args: call.args.args().map(monty_to_json).collect(),
                         kwargs: call
-                            .kwargs
-                            .iter()
-                            .map(|(k, v)| (k.to_string(), monty_to_json(v)))
+                            .args
+                            .kwargs()
+                            .map(|(k, v)| {
+                                let key = k.as_str().map_or_else(|| k.to_string(), str::to_owned);
+                                (key, monty_to_json(v))
+                            })
                             .collect(),
                         name,
                     };
@@ -170,10 +182,7 @@ fn drive(
                 let name = &lookup.name;
                 let known = bridge.callable.contains(name) || bridge.refused.contains_key(name);
                 let result = if known {
-                    NameLookupResult::Value(MontyObject::Function {
-                        name: name.clone(),
-                        docstring: None,
-                    })
+                    NameLookupResult::Value(MontyObject::function(name.clone(), None))
                 } else {
                     NameLookupResult::Undefined
                 };
@@ -220,20 +229,27 @@ fn serve(
         OsFunctionCall::Open(args) => args.mode.writable(),
         other => other.is_write(),
     };
-    if writes {
-        return ExtFunctionResult::Error(MontyException::new(
+    let refused = |why: &str| {
+        ExtFunctionResult::Error(MontyException::new(
             ExcType::PermissionError,
-            Some(READ_ONLY.into()),
-        ));
+            Some(why.to_owned()),
+        ))
+    };
+    if writes {
+        return refused(READ_ONLY);
     }
     let result = match call {
+        OsFunctionCall::Sleep(_)
+        | OsFunctionCall::SystemSleep(_)
+        | OsFunctionCall::AsyncSleep(_)
+        | OsFunctionCall::AsyncSystemSleep(_) => return refused(NO_WAITING),
         OsFunctionCall::Open(args) if args.mode.is_binary() => Err(BINARY_FILES.to_owned()),
-        OsFunctionCall::Open(args) => Ok(MontyObject::FileHandle(MontyFileHandle {
+        OsFunctionCall::Open(args) => Ok(MontyObject::file_handle(MontyFileHandle {
             path: args.path.into_string(),
             mode: args.mode,
             position: 0,
         })),
-        OsFunctionCall::ReadText(path) => read(path.into_string()).map(MontyObject::String),
+        OsFunctionCall::ReadText(path) => read(path.into_string()).map(MontyObject::string),
         other => return ExtFunctionResult::Error(other.on_no_handler()),
     };
     match result {
@@ -275,7 +291,7 @@ pub(super) fn split_line_number(rest: &str) -> Option<(usize, &str)> {
 
 pub fn limits(timeout: Duration, max_memory: usize) -> ResourceLimits {
     ResourceLimits::default()
-        .max_duration(timeout)
+        .max_feed_duration(timeout)
         .max_memory(max_memory)
         .max_recursion_depth(MAX_RECURSION)
 }

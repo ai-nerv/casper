@@ -107,28 +107,31 @@ Limits
   memory, calls nested 100 deep, 1000 tool calls a script, 8 running at once. Every call is a fresh
   interpreter: nothing carries over.
 
-The Python: monty, a subset of CPython 3.14
+The Python: monty 1.0, a subset of CPython 3.14
   Works: def, async def, lambda, closures, comprehensions, try/except/finally, with, f-strings,
-  str.format, plain classes (__init__, __repr__, __eq__, __iter__ ...) and @dataclass.
+  str.format, format(), `%` formatting, eval, exec, locals, plain classes (__init__, __repr__,
+  __eq__, __iter__ ...) and @dataclass.
   Fails the whole script before any of it runs: class inheritance, decorators on methods
   (@property, @staticmethod, @classmethod), yield, match, del, async with and async for, and
   `from m import *`.
-  Not there: eval, exec, compile, __import__, globals, locals, dir, vars, super, format(), `%`
-  formatting, sys.stdout.write and exception classes of your own. getattr and hasattr do not see
-  built-in methods. map, zip, filter, enumerate and generator expressions build lists at once.
+  Not there: globals, compile, __import__, super, dir, vars, complex numbers, sys.stdout.write
+  and exception classes of your own. getattr and hasattr do not see built-in methods. map, zip,
+  filter, enumerate and generator expressions build lists at once.
 
 Modules -- plain `import x` or `from x import y`; nothing else can be imported
   asyncio (run, gather), base64, binascii, collections (deque, Counter, defaultdict, namedtuple),
-  dataclasses, datetime (no now()), functools (reduce, partial), itertools (no groupby, product,
-  permutations, combinations), json, math, os, pathlib, re (no bytes patterns, no VERBOSE), sys,
-  typing, unicodedata. re, asyncio, sys, os and json are imported already. Not there: time,
-  random, subprocess, enum, copy, string, operator, hashlib, csv, io and the rest.
+  copy, dataclasses, datetime, functools (reduce, partial), itertools, json, math, os, pathlib,
+  random, re (no bytes patterns, no VERBOSE), sys, time, typing, unicodedata. re, asyncio, sys,
+  os and json are imported already. Not there: subprocess, enum, string, operator, heapq, bisect,
+  csv, hashlib, io, contextlib, statistics and the rest.
 
-Files
+Files and time
   open(path).read(), .readlines(), `with open(path) as f`, and Path(path).read_text() read text,
-  up to 8 MiB, from the session's directory. exists(), is_file(), iterdir(), stat(), listdir() and
-  every write are refused: list with `ls` or `tree`. A Path's name, stem, suffix, parent and `/`
-  work. os has no environ, getenv, getcwd or path.]] },
+  up to 8 MiB, relative to the session's directory, which os.getcwd() and Path.cwd() name.
+  exists(), is_file(), iterdir(), stat(), listdir(), read_bytes() and every write are refused:
+  list with `ls` or `tree`. A Path's name, stem, suffix, parent and `/` work. os has no environ,
+  getenv or path. The clock reads (time.time(), datetime.now()); time.sleep and asyncio.sleep are
+  refused.]] },
   } },
   { group = "shell", about = "commands, and programs that need a terminal", tools = {
     { name = "shell", page = [[
@@ -532,15 +535,16 @@ do -- execute
   before it and the reason, never the value: print as you go.
 
   The Python is monty, a subset of 3.14, fresh on every call.
-  - Modules, by plain `import` or `from ... import`: asyncio, base64, binascii, collections,
-    dataclasses, datetime, functools, itertools, json, math, os, pathlib, re, sys, typing,
-    unicodedata. re, asyncio, sys, os and json are imported already. Nothing else exists: no
-    time, random or subprocess.
-  - Missing: eval, exec, compile, __import__, globals, locals, dir, vars, super, format() and `%`
-    formatting (use f-strings). Class inheritance, @property, @staticmethod, yield, match and del
-    fail the whole script before it runs; plain classes and @dataclass work.
-  - Files: `open(path).read()` and `Path(path).read_text()` read text. exists, iterdir, listdir,
-    stat and every write are refused: use ls or tree. os has no environ, getenv or path.
+  - Modules, by plain `import` or `from ... import`: asyncio, base64, binascii, collections, copy,
+    dataclasses, datetime, functools, itertools, json, math, os, pathlib, random, re, sys, time,
+    typing, unicodedata. re, asyncio, sys, os and json are imported already. Nothing else exists:
+    no subprocess, enum, string, operator, heapq, csv, hashlib or io.
+  - Missing: globals, compile, __import__, super, dir and vars. Class inheritance, @property,
+    @staticmethod, yield, match and del fail the whole script before it runs; plain classes and
+    @dataclass work.
+  - Files: `open(path).read()` and `Path(path).read_text()` read text, relative to the session's
+    directory. exists, iterdir, listdir, stat and every write are refused: use ls or tree. os has
+    no environ, getenv or path. Sleeping is refused.
   - 30s of script time (`timeout`, up to 600), not counting time awaiting tools; 50 MiB.
 
   The rest of what it lacks: tools(path='finding/execute').]],
