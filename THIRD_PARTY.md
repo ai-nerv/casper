@@ -59,7 +59,7 @@ SOFTWARE.
 
 ## monty
 
-The Python interpreter itself is [monty](https://github.com/pydantic/monty), tag `v0.0.23`, used
+The Python interpreter itself is [monty](https://github.com/pydantic/monty), tag `v1.0.1`, used
 as a dependency under its own MIT license.
 
 ## Helix

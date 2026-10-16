@@ -11,8 +11,7 @@ pub struct Card {
     pub description: String,
     /// JSON Schema for its arguments.
     pub parameters: serde_json::Value,
-    /// The permission verb it acts under, in the harness's vocabulary: `read`, `write`, `run`,
-    /// `reach`.
+    /// The permission verb it acts under: `read`, `write`, `run`, `reach`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub needs: Option<String>,
     /// Kept out of the model's list until a `tools` lookup unlocks it.
@@ -151,12 +150,15 @@ pub struct Surface {
     /// Milliseconds between ticks. `None` for a surface that only redraws when input arrives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tick: Option<u16>,
-    /// Where it is drawn: `prompt` rows, or the whole `float`, sized by the terminal.
+    /// Where it is drawn: `prompt` rows, the whole `float`, or rows in its own call's `block`.
     #[serde(default, skip_serializing_if = "Place::is_prompt")]
     pub place: Place,
     /// The tool whose surface fills it, when not the one asking: a picker handing over.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenant: Option<String>,
+    /// Whether the call answers at once and the rows stay open until the person closes them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub detach: bool,
 }
 
 /// Where a surface is drawn.
@@ -166,6 +168,7 @@ pub enum Place {
     #[default]
     Prompt,
     Float,
+    Block,
 }
 
 impl Place {

@@ -1,6 +1,6 @@
 [package]
 name = "casper"
-version = "0.8.2"
+version = "0.8.3"
 edition = "2024"
 description = "The tooling interface: what a tool is, what it says, and what it shows"
 license = "MIT"
@@ -56,10 +56,10 @@ base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 # No grammar is linked in: `code` runs a program per language that `casper grammar` builds from
 # Helix's pinned list. See `grammars.lock`.
-# The Python `execute` runs: an interpreter with no filesystem, network or imports of its own,
-# run in-process. Whatever a script reaches, it reaches through casper's own tools.
-monty = { git = "https://github.com/pydantic/monty.git", tag = "v0.0.23", version = "0.0.23" }
-monty-types = { git = "https://github.com/pydantic/monty.git", tag = "v0.0.23", version = "0.0.23" }
+# The Python `execute` runs: an interpreter with no filesystem or network of its own, run
+# in-process. Whatever a script reaches, it reaches through casper's own tools.
+monty = { git = "https://github.com/pydantic/monty.git", tag = "v1.0.1", version = "1.0.1" }
+monty-types = { git = "https://github.com/pydantic/monty.git", tag = "v1.0.1", version = "1.0.1" }
 
 # bat's grammars, as two-face ships them, cut down by `build.rs` to the languages highlighted.
 [build-dependencies]

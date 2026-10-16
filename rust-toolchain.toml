@@ -1,5 +1,5 @@
-# The compiler casper builds with outside the Nix shell, the same one `flake.nix` pins. 1.95 is the
-# floor: monty, the interpreter behind `execute`, and the ruff parser under it require it.
+# The compiler casper builds with outside the Nix shell, the same one `flake.nix` pins. 1.96 is the
+# floor: monty, the interpreter behind `execute`, requires it.
 [toolchain]
-channel = "1.95.0"
+channel = "1.96.0"
 components = ["clippy", "rustfmt"]

@@ -30,9 +30,9 @@ fn binary_by(
     command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::piped());
     let mut child = command.spawn().map_err(|e| e.to_string())?;
-    let ([(bytes, past), _], code, overran) = drained(&mut child, limit, most);
+    let ([(bytes, past), (err, _)], code, overran) = drained(&mut child, limit, [most, WHY]);
     let restored = prepared.restored();
     if !restored.is_empty() {
         return Err(restored.join("; "));
@@ -48,9 +48,11 @@ fn binary_by(
     }
     if code != Some(0) {
         let code = code.map_or_else(|| "killed".to_owned(), |c| c.to_string());
-        return Err(format!(
-            "{program}: file read refused or failed (exit {code})"
-        ));
+        let why = String::from_utf8_lossy(&err);
+        return Err(match why.lines().next().filter(|line| !line.is_empty()) {
+            Some(why) => format!("{why} (exit {code})"),
+            None => format!("{program}: file read refused or failed (exit {code})"),
+        });
     }
     Ok(bytes)
 }
@@ -84,7 +86,7 @@ pub fn piped(
             let _ = pipe.write_all(&input);
         });
     }
-    let ([(out, past), (err, _)], code, overran) = drained(&mut child, limit, most);
+    let ([(out, past), (err, _)], code, overran) = drained(&mut child, limit, [most; 2]);
     let restored = prepared.restored();
     if !restored.is_empty() {
         return Err(restored.join("; "));
@@ -110,6 +112,9 @@ pub fn piped(
 
 /// One read off a pipe.
 const CHUNK: usize = 8 * 1024;
+
+/// How much of a reader's standard error is kept, for the line saying why it failed.
+const WHY: usize = 4 * 1024;
 
 /// How long one program may run before its process group is killed.
 pub const DEADLINE: Duration = Duration::from_secs(60 * 60);
@@ -197,7 +202,7 @@ fn fed_by(program: &str, args: &[String], input: Option<Vec<u8>>, limit: Duratio
             let _ = pipe.write_all(&bytes);
         });
     }
-    let (held, code, overran) = drained(&mut child, limit, MOST);
+    let (held, code, overran) = drained(&mut child, limit, [MOST; 2]);
     let restored = prepared.restored();
     let [out, err] = held;
     crate::noted!(
@@ -235,14 +240,14 @@ fn fed_by(program: &str, args: &[String], input: Option<Vec<u8>>, limit: Duratio
 /// What one pipe gave: the first bytes it had room for, and how many more there were.
 type Kept = (Vec<u8>, usize);
 
-/// Read both pipes as they fill, holding `most` bytes of each, until the program has exited and
-/// its pipes have closed, or [`GRACE`] after it exited, whichever is first. Past `limit`, its
-/// whole process group is killed and the program reaped. Answers the two holds, the exit code,
-/// and whether it overran.
+/// Read both pipes as they fill, holding `most` bytes of standard output and of standard error,
+/// until the program has exited and its pipes have closed, or [`GRACE`] after it exited, whichever
+/// is first. Past `limit`, its whole process group is killed and the program reaped. Answers the
+/// two holds, the exit code, and whether it overran.
 fn drained(
     child: &mut std::process::Child,
     limit: Duration,
-    most: usize,
+    most: [usize; 2],
 ) -> ([Kept; 2], Option<i32>, bool) {
     let mut pipes: [Option<OwnedFd>; 2] = [
         child.stdout.take().map(OwnedFd::from),
@@ -278,9 +283,14 @@ fn drained(
     (held, code, true)
 }
 
-/// Wait up to `wait` for either pipe to have something, and read what is there, holding `most`
-/// bytes of each. A pipe at its end, or one that fails, is closed.
-fn read_ready(pipes: &mut [Option<OwnedFd>; 2], held: &mut [Kept; 2], wait: Duration, most: usize) {
+/// Wait up to `wait` for either pipe to have something, and read what is there, holding as many
+/// bytes of each as `most` gives it. A pipe at its end, or one that fails, is closed.
+fn read_ready(
+    pipes: &mut [Option<OwnedFd>; 2],
+    held: &mut [Kept; 2],
+    wait: Duration,
+    most: [usize; 2],
+) {
     use rustix::event::{PollFd, PollFlags, Timespec};
     let readable = PollFlags::IN | PollFlags::HUP | PollFlags::ERR;
     let ready: Vec<bool> = {
@@ -296,7 +306,7 @@ fn read_ready(pipes: &mut [Option<OwnedFd>; 2], held: &mut [Kept; 2], wait: Dura
         fds.iter().map(|fd| !fd.revents().is_empty()).collect()
     };
     let mut ready = ready.into_iter();
-    for (pipe, kept) in pipes.iter_mut().zip(held.iter_mut()) {
+    for ((pipe, kept), most) in pipes.iter_mut().zip(held.iter_mut()).zip(most) {
         let Some(fd) = pipe else { continue };
         if !ready.next().unwrap_or(false) {
             continue;
@@ -463,6 +473,15 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(!alive(&pid), "the backgrounded {pid} outlived the deadline");
+    }
+
+    #[test]
+    fn a_file_that_is_not_there_is_said_whole_however_little_was_asked() {
+        let dir = crate::scratch::Scratch::new("running", "missing");
+        let path = dir.join("nope.txt").display().to_string();
+        let args = ["-c".to_owned(), "32".to_owned(), "--".to_owned(), path];
+        let why = binary("head", &args, 32).expect_err("nothing to read");
+        assert!(why.contains("No such file or directory"), "{why}");
     }
 
     #[test]

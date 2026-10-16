@@ -30,9 +30,9 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
           lib = pkgs.lib;
-          # rustc 1.95, the floor monty sets, for the static target: this nixpkgs ships 1.94.
+          # rustc 1.96, the floor monty sets, for the static target: this nixpkgs ships 1.94.
           toolchain =
-            (rust-overlay.lib.mkRustBin { } pkgs.pkgsStatic.buildPackages).stable."1.95.0".minimal;
+            (rust-overlay.lib.mkRustBin { } pkgs.pkgsStatic.buildPackages).stable."1.96.0".minimal;
           rustPlatform = pkgs.pkgsStatic.makeRustPlatform {
             cargo = toolchain;
             rustc = toolchain;
@@ -56,7 +56,7 @@
               lockFile = ./Cargo.lock;
               outputHashes = {
                 "luna-0.5.0" = "sha256-YJsEKm7UykhqNQjhLPBgpmCHQZQhDLFVAENSD43SyAw=";
-                "monty-0.0.23" = "sha256-NUhHd3x0hA+qpQ7wQ30kiynn4M+5XWQrX/fG2zgnlwg=";
+                "monty-1.0.1" = "sha256-4cw5pGA0b2NO0CQPsFHN/ZiqoYmYWFGEAzfiLqUD9dM=";
               };
             };
             cargoBuildFlags = [
@@ -214,8 +214,8 @@
           libxi
           libxrandr
         ];
-        # One release past what the workspace siblings pin: monty, behind `execute`, needs 1.95.
-        rust = pkgs.rust-bin.stable."1.95.0".default.override {
+        # The version the workspace siblings pin, and the floor monty, behind `execute`, sets.
+        rust = pkgs.rust-bin.stable."1.96.0".default.override {
           extensions = [ "rust-src" ];
         };
       in

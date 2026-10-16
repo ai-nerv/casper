@@ -29,7 +29,8 @@ fn answering(value: Value) -> Box<Resolve<'static>> {
 }
 
 fn read_notes(path: String) -> Result<String, String> {
-    if path == FILE {
+    let here = std::env::current_dir().expect("a working directory");
+    if std::path::Path::new(&path) == here.join(FILE) {
         Ok(CONTENT.to_owned())
     } else {
         Err("no such file".to_owned())
@@ -153,6 +154,21 @@ fn text_reads_are_served_by_the_host_and_writes_are_refused() {
         );
         let said = value(&code);
         assert!(said.contains("cannot write files"), "{write}: {said}");
+    }
+}
+
+#[test]
+fn a_script_cannot_sleep_however_it_asks() {
+    for sleep in [
+        "import time\ntime.sleep(1)",
+        "import asyncio\nawait asyncio.sleep(1)",
+    ] {
+        let code = format!(
+            "try:\n    {}\nexcept PermissionError as e:\n    err = str(e)\nerr",
+            sleep.replace('\n', "\n    ")
+        );
+        let said = value(&code);
+        assert!(said.contains("cannot sleep"), "{sleep}: {said}");
     }
 }
 
