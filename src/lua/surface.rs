@@ -71,6 +71,10 @@ pub fn table(ctx: luna::Context<'_>) -> Callback<'_> {
         if let Value::String(tenant) = asked.get_value(ctx, "tenant") {
             surface.set(ctx, "tenant", tenant).ok();
         }
+        // Answered at once, with the rows left open until the person closes them.
+        if let Value::Boolean(true) = asked.get_value(ctx, "detach") {
+            surface.set(ctx, "detach", true).ok();
+        }
 
         let out = Table::new(&ctx);
         out.set(ctx, "shown", surface).ok();
@@ -169,6 +173,20 @@ mod tests {
         );
         assert_eq!(out["shown"]["place"], "block", "{out}");
         assert_eq!(out["shown"]["rows"], 6, "{out}");
+    }
+
+    #[test]
+    fn a_surface_may_ask_to_be_left_running() {
+        let out = asked(
+            r#"casper.tool("t", { description = "d", parameters = {},
+                 run = function() return casper.surface{ place = "block", rows = 6, about = "htop", detach = true } end })"#,
+        );
+        assert_eq!(out["shown"]["detach"], true, "{out}");
+        let held = asked(
+            r#"casper.tool("t", { description = "d", parameters = {},
+                 run = function() return casper.surface{ rows = 6, about = "a game" } end })"#,
+        );
+        assert!(held["shown"].get("detach").is_none(), "{held}");
     }
 
     #[test]

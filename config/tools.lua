@@ -88,10 +88,10 @@ reaches the network.]] },
 shell(command) -- run a command and read what it printed. The working directory is kept between
 calls, so `cd build` and then `make` works. Always available.]] },
     { name = "screen", deferred = true, page = [[
-screen(command, rows?) -- run an interactive program in rows on the person's screen: a pager, an
-editor, `htop`, `git add -p`. They can type and click in it; it ends when the program does or on two
-presses of escape, and answers with what was left on screen. Use `shell` for anything that just
-prints and exits: a program run here holds the screen until somebody closes it.]] },
+screen(command, title, rows?) -- run an interactive program in its own block in the conversation:
+a pager, an editor, `htop`, `git add -p`. It answers at once and keeps running while the
+conversation goes on; the person types and clicks in it and closes it with ctrl+c. `title` names it
+for them. Use `shell` for anything that just prints and exits.]] },
   } },
   { group = "web", about = "web search and pages", tools = {
     { name = "web", deferred = true, page = [[
@@ -813,35 +813,43 @@ do -- screen
 
   casper.tool("screen", {
     description = [[
-  Run an interactive terminal program in rows on the screen: a pager, an editor, `htop`, `git
-  add -p`. The person can type at it and click in it, and it ends when the program does or when
-  they press escape twice.
+  Run an interactive terminal program in its own block in the conversation: a pager, an editor,
+  `htop`, `git add -p`. The call answers at once and the program keeps running while the
+  conversation goes on; the person types at it, clicks in it, pins it above the prompt, and closes
+  it with ctrl+c, or it ends when the program does.
 
   Use this where `shell` cannot: anything that draws, waits for a keypress, or needs a terminal.
-  Use `shell` for anything that just prints and exits — a program run here holds the screen until
-  somebody closes it.
+  Use `shell` for anything that just prints and exits.
 
-  The result is what the program left on screen when it ended.]],
+  `title` names it for the person, in a few words: it is how they find it again.]],
     parameters = {
       type = "object",
       properties = {
         command = { type = "string", description = "The command to run, as a shell would." },
+        title = {
+          type = "string",
+          description = "A few words naming what runs, for the person: \"htop\", \"editing main.rs\".",
+        },
         rows = {
           type = "integer", minimum = 3, maximum = MOST_ROWS,
           description = "How tall it should be. Defaults to 16.",
         },
       },
-      required = { "command" },
+      required = { "command", "title" },
     },
     needs = "run",
 
     run = function(args)
+      if args.answered ~= nil then
+        return { said = ("%s is running in its own block; the person closes it"):format(args.title) }
+      end
       local rows = math.min(MOST_ROWS, math.max(3, math.floor(tonumber(args.rows) or 16)))
       return casper.surface{
         rows = rows,
-        -- What a harness with no screen says instead. `magi -p` cannot draw rows and cannot ask
-        -- anybody, so it declines with this rather than waiting on a program nobody can see.
-        about = "running " .. tostring(args.command),
+        -- Its own block, left running: the title is what the person finds it by.
+        place = "block",
+        detach = true,
+        about = tostring(args.title),
         -- No `tick`: a tool declaring a `screen` is given one. Name a slower one here if a
         -- program is worth watching less often than thirty times a second.
       }
