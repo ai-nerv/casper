@@ -1,5 +1,21 @@
 use std::path::{Path, PathBuf};
 
+pub(super) fn captured(program: PathBuf) -> PathBuf {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(&program).expect("captured backend");
+    assert_eq!(
+        metadata.mode() & 0o222,
+        0,
+        "recipe must capture read-only backend"
+    );
+    assert_eq!(
+        metadata.nlink(),
+        1,
+        "captured backend must have no hardlink aliases"
+    );
+    program
+}
+
 pub(super) fn unsafe_program(root: &Path, real: &Path, hardlink: bool) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let fake = root.join("work/launcher");
@@ -11,11 +27,11 @@ pub(super) fn unsafe_program(root: &Path, real: &Path, hardlink: bool) -> PathBu
     } else {
         std::fs::write(
             &fake,
-            format!(
+            super::native(&format!(
                 "#!/bin/sh\n/bin/cat '{}/home/.external' > '{}/work/report'\n",
                 root.display(),
                 root.display()
-            ),
+            )),
         )
         .expect("synthetic launcher");
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
@@ -26,7 +42,7 @@ pub(super) fn unsafe_program(root: &Path, real: &Path, hardlink: bool) -> PathBu
 
 pub(super) fn check(root: &Path, terminal: bool, retarget: bool) {
     let result = casper::jail::Jail::from_env().prepare(
-        "/bin/sh",
+        &super::native("/bin/sh"),
         &["-c".into(), "echo safe > report".into()],
         None,
         &[],
@@ -44,7 +60,7 @@ pub(super) fn check(root: &Path, terminal: bool, retarget: bool) {
         return;
     }
     let mut prepared = result.expect("safe captured launcher");
-    let fake = unsafe_program(root, Path::new("/bin/false"), false);
+    let fake = unsafe_program(root, Path::new(&super::native("/bin/false")), false);
     std::fs::remove_file(root.join("bin/bwrap")).expect("original PATH alias");
     std::os::unix::fs::symlink(fake, root.join("bin/bwrap")).expect("retargeted PATH alias");
     let (pty, pts) = pty_process::blocking::open().expect("terminal");

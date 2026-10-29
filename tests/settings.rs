@@ -8,6 +8,9 @@
 
 use std::process::Command;
 
+#[path = "support/native_namespace.rs"]
+mod native_namespace;
+
 /// A config directory holding this checkout's declarations, rather than whatever `make install`
 /// has put on the machine.
 fn installed() -> casper::scratch::Scratch {
@@ -32,7 +35,13 @@ fn pointed(command: &mut Command, at: &casper::scratch::Scratch) {
 /// Run casper with a configuration, and give back stdout.
 fn with(configured: &str, args: &[&str], stdin: Option<&str>) -> String {
     let dir = installed();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_casper"));
+    let namespace = native_namespace::NativeNamespace::new(
+        &dir,
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
+    );
+    let binary = std::env::var_os("CASPER_TEST_BINARY")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_casper").into());
+    let mut command = namespace.command(binary);
     command.args(args).env("CASPER_CONFIGURE", configured);
     pointed(&mut command, &dir);
     let Some(body) = stdin else {

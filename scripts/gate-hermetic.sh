@@ -78,7 +78,7 @@ trap 'rm -rf "$root" "$out" "$stamp"' EXIT HUP INT TERM
 # The directories the suite is given, each empty and each its own. Named separately because the
 # report has to say *which* one something was left in: "$TMPDIR is dirty" and "the runtime
 # directory is dirty" are different bugs with different fixes.
-for kind in tmp runtime config data; do
+for kind in tmp runtime config data state; do
   mkdir -p "$root/$kind"
 done
 
@@ -88,12 +88,19 @@ done
 # inside a week. These are the paths the shipped declarations actually name.
 literal="/tmp/casper /var/tmp/casper ${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/casper"
 literal="$literal ${HOME:-/nonexistent}/.config/casper ${HOME:-/nonexistent}/.local/share/casper"
+literal="$literal ${HOME:-/nonexistent}/.local/state/casper/mcp-auth"
+
+if ! cargo build --example file-fault-exec >"$out" 2>&1; then
+  cat "$out" >&2
+  exit 1
+fi
 
 if ! TMPDIR="$root/tmp" \
      XDG_RUNTIME_DIR="$root/runtime" \
      XDG_CONFIG_HOME="$root/config" \
      XDG_DATA_HOME="$root/data" \
-     cargo test --all-targets --quiet >"$out" 2>&1; then
+     XDG_STATE_HOME="$root/state" \
+     scripts/test-cargo.sh --all-targets --quiet >"$out" 2>&1; then
   cat "$out" >&2
   echo "gate-hermetic: the suite failed; nothing was checked" >&2
   echo "gate-hermetic: if it passes outside this gate, it is reading something it was given" >&2
@@ -106,7 +113,7 @@ failed=0
 # Nothing here is entitled to leave anything: casper has no temporary directory of its own, and
 # its allowlist is empty on purpose. If this starts failing, something new started writing to one
 # of these and the question is whether it should.
-for kind in tmp runtime config data; do
+for kind in tmp runtime config data state; do
   left=$(ls -A "$root/$kind" || true)
   [ -n "$left" ] || continue
   case "$kind" in
@@ -114,6 +121,7 @@ for kind in tmp runtime config data; do
     runtime) echo "gate-hermetic: the suite left these in \$XDG_RUNTIME_DIR:" >&2 ;;
     config) echo "gate-hermetic: the suite wrote these into \$XDG_CONFIG_HOME:" >&2 ;;
     data) echo "gate-hermetic: the suite wrote these into \$XDG_DATA_HOME:" >&2 ;;
+    state) echo "gate-hermetic: the suite wrote these into \$XDG_STATE_HOME:" >&2 ;;
   esac
   # shellcheck disable=SC2086
   printf '  %s\n' $left >&2

@@ -7,11 +7,13 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use serde_json::{Value, json};
+use std::io::Read as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const PIPE_LIMIT: u64 = 4_000_000;
+use crate::mcp_client::read_broker;
 
 #[derive(Clone)]
 struct Server {
@@ -19,6 +21,7 @@ struct Server {
     tools: Arc<Vec<Tool>>,
     timeout: std::time::Duration,
     slots: Arc<tokio::sync::Semaphore>,
+    consumed: Arc<std::sync::Mutex<read_broker::Consumed>>,
 }
 
 async fn invoke(
@@ -32,8 +35,12 @@ async fn invoke(
     if std::env::var_os(crate::jail::WANTED).is_none() {
         command.env(crate::jail::WANTED, "1");
     }
+    if verb == "broker-render" {
+        command.arg("run").arg("--mcp-read-render");
+    } else {
+        command.arg(verb);
+    }
     let mut child = command
-        .arg(verb)
         .arg("--json")
         .env(crate::mcp_client::NATIVE_ONLY, "1")
         .current_dir(root)
@@ -114,14 +121,47 @@ impl ServerHandler for Server {
                 None,
             ));
         }
-        let call = json!({"tool": request.name, "args": request.arguments.unwrap_or_default(), "cwd": self.root});
+        let args = Value::Object(request.arguments.clone().unwrap_or_default());
+        let call = json!({"tool": request.name, "args": args, "cwd": self.root});
+        let supplied = context.meta.get(read_broker::KEY);
+        let brokered = supplied
+            .map(|value| {
+                if value.to_string().len() > read_broker::LIMIT {
+                    return Err("native read broker envelope exceeds its bound".to_owned());
+                }
+                let tool = self.get_tool(&request.name).ok_or("tool is unavailable")?;
+                if tool
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.get(read_broker::KEY))
+                    .is_none()
+                {
+                    return Err("broker data requires a native read declaration".into());
+                }
+                let envelope = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+                self.consumed
+                    .lock()
+                    .map_err(|_| "native read broker state unavailable")?
+                    .take(envelope, &self.root, &request.name, &args)
+            })
+            .transpose();
         let work = async {
             let _slot = self
                 .slots
                 .acquire()
                 .await
                 .map_err(|_| "MCP server is stopping")?;
-            invoke(&self.root, "run", Some(call)).await
+            match brokered? {
+                Some(data) => {
+                    invoke(
+                        &self.root,
+                        "broker-render",
+                        Some(json!({"call":call,"data":data})),
+                    )
+                    .await
+                }
+                None => invoke(&self.root, "run", Some(call)).await,
+            }
         };
         let result = tokio::select! {
             biased;
@@ -236,7 +276,19 @@ pub async fn serve(args: &[String]) -> Result<(), String> {
                 .as_object()
                 .cloned()
                 .ok_or_else(|| format!("{} has no object input schema", card.name))?;
-            Ok(Tool::new(card.name, card.description, schema))
+            let native = card.file_revision.as_ref().is_some_and(|capability| {
+                capability.version == 1 && capability.operation == crate::tools::FileOperation::Read
+            });
+            let mut tool = Tool::new(card.name, card.description, schema);
+            if native {
+                tool.meta = Some(
+                    serde_json::from_value(
+                        json!({read_broker::KEY:read_broker::descriptor(&root)}),
+                    )
+                    .map_err(|e| e.to_string())?,
+                );
+            }
+            Ok(tool)
         })
         .collect::<Result<Vec<_>, String>>()?;
     let server = Server {
@@ -244,9 +296,10 @@ pub async fn serve(args: &[String]) -> Result<(), String> {
         tools: Arc::new(tools),
         timeout: std::time::Duration::from_millis(timeout),
         slots: Arc::new(tokio::sync::Semaphore::new(8)),
+        consumed: Arc::new(std::sync::Mutex::new(read_broker::Consumed::default())),
     };
     let service = server
-        .serve(rmcp::transport::stdio())
+        .serve((crate::mcp_client::server_input(), tokio::io::stdout()))
         .await
         .map_err(|why| format!("MCP startup failed: {why}"))?;
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -257,4 +310,23 @@ pub async fn serve(args: &[String]) -> Result<(), String> {
         _ = term.recv() => {},
     }
     Ok(())
+}
+
+pub fn render_input(input: impl std::io::Read) -> Result<crate::tools::Ran, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Render {
+        call: crate::tools::Call,
+        data: crate::tools::ReadData,
+    }
+    let mut bytes = Vec::new();
+    input
+        .take(PIPE_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > PIPE_LIMIT {
+        return Err("broker render data exceeds its bound".into());
+    }
+    let render: Render = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    crate::calling::brokered_read(&render.call, render.data)
 }

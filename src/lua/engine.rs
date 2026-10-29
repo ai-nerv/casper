@@ -17,7 +17,7 @@
 
 use crate::tools::{Card, Ran};
 use luna::{Callback, CallbackReturn, Closure, Executor, Lua, Table, Value};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// The most instructions one chunk, tool call or surface frame may run.
@@ -69,6 +69,7 @@ pub struct Declared {
     /// Every tool, in the order it was declared.
     pub tools: Vec<Card>,
     pub settings: serde_json::Map<String, serde_json::Value>,
+    native: std::collections::BTreeMap<String, crate::tools::FileOperation>,
 }
 
 /// A VM with the standard library trimmed and the memory ceiling set, and nothing of casper's on
@@ -85,6 +86,7 @@ pub fn guarded() -> Lua {
 pub struct Engine {
     lua: Lua,
     declared: Rc<RefCell<Declared>>,
+    admission: Option<Rc<Cell<bool>>>,
 }
 
 impl Default for Engine {
@@ -112,6 +114,7 @@ impl Engine {
         let mut engine = Self {
             lua: guarded(),
             declared: Rc::new(RefCell::new(Declared::default())),
+            admission: None,
         };
         engine.install(configuration);
         engine
@@ -164,6 +167,10 @@ impl Engine {
                     // A hidden tool is registered and never described, so no model can call it.
                     let hidden = matches!(spec.get_value(ctx, "hidden"), Value::Boolean(true));
                     let mut declared = declared.borrow_mut();
+                    declared.native.remove(&card.name);
+                    if let Value::Table(renderers) = ctx.get_global_value(files::RENDERERS) {
+                        renderers.set(ctx, name.as_str(), Value::Nil).ok();
+                    }
                     declared.tools.retain(|held| held.name != card.name);
                     if !hidden {
                         declared.tools.push(card);
@@ -173,6 +180,7 @@ impl Engine {
                 });
                 casper.set(ctx, "tool", tool).ok();
             }
+            files::install(ctx, casper, Rc::clone(&declared));
 
             // The socket primitive, named twice for a client stub that does not know this host.
             let stream = crate::lua::stream::table(ctx);
@@ -234,6 +242,12 @@ impl Engine {
                 .ok();
             casper.set(ctx, "exec", crate::lua::exec::table(ctx)).ok();
             casper
+                .set(ctx, "source", crate::lua::exec::source(ctx))
+                .ok();
+            casper
+                .set(ctx, "replace_source", crate::lua::exec::replace_source(ctx))
+                .ok();
+            casper
                 .set(ctx, "image", crate::lua::images::table(ctx))
                 .ok();
             casper.set(ctx, "json", crate::lua::json::table(ctx)).ok();
@@ -248,11 +262,16 @@ impl Engine {
     /// this module from knowing what a surface is.
     pub fn lend(&mut self, name: &str, build: fn(luna::Context<'_>) -> Callback<'_>) {
         let name = name.to_owned();
+        let admission = self.admission.clone();
         self.lua.enter(|ctx| {
             let Ok(Value::Table(casper)) = ctx.get_global("casper") else {
                 return;
             };
-            casper.set(ctx, name.as_str(), build(ctx)).ok();
+            let mut value: Value = build(ctx).into();
+            if let Some(attempted) = &admission {
+                value = files::blocked(ctx, value, attempted, 0);
+            }
+            casper.set(ctx, name.as_str(), value).ok();
         });
     }
 
@@ -296,9 +315,16 @@ impl Engine {
             message,
         };
         crate::lua::metering::metered(&mut self.lua, &executor, BUDGET).map_err(runtime)?;
-        self.lua
+        let outcome = self
+            .lua
             .try_enter(|ctx| ctx.fetch(&executor).take_result::<()>(ctx)?)
-            .map_err(|why| runtime(why.to_string()))
+            .map_err(|why| runtime(why.to_string()));
+        if !self.declarations_clean() {
+            return Err(runtime(
+                "file declarations attempted an effectful API".into(),
+            ));
+        }
+        outcome
     }
 
     /// What has been declared so far.
@@ -312,7 +338,7 @@ impl Engine {
     /// `None` when no tool of that name was declared, or its `run` is not a function. A tool that
     /// raises comes back as a failed [`Ran`]: the raise is what the model should read.
     pub fn call(&mut self, name: &str, args: &serde_json::Value) -> Option<Ran> {
-        if !self.declared.borrow().tools.iter().any(|t| t.name == name) {
+        if !self.declares(name) {
             return None;
         }
         self.lua.enter(|ctx| {
@@ -345,12 +371,17 @@ impl Engine {
         // A tool may answer in the wire's shape, or with a bare string when text is all it has.
         let mut ran = match out {
             serde_json::Value::String(said) => Ran::said(said),
-            other => serde_json::from_value(other).unwrap_or_else(|why| {
+            other => serde_json::from_value(files::strip_machine(other)).unwrap_or_else(|why| {
                 Ran::failed(format!("{name} answered something unreadable: {why}"))
             }),
         };
+        ran.files = crate::tools::FileMetadata::default();
         self.ticking(name, &mut ran);
         Some(ran)
+    }
+
+    pub(crate) fn declares(&self, name: &str) -> bool {
+        self.declared.borrow().tools.iter().any(|t| t.name == name)
     }
 
     /// Make sure a tool that runs a *program* in its rows will be woken to read it.
@@ -499,6 +530,7 @@ fn card<'gc>(ctx: luna::Context<'gc>, name: &str, spec: Table<'gc>) -> Option<Ca
     };
     Some(Card {
         name: name.to_owned(),
+        file_revision: None,
         description: text("description").unwrap_or_default(),
         // A tool with no schema takes no arguments, which is a real thing to be.
         parameters: crate::lua::convert::json_from_lua(ctx, spec.get_value(ctx, "parameters"))
@@ -511,6 +543,8 @@ fn card<'gc>(ctx: luna::Context<'gc>, name: &str, spec: Table<'gc>) -> Option<Ca
         script: matches!(spec.get_value(ctx, "script"), Value::Boolean(true)),
     })
 }
+
+mod files;
 
 /// Raise a message into Lua.
 fn raise<'gc>(ctx: luna::Context<'gc>, message: &str) -> luna::Error<'gc> {

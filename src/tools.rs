@@ -4,6 +4,15 @@
 use crate::paint::Line;
 use serde::{Deserialize, Serialize};
 
+mod revision;
+pub use revision::Revision;
+mod read_data;
+pub use read_data::{ReadArgs, ReadData, ReadText};
+mod files;
+pub use files::{
+    FileAbsence, FileCapability, FileMetadata, FileMutation, FileObservation, FileOperation,
+};
+
 /// One tool, as casper describes it to whoever asks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Card {
@@ -23,6 +32,8 @@ pub struct Card {
     /// Declared callable from an `execute` script. Never on the wire; see [`crate::scripting`].
     #[serde(skip)]
     pub script: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_revision: Option<FileCapability>,
 }
 
 /// One call, as it arrives.
@@ -37,11 +48,15 @@ pub struct Call {
     /// An answer to the question the last [`Ask`] posed, when this call resumes one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answered: Option<String>,
+    #[serde(flatten)]
+    pub revision: Revision,
 }
 
 /// What a tool produced: two faces, either of which may be absent.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Ran {
+    #[serde(flatten)]
+    pub files: FileMetadata,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<crate::images::Image>,
     /// What the model reads. Empty for a call that has not finished.
@@ -304,6 +319,7 @@ mod tests {
             deferred: false,
             group: String::new(),
             script: false,
+            file_revision: None,
         };
         let wire = serde_json::to_string(&card).expect("encodes");
         assert!(!wire.contains("allow") && !wire.contains("grant"), "{wire}");

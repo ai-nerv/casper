@@ -177,8 +177,7 @@ pick, and it opens in the prompt or, for doom, in the float.]] },
   } },
 }
 
--- Which branch of the manual each declaration sits under, and which are deferred, read off the
--- manual so the two cannot disagree: every `casper.tool` below passes through this one wrapper.
+-- Manual groups and deferred flags for keyed tool declarations.
 do
   local deferred, group = {}, {}
   for _, branch in ipairs(MANUAL) do
@@ -187,11 +186,13 @@ do
       group[entry.name] = branch.group
     end
   end
-  local declare = casper.tool
-  casper.tool = function(name, spec)
-    if deferred[name] then spec.deferred = true end
-    spec.group = spec.group or group[name]
-    return declare(name, spec)
+  for _, registrar in ipairs({ "tool", "file_tool" }) do
+    local declare = casper[registrar]
+    casper[registrar] = function(name, spec)
+      if deferred[name] then spec.deferred = true end
+      spec.group = spec.group or group[name]
+      return declare(name, spec)
+    end
   end
 end
 
@@ -293,12 +294,6 @@ local function lines_of(text)
   return out
 end
 
--- Written through a program inside the jail rather than by casper's own hand: the file lands
--- only where the jail lets a command write, which is the session's directory and its grants.
-local function put(path, contents)
-  return casper.exec("sh", { "-c", 'cat > "$1"', "sh", path }, contents)
-end
-
 -- A result in one line, for the stub a harness shows once it has elided the result: the first line
 -- with anything on it, trimmed and cut to fit.
 local function oneline(text, limit)
@@ -323,9 +318,8 @@ local function failure(said)
 end
 
 do -- read
-  -- Highlighted for the person in the file's own language, the plain text for the model always:
-  -- colour would spend the model's context on nothing it can use.
-  casper.tool("read", {
+  casper.file_tool("read", {
+    operation = "read",
     description = [[
   Read text or a raster image (PNG, JPEG, GIF, WebP; a BMP is refused). Images are resized and sent
   as image attachments, not text; animated images use the first frame. For large text, `offset` and `limit` pick a range of lines, and a closing line says
@@ -345,34 +339,10 @@ do -- read
     needs = "read",
     script = true,
 
-    run = function(args)
-      local ok, image = pcall(casper.image, args.path)
-      if not ok then return failure(tostring(image)) end
-      if image then
-        return {
-          said = "Read image " .. args.path .. " [" .. image.media_type .. "; resized for inline vision]",
-          images = { image }, brief = "image " .. args.path, back = "read " .. args.path,
-        }
-      end
-      local plain = casper.exec("cat", { args.path })
-      if plain.code ~= 0 then
-        return failure(plain.err)
-      end
-      local all = lines_of(plain.out)
-      local first = math.max(1, math.floor(tonumber(args.offset) or 1))
-      local last = math.min(#all, first + math.max(1, math.floor(tonumber(args.limit) or 2000)) - 1)
-      local kept = {}
-      for at = first, last do kept[#kept + 1] = all[at] end
-      local said = table.concat(kept, "\n")
-      if first > 1 or last < #all then
-        said = said .. ("\n(lines %d-%d of %d)"):format(first, last, #all)
-      end
-      local shown = casper.paint.code(table.concat(kept, "\n"), args.path)
-      local span = (first > 1 or last < #all)
-        and ("lines %d-%d of %d"):format(first, last, #all) or ("%d lines"):format(#all)
+    render = function(args, data)
       return {
-        said = said, shown = shown,
-        brief = ("read %s (%s)"):format(args.path, span),
+        said = data.said, shown = casper.paint.code(data.text, args.path),
+        brief = ("read %s (%s)"):format(args.path, data.span),
         back = ("read %s"):format(args.path),
       }
     end,
@@ -573,10 +543,11 @@ do -- execute
 end
 
 do -- write
-  casper.tool("write", {
+  casper.file_tool("write", {
+    operation = "write",
     description = [[
-  Write a file, replacing it entirely and creating the directories it needs. Prefer `edit` for a
-  change to a file that already exists.]],
+  Write a UTF-8 file without NUL bytes, smaller than 1 MiB. Its parent directory must exist.
+  Replacing an existing file requires a current native read; prefer `edit` for a partial change.]],
     parameters = {
       type = "object",
       properties = {
@@ -587,20 +558,11 @@ do -- write
     },
     needs = "write",
 
-    run = function(args)
-      local existed = casper.exec("test", { "-e", args.path }).code == 0
-      local dir = args.path:match("^(.*)/[^/]*$")
-      if dir and dir ~= "" then
-        local made = casper.exec("mkdir", { "-p", dir })
-        if made.code ~= 0 then return failure(made.err) end
-      end
-      local done = put(args.path, args.contents)
-      if done.code ~= 0 then return failure(done.err) end
-      -- The model is told what happened in a line; the person is shown what was written.
+    render = function(args, data)
+      local existed = data.existed
       local said = ("wrote %s: %d lines, %d bytes, %s"):format(
         args.path, #lines_of(args.contents), #args.contents, existed and "replaced" or "new file")
       local shown = casper.paint.code(args.contents, args.path)
-      -- Headed with where it went and what it was, above the file itself.
       table.insert(shown.lines, 1, {
         { role = "path", text = args.path },
         { role = "dim", text = ("  %d lines · %s"):format(
@@ -620,9 +582,7 @@ do -- edit
   -- Lines kept either side of a change in its diff, so it reads as the file does.
   local CONTEXT = 2
 
-  -- A line diff of two short runs: the longest common subsequence, then walked out as ` `, `-` and
-  -- `+`. An edit's span is a few lines; past a size where the table would be large, it says the
-  -- change plainly as all removed and then all added rather than aligning it.
+  -- Line diff with bounded longest-common-subsequence alignment.
   local function changes(a, b)
     local n, m = #a, #b
     local out = {}
@@ -659,10 +619,12 @@ do -- edit
     return out
   end
 
-  casper.tool("edit", {
+  casper.file_tool("edit", {
+    operation = "edit",
     description = [[
   Replace an exact piece of a file. `old` must appear exactly once -- include enough of the
-  surrounding lines to make it unique. Answers with a unified diff of the change.]],
+  surrounding lines to make it unique. Source and result must be UTF-8 text without NUL bytes and smaller
+  than 1 MiB. Answers with a unified diff of the change.]],
     parameters = {
       type = "object",
       properties = {
@@ -674,34 +636,9 @@ do -- edit
     },
     needs = "write",
 
-    run = function(args)
-      if args.old == "" then
-        return failure("`old` is empty: say which text to replace")
-      end
-      local read = casper.exec("cat", { args.path })
-      if read.code ~= 0 then return failure(read.err) end
-      local text = read.out
-
-      -- Counted before anything is replaced: patching the wrong one of two matches silently is the
-      -- failure that costs an hour to find.
-      local s, e, count, from = nil, nil, 0, 1
-      while true do
-        local at, to = text:find(args.old, from, true)
-        if not at then break end
-        count = count + 1
-        if count == 1 then s, e = at, to end
-        from = to + 1
-      end
-      if count == 0 then
-        return failure("that exact text is not in " .. args.path .. ". Read it again -- it may "
-          .. "have changed, or the whitespace may differ.")
-      end
-      if count > 1 then
-        return failure(("that text appears %d times in %s. Include more of the surrounding lines "
-          .. "so it matches exactly once."):format(count, args.path))
-      end
-      local done = put(args.path, text:sub(1, s - 1) .. args.new .. text:sub(e + 1))
-      if done.code ~= 0 then return failure(done.err) end
+    render = function(args, data)
+      local text = data.before
+      local s, e = text:find(args.old, 1, true)
 
       -- The whole lines the change touched, before and after, then aligned.
       local from_line, to_line = s, e

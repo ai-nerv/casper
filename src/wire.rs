@@ -130,13 +130,36 @@ impl Reply {
 
 /// Every verb casper answers on its command line, and what each does.
 pub const CLI_VERBS: &[(&str, &str)] = &[
+    (
+        "workflows",
+        "read bounded workflow metadata or one selected source",
+    ),
+    (
+        "replace-source",
+        "replace an existing source from bounded UTF-8 stdin",
+    ),
     ("image", "read and resize one raster attachment"),
-    ("code", "a source file's skeleton, or a directory's entries"),
+    (
+        "code",
+        "source skeletons, directory entries or bounded complete text",
+    ),
     (
         "grammar",
         "fetch, build or list the parsers code reads with",
     ),
     ("mcp", "expose configured tools over MCP JSON-RPC stdio"),
+    (
+        "mcp-auth",
+        "explicitly authorize a configured MCP server in a browser",
+    ),
+    (
+        "mcp-status",
+        "inspect a configured MCP server's authentication status",
+    ),
+    (
+        "mcp-logout",
+        "invalidate a configured MCP server's credentials and sessions",
+    ),
     ("verbs", "what this program answers, and on which door"),
     (
         "tools",

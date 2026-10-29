@@ -17,10 +17,24 @@ mod command;
 mod credentials;
 mod filter;
 mod guard;
+#[cfg(test)]
+mod native_tests;
 mod policy;
 mod temporary;
 pub use command::Prepared;
+pub(crate) use command::native_file_worker;
 pub(crate) use command::worker;
+pub use command::workflow;
+#[cfg(test)]
+pub(crate) use command::workflow_test_shell;
+pub(crate) use command::{WORKFLOW_BINDING, WorkflowBinding};
+
+pub(crate) fn file_registry_path() -> PathBuf {
+    Path::new("/var/tmp").join(format!(
+        ".casper-files-v1-{}",
+        rustix::process::geteuid().as_raw()
+    ))
+}
 
 /// What turns the jail on, in casper's own name as [`crate::setup`] reads its configuration. A
 /// coordinator sets it on the spawn: `1` for the conservative profile, or a JSON [`Grants`] object
@@ -235,21 +249,7 @@ fn rule(
 /// The jail's `EPERM` filter: [`FORBIDDEN`], `clone` into a new user namespace, an unusual
 /// `personality`, and the network unless `reach`.
 fn filter(reach: bool) -> seccompiler::BpfProgram {
-    use seccompiler::SeccompCmpOp as Op;
-    let newuser = libc::CLONE_NEWUSER as u64;
-    let personas: Vec<_> = PERSONAS.iter().map(|p| (0, Op::Ne, *p)).collect();
-    let mut rules: Rules = vec![
-        (
-            libc::SYS_clone,
-            vec![rule(&[(0, Op::MaskedEq(newuser), newuser)])],
-        ),
-        (libc::SYS_personality, vec![rule(&personas)]),
-    ];
-    rules.extend(FORBIDDEN.iter().map(|nr| (*nr, Vec::new())));
-    if !reach {
-        rules.extend(UNREACHED.iter().map(|nr| (*nr, Vec::new())));
-    }
-    built(rules, libc::EPERM)
+    filter::syscalls(reach, false)
 }
 
 /// `rules` compiled to answer `errno`, or an empty program, which the caller refuses, when one
@@ -751,14 +751,13 @@ mod tests {
         argv.push("--".to_owned());
         // `/proc/net/dev` is namespaced through the fresh `--proc`, unlike `/sys/class/net`, which
         // shows the host's bind-mounted sysfs; in an unshared netns it lists only the loopback.
-        argv.extend(
-            [
-                "sh",
-                "-c",
-                "cat ~/.ssh/id 2>&1; echo --net--; cat /proc/net/dev",
-            ]
-            .map(str::to_owned),
-        );
+        argv.extend([
+            which("sh").expect("fixture shell"),
+            "-c".to_owned(),
+            "\"$1\" ~/.ssh/id 2>&1; echo --net--; \"$1\" /proc/net/dev".to_owned(),
+            "jail-probe".to_owned(),
+            which("cat").expect("fixture reader"),
+        ]);
 
         let out = std::process::Command::new(bwrap)
             .args(&argv)

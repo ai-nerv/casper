@@ -14,6 +14,8 @@ pub(super) struct Server {
     pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<super::oauth::Config>,
     pub tools: Option<Vec<String>>,
     #[serde(default)]
     pub excluded_tools: Vec<String>,
@@ -40,7 +42,7 @@ pub(super) fn parse(value: Option<&Value>) -> Result<BTreeMap<String, Server>, S
         return Ok(BTreeMap::new());
     };
     let servers: BTreeMap<String, Server> = serde_json::from_value(value.clone())
-        .map_err(|why| format!("invalid mcp_servers: {why}"))?;
+        .map_err(|_| "invalid mcp_servers schema".to_owned())?;
     for (name, server) in &servers {
         // Words joined by single underscores: `mcp__{name}__` then ends where the name does.
         if name.is_empty()
@@ -95,6 +97,21 @@ pub(super) fn parse(value: Option<&Value>) -> Result<BTreeMap<String, Server>, S
             }
         } else if !server.headers.is_empty() {
             return Err(format!("MCP server {name}: headers require an HTTP URL"));
+        }
+        if let Some(auth) = &server.auth {
+            let url = server
+                .url
+                .as_deref()
+                .ok_or("MCP OAuth requires an HTTP server")?;
+            if server
+                .headers
+                .keys()
+                .any(|key| key.eq_ignore_ascii_case("authorization"))
+            {
+                return Err("MCP OAuth conflicts with an explicit Authorization header".into());
+            }
+            auth.bind(url)
+                .map_err(|_| "invalid MCP OAuth configuration")?;
         }
     }
     Ok(servers)

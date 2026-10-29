@@ -8,6 +8,11 @@
 -- At an oslo prompt in this directory `make` is enough; everywhere else it is `oslo make`.
 -- CI has no oslo, so it calls the language's own tool -- nothing here is on the release path.
 
+local function test_cargo(...)
+  local argv = { "scripts/test-cargo.sh", ... }
+  assert(oslo.run(argv).ok, "cargo test failed")
+end
+
 local make = oslo.make
 
 -- Name and version from the package table of Cargo.toml, the file a release bumps.
@@ -376,22 +381,158 @@ local function grammars_if_missing()
 end
 
 make.recipe{ name = "test", desc = "the suite",
-             run = function() grammars_if_missing(); sh.cargo("test", "--all-targets") end }
+             deps = { "test-launcher-fixture", "build-file-fault-exec" },
+             run = function() grammars_if_missing(); test_cargo("--all-targets") end }
 make.alias("t", "test")
 
+make.recipe{ name = "test-events", desc = "content-free tool events and bounded local queue contracts",
+             run = function()
+               test_cargo("--locked", "--offline", "--release", "--bin", "casper", "event_start::")
+               test_cargo("--locked", "--offline", "--release", "--lib", "events::")
+               test_cargo("--locked", "--offline", "--release", "--test", "event_tools")
+               test_cargo("--locked", "--offline", "--release", "--lib", "mcp_client::observing")
+               test_cargo("--locked", "--offline", "--release", "--test", "event_servers")
+             end }
+
+make.recipe{ name = "test-launcher-fixture", desc = "private test backend capture and cleanup",
+             run = function() assert(oslo.run{ "scripts/test-launcher-fixture.sh" }.ok,
+               "test launcher fixture failed") end }
+
 make.recipe{ name = "test-pty-lifecycle", desc = "PTY EOF and process exit boundaries",
-             run = function() sh.cargo("test", "--lib", "pty::exiting") end }
+             run = function() test_cargo("--lib", "pty::exiting") end }
+
+make.recipe{ name = "test-workflows", desc = "bounded read-only workflow acquisition",
+             run = function()
+               test_cargo("--lib", "workflows::")
+               test_cargo("--lib", "jail::command::workflow::")
+               test_cargo("--test", "workflows")
+             end }
 
 make.recipe{ name = "test-resource-bounds", desc = "isolated command and screen memory limits",
-             run = function() sh.cargo("test", "--lib", "a_program_that_") end }
+             run = function() test_cargo("--lib", "a_program_that_") end }
+
+make.recipe{ name = "test-running-lifecycle", desc = "command deadlines, pipe EOF and process groups",
+             run = function()
+               test_cargo("--lib", "running::tests::")
+               test_cargo("--lib", "cancelling::tests::")
+               test_cargo("--lib", "serving::tests::")
+             end }
 
 make.recipe{ name = "test-containment", desc = "command and PTY jail boundaries",
-             run = function() sh.cargo("test", "--test", "containment", "--", "--nocapture") end }
+             run = function() test_cargo("--test", "containment", "--", "--nocapture") end }
+
+make.recipe{ name = "test-jail-probe", desc = "actual namespace key and network boundary probe",
+             run = function()
+               test_cargo("--lib", "jail::tests::a_jailed_command_cannot_read_the_keys_or_reach_the_network")
+               test_cargo("--lib", "jail::tests::a_servers_environment_is_set_inside_the_jail_and_never_on_its_launcher")
+             end }
+
+make.recipe{ name = "test-tool-settings", desc = "actual configured tool behavior",
+             run = function() test_cargo("--test", "settings") end }
+
+make.recipe{ name = "test-tool-briefs", desc = "shipped file tool result summaries",
+             run = function() test_cargo("--test", "briefs") end }
+
+make.recipe{ name = "test-shell", desc = "shell status and remembered working directories",
+             run = function() test_cargo("--test", "shell") end }
+
+make.recipe{ name = "test-edit-source", desc = "complete bounded text acquisition for edits",
+             run = function()
+               test_cargo("--lib", "source::tests::")
+               test_cargo("--lib", "source_worker::tests::")
+               test_cargo("--test", "edit_source")
+             end }
+
+make.recipe{ name = "test-file-transactions", desc = "file revision compatibility and transaction boundaries",
+             deps = { "build-file-fault-exec" },
+             run = function()
+               test_cargo("--lib", "files::locking::tests::")
+               test_cargo("--lib", "files::control::tests::")
+               test_cargo("--lib", "files::control::payload::tests::")
+               test_cargo("--lib", "jail::native_tests::")
+               test_cargo("--lib", "files::worker::snapshot::tests::")
+               test_cargo("--lib", "files::worker::staging::tests::")
+               test_cargo("--lib", "files::worker::reading::tests::")
+               test_cargo("--lib", "files::worker::tests::")
+               test_cargo("--lib", "files::worker::transaction::tests::")
+               test_cargo("--lib", "lua::engine::files::tests::")
+               test_cargo("--lib", "tools::revision::tests::")
+               test_cargo("--test", "edit_source", "revision_preconditions")
+               test_cargo("--test", "file_worker")
+             end }
+
+make.recipe{ name = "test-native-file-worker", desc = "actual jailed snapshot coordinator and fixed registry",
+             deps = { "build-file-fault-exec" },
+             run = function() test_cargo("--test", "file_worker") end }
+
+make.recipe{ name = "build-file-fault-exec", desc = "restrictive kernel sync-failure fixture",
+             run = function() sh.cargo("build", "--example", "file-fault-exec") end }
+
+make.recipe{ name = "test-native-file-kernel-failures", desc = "actual ENOSPC and data-sync failures on both doors/backends",
+             deps = { "build-file-fault-exec" },
+             run = function() test_cargo("--test", "file_worker", "admission::kernel_failures::") end }
+
+make.recipe{ name = "trace-native-file-kernel-failures", desc = "actual staging write and sync syscall evidence",
+             deps = { "build-file-fault-exec" },
+             run = function()
+               assert(oslo.run{ "strace", "-f", "-qq", "-s", "0", "-e",
+                 "trace=execve,execveat,openat,write,fsync,fdatasync,close,linkat,renameat,renameat2",
+                 "-o", "target/native-file-kernel-failures.strace", "scripts/test-cargo.sh",
+                 "--test", "file_worker", "admission::kernel_failures::" }.ok,
+                 "native kernel-failure trace failed")
+             end }
+
+make.recipe{ name = "test-shipped-files", desc = "shipped native file transactions and presentation",
+             run = function()
+               test_cargo("--test", "file_worker", "admission::shipped::")
+               test_cargo("--test", "briefs")
+               test_cargo("--test", "settings")
+               test_cargo("--test", "edit_source")
+               test_cargo("--test", "execute", "--test", "images", "--test", "mcp")
+               test_cargo("--test", "mcp_client")
+             end }
+
+make.recipe{ name = "test-file-probe-records", desc = "independent lease probes preserve parent test records",
+             run = function()
+               test_cargo("--lib", "child_probes_leave_only_the_parent_completion_record_on_stdout")
+             end }
+
+make.recipe{ name = "test-file-admission", desc = "native file declaration provenance and effect-free guard admission",
+             deps = { "build-file-fault-exec" },
+             run = function()
+               test_cargo("--lib", "files::worker::reading::tests::")
+               test_cargo("--lib", "files::worker::presence::tests::")
+               test_cargo("--lib", "lua::engine::files::tests::")
+               test_cargo("--lib", "tools::revision::tests::")
+               test_cargo("--test", "file_worker", "admission::")
+             end }
+
+make.recipe{ name = "test-native-file-stages", desc = "native staging publication in both actual jail backends",
+             run = function() test_cargo("--lib", "jail::native_tests::cases::native_anonymous_stages") end }
+
+make.recipe{ name = "trace-native-file-admission", desc = "trace native admission fixture peer credentials",
+             run = function()
+               assert(oslo.run{"mkdir","-p","target"}.ok,"trace directory failed")
+               assert(oslo.run{"strace","-f","-qq","-e","trace=getsockopt,getuid,geteuid,getgid,getegid,setuid,setresuid,connect,accept4",
+                 "-o","target/native-admission.strace","scripts/test-cargo.sh","--test","file_worker",
+                 "admission::native_declarations_drive_guarded_tools"}.ok,"admission trace failed")
+             end }
+
+make.recipe{ name = "trace-native-file-worker", desc = "trace native snapshot worker kernel boundaries",
+             deps = { "build-file-fault-exec" },
+             run = function()
+               assert(oslo.run{ "mkdir", "-p", "target" }.ok, "trace directory failed")
+               assert(oslo.run{ "strace", "-f", "-qq", "-e",
+                 "trace=execve,execveat,openat,prctl,landlock_create_ruleset,landlock_add_rule,landlock_restrict_self",
+                 "-o", "target/native-file-worker.strace", "scripts/test-cargo.sh", "--test", "file_worker" }.ok,
+                 "native worker trace failed")
+             end }
 
 make.recipe{ name = "test-all", desc = "the suite, with every feature on",
+             deps = { "build-file-fault-exec" },
              run = function()
                grammars_if_missing()
-               sh.cargo("test", "--all-targets", "--all-features")
+               test_cargo("--all-targets", "--all-features")
              end }
 
 make.recipe{ name = "check", desc = "type-check every target",
@@ -419,12 +560,24 @@ make.recipe{ name = "fmt", desc = "format the workspace",
              run = function() sh.cargo("fmt", "--all") end }
 
 make.recipe{ name = "test-web", desc = "native web extraction and network containment",
-             run = function() sh.cargo("test", "--test", "web") end }
+             run = function() test_cargo("--test", "web") end }
 
 make.recipe{ name = "test-mcp", desc = "MCP client/server interoperability",
              run = function()
-               sh.cargo("test", "--lib", "mcp_client")
-               sh.cargo("test", "--test", "mcp", "--test", "mcp_client")
+               test_cargo("--lib", "mcp_client")
+               test_cargo("--test", "mcp", "--test", "mcp_client")
+             end }
+
+make.recipe{ name = "test-mcp-supervisor", desc = "native MCP supervisor stdio and descendant ownership",
+             run = function() test_cargo("--lib", "tied::tests::supervisor") end }
+
+make.recipe{ name = "test-mcp-auth", desc = "resource-bound MCP authentication and private storage",
+             run = function()
+               test_cargo("--lib", "mcp_client::oauth")
+               test_cargo("--lib", "mcp_client::http::auth_tests")
+               test_cargo("--lib", "mcp_client::http::identifier")
+               test_cargo("--test", "mcp_oauth")
+               sh.sh("scripts/test-oauth-writes.sh")
              end }
 
 make.recipe{ name = "fmt-check", desc = "fail if anything is unformatted",
@@ -527,7 +680,7 @@ make.recipe{ name = "audit", desc = "known advisories against the lockfile, offl
 
 -- Licenses, bans, advisories and sources, as `deny.toml` sets them.
 make.recipe{ name = "deny", desc = "the dependency policy in deny.toml",
-             run = when_installed("deny", { "cargo", "deny", "check" }, "cargo deny failed") }
+             run = when_installed("deny", { "cargo", "deny", "--offline", "check", "--disable-fetch" }, "cargo deny failed") }
 
 make.recipe{
   name = "verify",

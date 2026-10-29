@@ -1,6 +1,6 @@
 [package]
 name = "casper"
-version = "0.8.3"
+version = "0.9.0"
 edition = "2024"
 description = "The tooling interface: what a tool is, what it says, and what it shows"
 license = "MIT"
@@ -13,6 +13,14 @@ path = "src/lib.rs"
 [[bin]]
 name = "casper"
 path = "src/main.rs"
+
+[[test]]
+name = "event_tools"
+harness = false
+
+[[test]]
+name = "event_servers"
+harness = false
 
 # Nothing that knows what a harness is. casper is asked to run a tool and to describe what it
 # produced; who asked, and what they will do with it, is not its business. What crosses does so as
@@ -33,7 +41,7 @@ thiserror = "2.0"
 # The kernel's half of "casper belongs to the magi that started it": `PR_SET_PDEATHSIG`, and
 # nothing else from it. Already in the lockfile underneath pty-process, so this is a feature
 # and not a package.
-rustix = { version = "1", features = ["process", "net", "fs", "event"] }
+rustix = { version = "1", features = ["process", "net", "fs", "event", "stdio"] }
 seccompiler = "0.5"
 libc = "0.2.189"
 landlock = "0.4.4"
@@ -49,6 +57,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io
 # startup. `web` trusts the bundled Mozilla roots, MCP the platform's.
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "stream", "gzip", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+ring = { version = "=0.17.14", default-features = false, features = ["alloc"] }
 webpki-roots = "1"
 scraper = "0.24"
 url = "2"
@@ -68,6 +77,7 @@ two-face = { version = "0.5", default-features = false, features = ["syntect-fan
 serde_json = "1.0"
 
 [dev-dependencies]
+tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
 rmcp = { version = "3.5", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-server"] }
 axum = "0.8"
 two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }

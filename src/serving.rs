@@ -276,31 +276,15 @@ impl Drop for Slot {
     }
 }
 
-thread_local! {
-    /// The connection whose call this thread is answering, while it answers one.
-    static PEER: std::cell::RefCell<Option<UnixStream>> = const { std::cell::RefCell::new(None) };
-}
-
 /// Answer one call from `stream`, with [`abandoned`] watching it meanwhile.
 fn answering<T>(stream: &UnixStream, answer: impl FnOnce() -> T) -> T {
-    PEER.set(stream.try_clone().ok());
-    let answered = answer();
-    PEER.set(None);
-    answered
+    crate::cancelling::with_peer(stream, answer)
 }
 
 /// Whether the peer whose call this thread is answering has closed its end. Never, off the socket.
 #[must_use]
 pub fn abandoned() -> bool {
-    use rustix::event::{PollFd, PollFlags, Timespec};
-    PEER.with_borrow(|peer| {
-        peer.as_ref().is_some_and(|stream| {
-            let mut fds = [PollFd::new(stream, PollFlags::empty())];
-            let polled = rustix::event::poll(&mut fds, Some(&Timespec::default()));
-            polled.is_ok_and(|ready| ready > 0)
-                && fds.iter().any(|fd| fd.revents().contains(PollFlags::HUP))
-        })
-    })
+    crate::cancelling::abandoned()
 }
 
 /// Whether the peer runs as this user. A peer of another user is never answered.

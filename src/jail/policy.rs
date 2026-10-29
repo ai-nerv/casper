@@ -22,6 +22,7 @@ const STORES: &[&str] = &[
     ".npmrc",
     ".pypirc",
     ".local/share/keyrings",
+    ".local/state/casper/mcp-auth",
     ".password-store",
 ];
 
@@ -40,18 +41,29 @@ pub(super) fn protected(home: &Path) -> std::io::Result<Vec<PathBuf>> {
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".config"));
-    protected_in(home, &data, &config)
+    let state = std::env::var_os("XDG_STATE_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/state"));
+    protected_in(home, &data, &config, &state)
 }
 
-/// The half of [`protected`] that does not read the environment for where data and config live.
-fn protected_in(home: &Path, data: &Path, config: &Path) -> std::io::Result<Vec<PathBuf>> {
+/// Resolve credential roots and their aliases.
+fn protected_in(
+    home: &Path,
+    data: &Path,
+    config: &Path,
+    state: &Path,
+) -> std::io::Result<Vec<PathBuf>> {
     let mut paths: Vec<_> = STORES.iter().map(|path| home.join(path)).collect();
     paths.extend([data.join("magi"), data.join("keyrings")]);
     paths.extend([config.join("gh"), config.join("gcloud")]);
+    paths.push(state.join("casper/mcp-auth"));
     for name in FAMILY {
         paths.extend([home.join(".config").join(name), config.join(name)]);
     }
     paths.push(home.join(".balthasar"));
+    paths.push(super::file_registry_path());
     if let Some(cargo) = std::env::var_os("CARGO_HOME") {
         paths.extend([
             PathBuf::from(&cargo).join("credentials"),
@@ -360,7 +372,9 @@ mod tests {
         std::os::unix::fs::symlink(root.join("host-1"), lock).expect("lock");
         std::os::unix::fs::symlink(root.join("host-2"), home.join(".mozilla/p/lock"))
             .expect("lock");
-        let protected = protected_in(&home, &data, &config).expect("a dangling lock is fine");
+        let state = root.join("state");
+        let protected =
+            protected_in(&home, &data, &config, &state).expect("a dangling lock is fine");
         for path in [
             config.join("magi"),
             config.join("casper"),
@@ -372,6 +386,8 @@ mod tests {
             home.join(".pypirc"),
             home.join(".cargo/credentials.toml"),
             home.join(".local/share/keyrings"),
+            home.join(".local/state/casper/mcp-auth"),
+            state.join("casper/mcp-auth"),
             home.join(".password-store"),
             home.join(".mozilla"),
             config.join("google-chrome"),

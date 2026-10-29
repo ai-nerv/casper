@@ -53,8 +53,9 @@ impl Surface {
         }
     }
 
-    fn until(&mut self, accepts: impl Fn(&Value) -> bool) -> Value {
+    fn until(&mut self, stage: &str, accepts: impl Fn(&Value) -> bool) -> Value {
         let deadline = Instant::now() + Duration::from_secs(5);
+        let mut latest = None;
         loop {
             match self.output.recv_timeout(Duration::from_millis(10)) {
                 Ok(frame) => {
@@ -66,13 +67,14 @@ impl Surface {
                         return frame;
                     }
                     assert_ne!(frame["event"], "done", "surface ended early: {frame}");
+                    latest = Some(frame);
                 }
                 Err(RecvTimeoutError::Timeout) => self.send(json!({"event":"tick"})),
                 Err(RecvTimeoutError::Disconnected) => panic!("surface disconnected"),
             }
             assert!(
                 Instant::now() < deadline,
-                "surface did not reach expected state"
+                "surface did not reach {stage}: {latest:?}"
             );
         }
     }
@@ -109,7 +111,8 @@ pub(super) fn review(root: &Path) {
     std::fs::create_dir_all(&config).expect("surface config");
     std::fs::write(
         config.join("tools.lua"),
-        r#"
+        super::native(
+            r#"
 casper.tool("accept", {
   description = "Synthetic interactive acceptance",
   parameters = {type = "object", properties = {}},
@@ -119,28 +122,37 @@ casper.tool("accept", {
   end,
 })
 "#,
+        ),
     )
     .expect("synthetic declaration");
     let mut surface = Surface::open();
     surface.send(json!({"event":"open", "rows":6, "cols":60, "args":{}}));
-    let opened = surface.until(|frame| rows(frame).iter().any(|line| line == "CAPTURE>"));
+    let opened = surface.until("opened", |frame| {
+        rows(frame).iter().any(|line| line == "CAPTURE>")
+    });
     assert_eq!(rows(&opened).len(), 6);
     assert!(!opened["cursor"].is_null());
     surface.type_line("printf 'INPUT_OK\\n'");
-    let typed = surface.until(|frame| rows(frame).iter().any(|line| line == "INPUT_OK"));
+    let typed = surface.until("typed", |frame| {
+        rows(frame).iter().any(|line| line == "INPUT_OK")
+    });
     surface.send(json!({"event":"resize", "rows":9, "cols":50}));
-    surface.type_line("/bin/stty size");
-    let resized = surface.until(|frame| rows(frame).iter().any(|line| line == "9 50"));
+    surface.type_line(&super::native("/bin/stty size"));
+    let resized = surface.until("resized", |frame| {
+        rows(frame).iter().any(|line| line == "9 50")
+    });
     assert_eq!(rows(&resized).len(), 9);
     assert!(rows(&resized).iter().all(|line| line.chars().count() <= 50));
-    surface.type_line("/bin/sh -c 'echo ready > waiting; exec /bin/sleep 30'");
+    surface.type_line(&super::native(
+        "/bin/sh -c 'echo ready > waiting; exec /bin/sleep 30'",
+    ));
     let deadline = Instant::now() + Duration::from_secs(5);
     while !root.join("work/waiting").exists() {
         assert!(Instant::now() < deadline, "foreground job never started");
         std::thread::sleep(Duration::from_millis(10));
     }
     surface.send(json!({"event":"key", "key":"ctrl+c"}));
-    let interrupted = surface.until(|frame| {
+    let interrupted = surface.until("interrupted", |frame| {
         let painted = rows(frame);
         painted.iter().any(|line| line.contains("^C"))
             && painted
@@ -150,7 +162,7 @@ casper.tool("accept", {
                 .is_some_and(|line| line == "CAPTURE>")
     });
     surface.type_line("exit 0");
-    let exited = surface.until(|frame| frame["event"] == "done");
+    let exited = surface.until("exited", |frame| frame["event"] == "done");
     assert!(
         exited["answered"]
             .as_str()

@@ -221,6 +221,7 @@ mod resuming {
             args,
             cwd: String::new(),
             answered: answered.map(ToOwned::to_owned),
+            revision: Default::default(),
         }
     }
 

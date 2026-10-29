@@ -46,6 +46,69 @@ The files, finding and `shell` tools are always in front of the model. The rest 
 listed in the manual, and sent to the model only once a `tools` lookup reaches them, because every
 card sent costs tokens on every request.
 
+`edit` accepts UTF-8 source and results without NUL bytes, each strictly below 1 MiB. It acquires a complete
+snapshot through a native worker inside the current jail; oversized, invalid or failed reads
+leave the file unchanged. Ordinary command output keeps its separate 256 KiB display cap.
+Lua declarations can use `casper.source(path)` for complete text, or `nil, error` on refusal.
+`casper.replace_source(path, text)` sends a bounded replacement to the native jailed writer,
+returning `true` or `nil, error`. Neither primitive requires `cat` from `PATH`.
+The worker's `casper code --source-text PATH` mode returns `source_text` and `source_bytes` in
+the normal reply envelope. The separate `casper replace-source PATH` verb consumes bounded
+stdin and returns `written_bytes`. These are snapshot/IO acknowledgments, not revision receipts
+or write grants. Replacement is not atomic, does not serialize concurrent editors, and a write
+error can leave a partial result; it must not be replayed on the assumption that nothing changed.
+
+### Native file declarations
+
+`casper.file_tool(name, spec)` selects the fixed native `read`, `edit` or `write`
+operation. It is a keyed registration: another declaration of that name replaces
+it, and an ordinary `casper.tool` override removes native capability. The registrar
+sets the required permission and versioned `file_revision` capability; a Lua flag
+cannot do that. Native declarations cannot supply `run`, `surface` or `screen`.
+
+```lua
+casper.file_tool("native_read", {
+  operation = "read", description = "Read text, a bounded read-only preview, or a raster attachment.",
+  parameters = { type = "object", properties = { path = { type = "string" } }, required = { "path" } },
+  script = true,
+})
+```
+
+Arguments remain `path, offset?, limit?` for reads, `path, old, new` for edits and
+`path, contents` for writes. Optional `render(args, result)` formats presentation
+only; it cannot run commands, access files, connect to peers or fabricate machine
+observations. Guarded admission uses an effect-free declaration VM, including
+sticky refusal when `pcall` catches an attempted effect. Mutation reporting after
+commit cannot claim rollback just because its renderer failed.
+
+Native text reads stream the file under the cooperative lease. Ranges can start
+beyond the 1MiB editable-source limit; the 256KiB selected display budget does not
+limit which lines can be selected. Spans count source lines, and truncated output
+reports omitted bytes. Large files, readable symlinks/hardlinks and noneditable
+regular files return explicit read-only previews, never mutation receipts.
+The read renderer receives bounded selected `text`, `said`, `span` and
+`source_bytes`; `source_text` is present only for a complete editable snapshot.
+Images keep their existing attachment path.
+
+A supporting coordinator must negotiate and echo the capability outside model
+arguments and provide complete mutation guards; see [FAMILY.md](FAMILY.md#file-revision-compatibility).
+Native mutations refuse unguarded old-coordinator calls. Text observations retain
+the complete UTF-8/no-NUL/strictly-below-1-MiB editable bound. Raster attachments do
+not carry text revision receipts, and nested script reads do not refresh an outer
+agent's observations. The native writer stages and commits synchronously inside
+the jail while holding its lease; stale state, unsupported metadata and missing
+parents refuse. Source modes/ownership are preserved or explicitly refused.
+
+Magi records native observations only after exact delivery to the owning agent.
+Requested successful absence can resolve an unknown creation outcome without
+granting an edit receipt; failed reads and no-receipt previews cannot do so.
+Shipped read/edit/write declarations now select these native operations; their Lua
+callbacks only render results. The legacy source APIs remain for explicit ordinary
+declarations and do not provide native transaction guarantees. Existing-file
+mutation needs a current delivered observation, creation is no-replace, and missing
+parents refuse. Coordinated default-fixture migration and full verification remain
+in progress; the implementation alone is not phase acceptance.
+
 ## Scripts
 
 `execute` runs Python in [monty](https://github.com/pydantic/monty), a sandboxed subset of
@@ -117,6 +180,14 @@ there is no Blender-specific executor. See [MCP_CLIENT.md](docs/MCP_CLIENT.md) f
 `casper mcp --root /path/to/project --tools=read,web` exposes configured tools using the
 official Rust MCP SDK over stdio. Disabled and hidden tools are not exposed. Tool failures are
 MCP error results, and cancelled or timed-out calls stop their worker processes.
+
+Nested native reads negotiate `io.github.bresilla.casper/native-read` tool metadata
+on the actual stdio session. For an approved read or command call at the same launch
+root, the host acquires bounded data through its fixed jailed reader and pushes it
+with call-bound, single-use request metadata. The nested server runs only the pure
+renderer. Text ranges, previews and images are retained; revision receipts, mutation
+authority and registry descriptors are not forwarded. HTTP peers do not receive
+host acquisition data. The ordinary MCP jail and its syscall restrictions are unchanged.
 
 The `web` tool searches for sources or fetches an HTTP(S) page and extracts readable text and
 links. It uses a native Rust HTTP client, does not execute page scripts and needs no additional
@@ -272,6 +343,11 @@ The directory environment is `.env.lua`, loaded when you `cd` here and unloaded 
 brings up the flake's dev shell and defines `_b`, `_r`, `_t`, `_v` and `_i` for the commands above.
 
 ## Requirements
+
+Native test recipes capture a private read-only, single-link bubblewrap when one is
+available, recording its hash without changing the installed launcher. `test-launcher-fixture`
+checks argument forwarding, signal defaults, cancellation and cleanup. The hermetic gate uses
+the same launcher. `setsid` and GNU coreutils are required for these Linux test recipes.
 
 `.make.lua` and `.env.lua` are read by [oslo](https://github.com/termworks/oslo), which provides
 both the `make` task runner and the directory environment. Without it, `make` is whatever is on

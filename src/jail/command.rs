@@ -5,12 +5,50 @@ use super::{Jail, policy};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+mod workflow;
+pub use workflow::workflow;
+pub(crate) use workflow::{WORKFLOW_BINDING, WorkflowBinding};
+
+#[cfg(test)]
+pub(crate) fn workflow_test_shell(script: &str) -> Prepared {
+    Prepared {
+        program: "sh".into(),
+        args: vec!["-c".into(), script.into()],
+        cwd: PathBuf::from("/"),
+        env: Vec::new(),
+        clear: false,
+        filters: Vec::new(),
+        landlock: None,
+        descriptors: Vec::new(),
+        guard: None,
+        separator: None,
+        _temporary: None,
+    }
+}
+
 /// Launch the current Casper executable with inherited configuration and grants.
 pub(crate) fn worker(root: &Path) -> std::io::Result<tokio::process::Command> {
     let mut command = std::process::Command::new(std::env::current_exe()?);
     command.current_dir(root);
     crate::tied::running(&mut command, Vec::new());
     Ok(command.into())
+}
+
+pub(crate) fn native_file_worker() -> std::io::Result<Prepared> {
+    let program = std::env::current_exe()?;
+    let program = program
+        .to_str()
+        .ok_or_else(|| std::io::Error::other("native executable path is not UTF-8"))?;
+    let mut prepared = Jail::from_env().prepare_inner(
+        program,
+        &["code".to_owned(), "--file-worker".to_owned()],
+        None,
+        &[],
+        false,
+        true,
+    )?;
+    prepared.inner(&[("CASPER_NATIVE_FILE_WORKER".to_owned(), "1".to_owned())]);
+    Ok(prepared)
 }
 
 /// Set when a jail that cannot be built in full must refuse rather than run with less.
@@ -41,6 +79,24 @@ impl Jail {
         extra: &[(String, String)],
         terminal: bool,
     ) -> std::io::Result<Prepared> {
+        self.prepare_inner(program, args, cwd, extra, terminal, false)
+    }
+
+    pub(super) fn prepare_inner(
+        &self,
+        program: &str,
+        args: &[String],
+        cwd: Option<&Path>,
+        extra: &[(String, String)],
+        terminal: bool,
+        native_control: bool,
+    ) -> std::io::Result<Prepared> {
+        if native_control && (!self.on() || terminal) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "native file control requires a contained non-terminal worker",
+            ));
+        }
         let mut prepared = Prepared {
             program: program.into(),
             args: args.into(),
@@ -58,6 +114,12 @@ impl Jail {
         let Some(grants) = self.grants.as_ref().map_err(refused)? else {
             return Ok(prepared);
         };
+        let narrowed = native_control.then(|| {
+            let mut narrowed = grants.clone();
+            narrowed.reach = false;
+            narrowed
+        });
+        let grants = narrowed.as_ref().unwrap_or(grants);
         let protected = policy::protected(&self.home)?;
         policy::validate(&self.cwd, grants, &protected)?;
         let bwrap = super::which("bwrap");
@@ -80,7 +142,11 @@ impl Jail {
             prepared.env.push((crate::shelf::NAMED.into(), roots));
         }
         let filters = vec![
-            super::filter(grants.reach),
+            if native_control {
+                super::filter::syscalls(grants.reach, true)
+            } else {
+                super::filter(grants.reach)
+            },
             super::filter::families(bwrap.is_some()),
             super::absent(),
         ];
@@ -213,6 +279,24 @@ impl Prepared {
     /// Configure an ordinary child with the captured policy.
     pub fn command(&mut self) -> std::process::Command {
         let mut command = std::process::Command::new(&self.program);
+        self.configure(&mut command, false);
+        command
+    }
+
+    pub(crate) fn mcp_command(
+        &mut self,
+    ) -> std::io::Result<(tokio::process::Command, Option<std::os::fd::OwnedFd>)> {
+        let mut command = std::process::Command::new(&self.program);
+        let lifetime = if self.separator.is_none() && self.landlock.is_some() {
+            Some(crate::tied::supervised(&mut command)?)
+        } else {
+            None
+        };
+        self.configure(&mut command, lifetime.is_some());
+        Ok((command.into(), lifetime))
+    }
+
+    fn configure(&mut self, command: &mut std::process::Command, supervised: bool) {
         command.args(&self.args).current_dir(&self.cwd);
         if self.clear {
             command.env_clear();
@@ -220,13 +304,17 @@ impl Prepared {
         command.envs(self.env.iter().cloned());
         let filters = std::mem::take(&mut self.filters);
         if !filters.is_empty() {
-            crate::tied::confine(&mut command, filters);
+            crate::tied::confine(command, filters);
         }
         if let Some(ruleset) = self.landlock.take() {
-            crate::tied::restrict(&mut command, ruleset);
+            crate::tied::restrict(command, ruleset);
         }
-        crate::tied::running(&mut command, std::mem::take(&mut self.descriptors));
-        command
+        let descriptors = std::mem::take(&mut self.descriptors);
+        if supervised {
+            crate::tied::inside_supervisor(command, descriptors);
+        } else {
+            crate::tied::running(command, descriptors);
+        }
     }
 
     /// Configure a terminal child with the same policy and its own session leadership.

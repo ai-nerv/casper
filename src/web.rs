@@ -4,6 +4,8 @@ mod extract;
 mod http;
 mod search;
 
+pub(crate) use http::public as public_address;
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 

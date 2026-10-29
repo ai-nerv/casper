@@ -316,6 +316,7 @@ fn card(name: &str, needs: &str, script: bool) -> Card {
         deferred: false,
         group: String::new(),
         script,
+        file_revision: None,
     }
 }
 

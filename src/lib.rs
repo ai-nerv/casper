@@ -4,6 +4,9 @@
 
 pub mod acknowledged;
 pub mod calling;
+mod cancelling;
+pub mod events;
+pub mod files;
 pub mod framing;
 pub mod grammars;
 pub mod highlight;
@@ -25,6 +28,8 @@ pub mod seeking;
 pub mod serving;
 pub mod setup;
 pub mod shelf;
+pub mod source;
+mod source_worker;
 pub mod surface;
 #[cfg(test)]
 mod testing;
@@ -32,3 +37,4 @@ pub mod tied;
 pub mod tools;
 pub mod web;
 pub mod wire;
+pub mod workflows;

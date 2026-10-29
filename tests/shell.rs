@@ -171,10 +171,14 @@ fn a_command_that_worked_is_not_reported_as_a_failure() {
 fn the_directory_a_command_ended_in_is_where_the_next_one_starts() {
     // A `cd` in a subshell is not a `cd` in the shell that writes the directory down.
     let alone = Alone::new("cd");
-    alone.shell("cd /usr/share");
+    let target = alone.dir.join("destination");
+    std::fs::create_dir(&target).expect("destination");
+    let quoted = format!("'{}'", target.to_string_lossy().replace('\'', "'\\''"));
+    let moved = alone.shell(&format!("cd {quoted}"));
+    assert_ne!(moved["failed"], serde_json::json!(true), "{moved}");
     assert_eq!(
         alone.shell("pwd")["said"],
-        serde_json::json!("/usr/share\n")
+        serde_json::json!(format!("{}\n", target.display()))
     );
 }
 

@@ -37,6 +37,7 @@ pub(crate) fn isolated(name: &str) -> bool {
     let mut child = std::process::Command::new(std::env::current_exe().expect("test executable"))
         .args(["--exact", name, "--nocapture"])
         .env("CASPER_TEST_PROCESS", name)
+        .stdout(std::process::Stdio::null())
         .spawn()
         .expect("isolated measurement");
     let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
