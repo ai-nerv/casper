@@ -19,10 +19,23 @@ mod directory;
 #[path = "mcp_client/hardening.rs"]
 mod hardening;
 
+#[path = "mcp_client/broker.rs"]
+mod broker;
+
+#[path = "mcp_client/broker_lifecycle.rs"]
+mod broker_lifecycle;
+
+#[path = "support/native_namespace.rs"]
+mod native_namespace;
+use native_namespace::NativeNamespace;
+#[path = "mcp_client/fixture.rs"]
+mod fixture_support;
+use fixture_support::{fixture, invoke, invoked, stdio_config};
+
 #[tokio::test]
 async fn mcp_images_reach_the_caller_as_attachments_not_json_text() {
     let dir = fixture();
-    let path = dir.join("raster.png");
+    let path = dir.join("work/raster.png");
     image::DynamicImage::new_rgba8(256, 128)
         .save_with_format(&path, image::ImageFormat::Png)
         .expect("raster");
@@ -47,89 +60,6 @@ async fn mcp_images_reach_the_caller_as_attachments_not_json_text() {
         image::load_from_memory(&bytes).expect("raster").width(),
         256
     );
-}
-
-fn fixture() -> Scratch {
-    let dir = Scratch::new("mc", "external");
-    std::fs::create_dir_all(dir.join("casper")).expect("config");
-    std::fs::write(
-        dir.join("casper/tools.lua"),
-        include_str!("../config/tools.lua"),
-    )
-    .expect("tools");
-    std::fs::write(dir.join("proof.txt"), "External MCP reached a real tool.\n").expect("proof");
-    dir
-}
-
-async fn invoke(
-    dir: &Scratch,
-    config: &Value,
-    verb: &str,
-    call: Option<Value>,
-    jail: Option<&str>,
-) -> Value {
-    invoked(dir, config, verb, call, jail).await.0
-}
-
-/// [`invoke`], with what casper wrote on standard error.
-async fn invoked(
-    dir: &Scratch,
-    config: &Value,
-    verb: &str,
-    call: Option<Value>,
-    jail: Option<&str>,
-) -> (Value, String) {
-    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_casper"));
-    command
-        .arg(verb)
-        .current_dir(dir)
-        .env("HOME", &**dir)
-        .env("XDG_CONFIG_HOME", &**dir)
-        .env("XDG_DATA_HOME", &**dir)
-        .env("XDG_RUNTIME_DIR", &**dir)
-        .env("CASPER_CONFIGURE", config.to_string())
-        .env_remove("CASPER_JAIL")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    if let Some(jail) = jail {
-        std::fs::create_dir_all(dir.join("work")).expect("jailed workspace");
-        command.current_dir(dir.join("work"));
-        command.env("CASPER_JAIL", jail);
-    }
-    let mut child = command.spawn().expect("Casper");
-    let mut input = child.stdin.take().expect("input");
-    if let Some(call) = call {
-        input
-            .write_all(call.to_string().as_bytes())
-            .await
-            .expect("call");
-    }
-    drop(input);
-    let out = tokio::time::timeout(Duration::from_secs(15), child.wait_with_output())
-        .await
-        .expect("deadline")
-        .expect("output");
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let reply = serde_json::from_slice(&out.stdout).unwrap_or_else(|why| {
-        panic!(
-            "{why}: {} stderr={}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        )
-    });
-    (reply, String::from_utf8_lossy(&out.stderr).into_owned())
-}
-
-/// Another casper as the external server, with its own jail explicitly off: `casper mcp` with none
-/// named runs each tool inside the floor, and these are tests of the client.
-fn stdio_config() -> Value {
-    json!({"mcp_servers":{"other":{"command":env!("CARGO_BIN_EXE_casper"),"args":["mcp","--tools=read"],"env":{"CASPER_CONFIGURE":"{}","CASPER_JAIL":""},"needs":"read"}}})
 }
 
 async fn socket_call(path: &std::path::Path, body: Value) -> Value {
@@ -161,12 +91,13 @@ async fn persistent_casper_reuses_external_sessions_and_stops_owned_children() {
     let socket = run.join("casper/pooled.sock");
     let config = json!({"mcp_servers":{"other":{
         "command":"/bin/sh", "args":["-c","echo $$ >> \"$1\"; exec \"$2\" mcp --tools=read","fixture",pid_file,env!("CARGO_BIN_EXE_casper")],
-        "env":{"CASPER_CONFIGURE":"{}","CASPER_JAIL":""}, "needs":"read"
+        "env":{"CASPER_CONFIGURE":"{}","CASPER_JAIL":"1"}, "needs":"read"
     }}});
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_casper"))
+    let namespace = NativeNamespace::new(&dir, &dir.join("work"));
+    let mut child = tokio::process::Command::from(namespace.command(env!("CARGO_BIN_EXE_casper")))
         .args(["serve", "--at"])
         .arg(&socket)
-        .current_dir(&*dir)
+        .current_dir(dir.join("work"))
         .env("HOME", &*dir)
         .env("XDG_CONFIG_HOME", &*dir)
         .env("XDG_RUNTIME_DIR", &run)
@@ -415,16 +346,16 @@ async fn startup_catalog_can_be_read_without_launching_servers_or_network_grants
 async fn trusted_stdio_environment_survives_the_process_jail() {
     let dir = fixture();
     let work = dir.join("work");
-    std::fs::create_dir_all(work.join("casper")).expect("workspace config");
-    std::fs::copy(dir.join("proof.txt"), work.join("proof.txt")).expect("workspace proof");
-    std::fs::copy(dir.join("casper/tools.lua"), work.join("casper/tools.lua"))
+    std::fs::copy(dir.join("casper/tools.lua"), work.join("server-tools.lua"))
         .expect("workspace declarations");
     let server = work.join("server");
     std::fs::copy(env!("CARGO_BIN_EXE_casper"), &server).expect("readable server executable");
     let observed = work.join("server-env");
     let config = json!({"mcp_servers":{"generic":{
         "command":"/bin/sh", "args":["-c","printf '%s' \"$MCP_FIXTURE_TOKEN\" > \"$1\"; exec \"$2\" mcp --tools=read","fixture",observed,server],
-        "env":{"CASPER_CONFIGURE":"{}","CASPER_JAIL":"","XDG_CONFIG_HOME":work,"MCP_FIXTURE_TOKEN":"explicit-fixture-token"},"needs":"read"
+        "env":{"CASPER_CONFIGURE":json!({"load":work.join("server-tools.lua")}).to_string(),
+            "CASPER_JAIL":"1","XDG_CONFIG_HOME":dir.join("server-config"),
+            "MCP_FIXTURE_TOKEN":"explicit-fixture-token"},"needs":"read"
     }}});
     let reply = invoke(
         &dir,

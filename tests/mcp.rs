@@ -4,16 +4,23 @@ use casper::scratch::Scratch;
 use rmcp::{ServiceExt, model::CallToolRequestParams, transport::TokioChildProcess};
 use serde_json::json;
 
+#[path = "support/native_namespace.rs"]
+mod native_namespace;
+
+#[path = "mcp/broker.rs"]
+mod broker;
+
 fn fixture() -> Scratch {
     let dir = Scratch::new("cm", "stdio");
     std::fs::create_dir_all(dir.join("casper")).expect("fixture config");
+    std::fs::create_dir_all(dir.join("work")).expect("fixture workspace");
     std::fs::write(
         dir.join("casper/tools.lua"),
         include_str!("../config/tools.lua"),
     )
     .expect("fixture tools");
     std::fs::write(
-        dir.join("proof.txt"),
+        dir.join("work/proof.txt"),
         "MCP really invoked Casper's read tool.\n",
     )
     .expect("fixture file");
@@ -21,22 +28,27 @@ fn fixture() -> Scratch {
 }
 
 fn command(dir: &Scratch) -> tokio::process::Command {
-    command_for(dir, "read,web")
+    let mut command = command_for(dir, "read,web");
+    command.env("CASPER_JAIL", r#"{"reach":true}"#);
+    command
 }
 
-/// The MCP server over `dir`, with the jail explicitly off: these are tests of the transport.
+/// The MCP server over the private fixture with native containment enabled.
 fn command_for(dir: &Scratch, tools: &str) -> tokio::process::Command {
-    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_casper"));
+    let namespace = native_namespace::NativeNamespace::new(dir, &dir.join("work"));
+    let binary = std::env::var_os("CASPER_TEST_BINARY")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_casper").into());
+    let mut command = tokio::process::Command::from(namespace.command(binary));
     command
         .arg("mcp")
-        .current_dir(dir)
+        .current_dir(dir.join("work"))
         .env("HOME", &**dir)
         .env("XDG_CONFIG_HOME", &**dir)
         .env("XDG_DATA_HOME", &**dir)
         .env("XDG_RUNTIME_DIR", &**dir)
         .env("CASPER_CONFIGURE", "{}")
         .kill_on_drop(true)
-        .env("CASPER_JAIL", "");
+        .env("CASPER_JAIL", if tools == "waiter" { "" } else { "1" });
     if tools != "*" {
         command.arg(format!("--tools={tools}"));
     }
@@ -209,7 +221,9 @@ run=function() local ran=casper.exec('sh',{'-c','echo $$ > waiting.pid; exec sle
 async fn waiting_pid(dir: &Scratch) -> u32 {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
     loop {
-        if let Ok(pid) = std::fs::read_to_string(dir.join("waiting.pid")) {
+        if let Ok(pid) = std::fs::read_to_string(dir.join("work/waiting.pid"))
+            && pid.ends_with('\n')
+        {
             return pid.trim().parse().expect("waiting pid");
         }
         assert!(std::time::Instant::now() < deadline, "worker never started");
@@ -319,7 +333,7 @@ async fn an_official_mcp_client_discovers_schemas_and_calls_real_casper_tools() 
         )
         .await
         .expect("MCP tools/call");
-    assert_eq!(read.is_error, Some(false));
+    assert_eq!(read.is_error, Some(false), "{read:?}");
     assert!(
         read.content[0]
             .as_text()
@@ -360,7 +374,7 @@ async fn an_official_mcp_client_discovers_schemas_and_calls_real_casper_tools() 
             .is_err()
     );
     assert!(
-        std::fs::read_to_string(dir.join("proof.txt"))
+        std::fs::read_to_string(dir.join("work/proof.txt"))
             .expect("fixture file")
             .contains("really invoked")
     );

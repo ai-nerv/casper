@@ -45,6 +45,7 @@ pub(super) fn create_after_ready(child: &mut super::lifecycle::Owned, root: &Pat
         "home/.ssh/id",
         "data/magi/credentials.json",
         "home/.external",
+        "state/casper/mcp-auth/credential.json",
     ] {
         let path = root.join(path);
         std::fs::create_dir_all(path.parent().expect("parent")).expect("late store");
@@ -59,7 +60,13 @@ pub(super) fn replaced_grant(root: &Path, terminal: bool, directory: bool) {
         root.display()
     );
     let mut prepared = casper::jail::Jail::from_env()
-        .prepare("/bin/sh", &["-c".into(), script], None, &[], terminal)
+        .prepare(
+            &super::native("/bin/sh"),
+            &["-c".into(), super::native(&script)],
+            None,
+            &[],
+            terminal,
+        )
         .expect("captured grant");
     if directory {
         std::fs::rename(root.join("grant"), root.join("old-grant")).expect("original directory");

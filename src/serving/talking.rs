@@ -22,6 +22,8 @@ struct Keyed {
     key: Option<String>,
     #[serde(default)]
     family: Option<u64>,
+    #[serde(default)]
+    event_context: Option<serde_json::Value>,
     #[serde(flatten)]
     call: Call,
 }
@@ -60,7 +62,9 @@ pub fn talk(
         let reply = match framing::decode::<Keyed>(&body) {
             Ok(keyed) => newer(keyed.family).unwrap_or_else(|| {
                 if key.admits(keyed.key.as_deref()) {
-                    super::answering(&stream, || handle(&keyed.call))
+                    crate::events::requests::with_peer(&stream, keyed.event_context, || {
+                        super::answering(&stream, || handle(&keyed.call))
+                    })
                 } else {
                     Reply::refused(REFUSED)
                 }

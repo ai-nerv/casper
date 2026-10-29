@@ -21,6 +21,8 @@ home=$(mktemp -d)
 trap 'rm -rf "$work" "$home"' EXIT HUP INT TERM
 mkdir -p "$home/.ssh"
 printf 'THE-SECRET-KEY' >"$home/.ssh/id"
+shell=$(command -v sh)
+reader=$(command -v cat)
 
 out=$(bwrap \
   --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp \
@@ -28,7 +30,8 @@ out=$(bwrap \
   --unshare-net --unshare-pid --unshare-ipc --unshare-uts \
   --die-with-parent --new-session --chdir "$work" \
   --clearenv --setenv HOME "$home" --setenv PATH /usr/bin:/bin \
-  -- sh -c 'cat ~/.ssh/id 2>/dev/null; echo --net--; cat /proc/net/dev' 2>/dev/null)
+  -- "$shell" -c '"$1" ~/.ssh/id 2>/dev/null; echo --net--; "$1" /proc/net/dev' \
+  gate-isolation "$reader" 2>/dev/null)
 
 case "$out" in
   *THE-SECRET-KEY*) echo "gate-isolation: a jailed command read the user's key" >&2; exit 1;;

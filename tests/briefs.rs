@@ -3,16 +3,84 @@
 
 #![allow(clippy::expect_used, clippy::indexing_slicing)]
 
-use casper::lua::engine::Engine;
 use casper::scratch::Scratch;
 use casper::tools::Ran;
+use std::io::Write;
+use std::process::Stdio;
+
+#[path = "support/native_namespace.rs"]
+mod native_namespace;
+use native_namespace::NativeNamespace;
 
 fn call(tool: &str, args: serde_json::Value) -> Ran {
-    let mut engine = Engine::new();
-    engine
-        .run(include_str!("../config/tools.lua"), "tools.lua")
-        .expect("the shipped declarations load");
-    engine.call(tool, &args).expect("the tool exists")
+    let dir = Scratch::new("casper-briefs", "config");
+    let config = dir.join("config/casper");
+    std::fs::create_dir_all(&config).expect("private config");
+    std::fs::write(
+        config.join("tools.lua"),
+        include_str!("../config/tools.lua"),
+    )
+    .expect("shipped tools");
+    let binary = std::env::var_os("CASPER_TEST_BINARY")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_casper").into());
+    let path = std::path::Path::new(args["path"].as_str().expect("file path"));
+    let namespace = NativeNamespace::new(&dir, path.parent().expect("fixture workspace"));
+    let mut request = serde_json::json!({"tool":tool,"args":args,
+        "file_revision":{"version":1,"operation":tool}});
+    if tool == "write" || tool == "edit" {
+        let expected = if tool == "edit" {
+            let read = exchange(
+                &namespace,
+                &binary,
+                &serde_json::json!({
+                "tool":"read","args":{"path":request["args"]["path"]},
+                "file_revision":{"version":1,"operation":"read"}}),
+            );
+            assert_eq!(read["ok"], true, "{read}");
+            read["result"][0]["observations"][0]["revision"]
+                .as_str()
+                .expect("native receipt")
+                .to_owned()
+        } else {
+            "absent".to_owned()
+        };
+        request["revision_contract"] = serde_json::json!(1);
+        request["expected_revision"] = serde_json::json!(expected);
+        request["mutation_id"] = serde_json::json!("briefs-mutation");
+    }
+    let reply = exchange(&namespace, &binary, &request);
+    assert_eq!(reply["ok"], true, "{reply}");
+    serde_json::from_value(reply["result"][0].clone()).expect("tool result")
+}
+
+fn exchange(
+    namespace: &NativeNamespace,
+    binary: &std::ffi::OsStr,
+    request: &serde_json::Value,
+) -> serde_json::Value {
+    let mut child = namespace
+        .command("timeout")
+        .args(["--kill-after=2s", "45s"])
+        .arg(binary)
+        .arg("run")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("tool process");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(&serde_json::to_vec(request).expect("request"))
+        .expect("send");
+    let output = child.wait_with_output().expect("tool result");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("reply")
 }
 
 #[test]

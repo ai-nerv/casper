@@ -12,11 +12,26 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 
 /// A server a session holds: killed when the session lets it go, and on the Landlock path what it
 /// changed that bubblewrap would have sealed is put back.
-pub(super) struct Served(pub crate::jail::Prepared, pub Child);
+pub(super) struct Served(
+    pub crate::jail::Prepared,
+    pub Child,
+    Option<std::os::fd::OwnedFd>,
+);
 
 impl Drop for Served {
     fn drop(&mut self) {
-        let _ = self.1.start_kill();
+        let supervised = self.2.take().is_some();
+        if !supervised {
+            if let Some(group) = self
+                .1
+                .id()
+                .and_then(|pid| i32::try_from(pid).ok())
+                .and_then(rustix::process::Pid::from_raw)
+            {
+                let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+            }
+            let _ = self.1.start_kill();
+        }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
         while matches!(self.1.try_wait(), Ok(None)) && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -29,8 +44,7 @@ impl Drop for Served {
 
 /// A started server, and the two pipes its session is spoken over.
 pub(super) struct Launched {
-    pub prepared: crate::jail::Prepared,
-    pub child: Child,
+    pub server: Served,
     pub read: Capped<ChildStdout>,
     pub write: ChildStdin,
 }
@@ -52,19 +66,25 @@ pub(super) fn launch(
         .prepare(command, args, None, &[], false)
         .map_err(|why| format!("MCP command: {why}"))?;
     prepared.inner(&env);
-    let mut child = prepared
-        .asynchronous()
+    spawn(prepared, over)
+}
+
+fn spawn(mut prepared: crate::jail::Prepared, over: Arc<AtomicBool>) -> Result<Launched, String> {
+    let (mut command, lifetime) = prepared
+        .mcp_command()
+        .map_err(|why| format!("MCP supervision: {why}"))?;
+    let child = command
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
-        .kill_on_drop(true)
+        .kill_on_drop(lifetime.is_none())
         .spawn()
         .map_err(|why| format!("MCP stdio: {why}"))?;
-    let read = child.stdout.take().ok_or("MCP stdio: no output pipe")?;
-    let write = child.stdin.take().ok_or("MCP stdio: no input pipe")?;
+    let mut server = Served(prepared, child, lifetime);
+    let read = server.1.stdout.take().ok_or("MCP stdio: no output pipe")?;
+    let write = server.1.stdin.take().ok_or("MCP stdio: no input pipe")?;
     Ok(Launched {
-        prepared,
-        child,
+        server,
         read: Capped::new(read, super::REPLY, over),
         write,
     })
@@ -125,6 +145,9 @@ fn overflow(cap: usize) -> std::io::Error {
         format!("MCP stdio message over {cap} bytes"),
     )
 }
+
+#[cfg(test)]
+mod ownership;
 
 #[cfg(test)]
 mod tests {

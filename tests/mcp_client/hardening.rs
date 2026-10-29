@@ -312,9 +312,7 @@ async fn a_servers_loader_variables_reach_neither_the_launcher_nor_the_server() 
     for jail in [None, Some("1")] {
         let dir = fixture();
         let work = dir.join("work");
-        std::fs::create_dir_all(work.join("casper")).expect("workspace config");
-        std::fs::copy(dir.join("proof.txt"), work.join("proof.txt")).expect("workspace proof");
-        std::fs::copy(dir.join("casper/tools.lua"), work.join("casper/tools.lua"))
+        std::fs::copy(dir.join("casper/tools.lua"), work.join("server-tools.lua"))
             .expect("workspace declarations");
         let server = work.join("server");
         std::fs::copy(env!("CARGO_BIN_EXE_casper"), &server).expect("server executable");
@@ -322,7 +320,8 @@ async fn a_servers_loader_variables_reach_neither_the_launcher_nor_the_server() 
         let config = json!({"mcp_servers":{"generic":{
             "command":"/bin/sh",
             "args":["-c","printf '%s|%s|%s' \"$MCP_FIXTURE_TOKEN\" \"$LD_PRELOAD\" \"$LD_LIBRARY_PATH\" > \"$1\"; exec \"$2\" mcp --tools=read","fixture",observed,server],
-            "env":{"CASPER_CONFIGURE":"{}","CASPER_JAIL":"","XDG_CONFIG_HOME":work,
+            "env":{"CASPER_CONFIGURE":json!({"load":work.join("server-tools.lua")}).to_string(),
+                   "CASPER_JAIL":"1","XDG_CONFIG_HOME":dir.join("server-config"),
                    "MCP_FIXTURE_TOKEN":"explicit-fixture-token",
                    "LD_PRELOAD":"/nonexistent/casper-preload.so","LD_LIBRARY_PATH":"/nonexistent"},
             "needs":"read"

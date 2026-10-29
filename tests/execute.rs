@@ -8,6 +8,9 @@ use casper::tools::Ran;
 use serde_json::json;
 use std::io::Write as _;
 
+#[path = "support/native_namespace.rs"]
+mod native_namespace;
+
 /// A tool slower than a script's whole time budget, declared callable the way a plugin would.
 const SLOW: &str = r#"casper.tool("slow", {
   description = "Wait a while, then say so.",
@@ -42,7 +45,10 @@ fn fixture(name: &str) -> Scratch {
 }
 
 fn call(dir: &Scratch, tool: &str, args: serde_json::Value, jail: bool) -> Ran {
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_casper"));
+    let namespace = native_namespace::NativeNamespace::new(dir, &dir.join("work"));
+    let binary = std::env::var_os("CASPER_TEST_BINARY")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_casper").into());
+    let mut command = namespace.command(binary);
     command
         .arg("run")
         .current_dir(dir.join("work"))
@@ -72,7 +78,7 @@ fn call(dir: &Scratch, tool: &str, args: serde_json::Value, jail: bool) -> Ran {
 }
 
 fn script(dir: &Scratch, code: &str) -> Ran {
-    call(dir, "execute", json!({ "code": code }), false)
+    call(dir, "execute", json!({ "code": code }), true)
 }
 
 #[test]

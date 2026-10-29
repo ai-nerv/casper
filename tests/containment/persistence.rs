@@ -43,7 +43,7 @@ fn script(root: &Path) -> String {
         ));
     }
     script.push_str("echo CONTAINED > report");
-    script
+    super::native(&script)
 }
 
 fn original(path: &Path) -> bool {
@@ -56,7 +56,7 @@ pub(super) fn check(root: &Path, mode: &str, sealed: bool) {
     let said = if mode == "screen" {
         let mut screen = casper::pty::Screen::open(
             &casper::pty::Spec {
-                command: "/bin/sh".into(),
+                command: super::native("/bin/sh"),
                 args: vec!["-c".into(), script(root)],
                 ..Default::default()
             },
@@ -85,7 +85,7 @@ pub(super) fn check(root: &Path, mode: &str, sealed: bool) {
             .collect::<Vec<_>>()
             .join("\n")
     } else {
-        let done = casper::running::run("/bin/sh", &["-c".into(), script(root)]);
+        let done = casper::running::run(&super::native("/bin/sh"), &["-c".into(), script(root)]);
         let code = if sealed { 0 } else { 1 };
         assert_eq!(done.code, code, "{} {}", done.err, done.out);
         done.err
@@ -105,9 +105,9 @@ pub(super) fn check(root: &Path, mode: &str, sealed: bool) {
         );
     }
     let declared = if mode == "socket" {
-        super::socket::DECLARATION
+        super::native(super::socket::DECLARATION)
     } else {
-        "ORIGINAL\n"
+        "ORIGINAL\n".to_owned()
     };
     let held = std::fs::read_to_string(&tools).unwrap_or_default();
     assert_eq!(
@@ -130,7 +130,7 @@ pub(super) fn check(root: &Path, mode: &str, sealed: bool) {
 pub(super) fn created(root: &Path) {
     let file = ".magi.lua";
     let script = format!("./git init -q && echo made > {file}");
-    let done = casper::running::run("/bin/sh", &["-c".into(), script]);
+    let done = casper::running::run(&super::native("/bin/sh"), &["-c".into(), script]);
     assert_eq!(done.code, 0, "{} {}", done.err, done.out);
     let work = root.join("work");
     assert!(work.join(".git/config").is_file(), "{}", done.err);
@@ -158,7 +158,10 @@ pub(super) fn window(root: &Path) {
     let script = format!(
         "echo CHANGED > {file}; : > ready; while [ ! -e release ]; do /bin/sleep 0.01; done"
     );
-    let done = casper::running::run("/bin/sh", &["-c".into(), script]);
+    let done = casper::running::run(
+        &super::native("/bin/sh"),
+        &["-c".into(), super::native(&script)],
+    );
     let seen = reader.join().expect("reader");
     assert_eq!(seen, "CHANGED\n", "the reader saw the change: {}", done.err);
     assert!(original(&work.join(file)), "{}", done.err);

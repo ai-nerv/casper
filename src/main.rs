@@ -16,6 +16,7 @@
 
 use casper::tools::{Call, Ran};
 use casper::wire::{CLI_VERBS, Reply, SOCKET_VERBS};
+mod event_start;
 
 /// Ask the kernel to end this process when whoever started it ends.
 ///
@@ -34,7 +35,16 @@ fn tie_to_caller() -> Result<(), rustix::io::Errno> {
 }
 
 fn main() -> std::process::ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args == ["event-capabilities"] {
+        return match std::io::Write::write_all(
+            &mut std::io::stdout().lock(),
+            event_start::CAPABILITIES,
+        ) {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(_) => std::process::ExitCode::FAILURE,
+        };
+    }
     let how = asked(&args);
     if let Err(why) = tie_to_caller() {
         say(
@@ -45,6 +55,16 @@ fn main() -> std::process::ExitCode {
         );
         return std::process::ExitCode::SUCCESS;
     }
+    let _events = match event_start::start(&mut args) {
+        Ok(events) => events,
+        Err(why) => {
+            return if say(how, &Reply::refused(why)) {
+                std::process::ExitCode::SUCCESS
+            } else {
+                std::process::ExitCode::FAILURE
+            };
+        }
+    };
     casper::web::crypto();
     let verb = args.first().map_or("help", String::as_str);
     if verb == "mcp" {
@@ -86,12 +106,65 @@ fn main() -> std::process::ExitCode {
     }
     let began = std::time::Instant::now();
     let delivered = match verb {
+        "workflows" => {
+            use casper::workflows::protocol::Request;
+            let reply = match Request::read(std::io::stdin().lock()) {
+                Ok(request) => {
+                    let result =
+                        if args.len() == 2 && args.get(1).is_some_and(|arg| arg == "--worker") {
+                            casper::workflows::protocol::worker(&request)
+                        } else if args
+                            .iter()
+                            .skip(1)
+                            .all(|arg| matches!(arg.as_str(), "--json" | "--cbor"))
+                        {
+                            casper::workflows::invoke(
+                                &request,
+                                &std::sync::atomic::AtomicBool::new(false),
+                            )
+                        } else {
+                            Err(casper::workflows::Failure::Protocol)
+                        };
+                    if args.get(1).is_some_and(|arg| arg == "--worker") {
+                        return match serde_json::to_writer(
+                            std::io::stdout().lock(),
+                            &request.response(result),
+                        ) {
+                            Ok(()) => std::process::ExitCode::SUCCESS,
+                            Err(_) => std::process::ExitCode::FAILURE,
+                        };
+                    }
+                    match serde_json::to_value(request.response(result)) {
+                        Ok(value) => Reply::of(value),
+                        Err(_) => Reply::failed("workflow reply could not be encoded"),
+                    }
+                }
+                Err(why) => Reply::refused(why.to_string()),
+            };
+            say(how, &reply)
+        }
         "verbs" => {
             let mut reply = listing(described());
             reply.surface = Some(casper::wire::SURFACE);
             say(how, &reply)
         }
         "tools" => say(how, &tools()),
+        "mcp-auth" | "mcp-status" | "mcp-logout" => {
+            let result = casper::calling::loaded()
+                .map_err(|_| "MCP configuration unavailable".to_owned())
+                .and_then(|_engine| {
+                    casper::mcp_client::authentication::command(
+                        verb,
+                        args.get(1..).unwrap_or_default(),
+                        casper::setup::told("mcp_servers"),
+                    )
+                });
+            let reply = match result {
+                Ok(value) => Reply::of(value),
+                Err(why) => Reply::refused(why),
+            };
+            say(how, &reply)
+        }
         "image" => {
             let reply = args
                 .get(1)
@@ -106,6 +179,84 @@ fn main() -> std::process::ExitCode {
             )
         }
         "code" => {
+            if args
+                .get(1)
+                .is_some_and(|arg| arg == casper::mcp_client::read_broker::FLAG)
+            {
+                let reply =
+                    match casper::mcp_client::read_broker::acquire_input(std::io::stdin().lock()) {
+                        Ok(data) => Reply::of(data),
+                        Err(why) => Reply::refused(why),
+                    };
+                return if say(how, &reply) {
+                    std::process::ExitCode::SUCCESS
+                } else {
+                    std::process::ExitCode::FAILURE
+                };
+            }
+            if args
+                .get(1)
+                .is_some_and(|arg| arg == casper::files::worker::TRANSACT)
+            {
+                let reply = match casper::files::worker::mutation_input(std::io::stdin().lock()) {
+                    Ok(commit) => Reply::of(serde_json::to_value(commit).unwrap_or_default()),
+                    Err(why) if why.outcome_unknown() => Reply::failed(why.to_string()),
+                    Err(why) => Reply::refused(why.to_string()),
+                };
+                return if say(how, &reply) {
+                    std::process::ExitCode::SUCCESS
+                } else {
+                    std::process::ExitCode::FAILURE
+                };
+            }
+            if args
+                .get(1)
+                .is_some_and(|arg| arg == casper::files::worker::FLAG)
+            {
+                let reply = match casper::files::worker::serve() {
+                    Ok(snapshot) => Reply::of(serde_json::to_value(snapshot).unwrap_or_default()),
+                    Err(why) => Reply::refused(why.to_string()),
+                };
+                return if say(how, &reply) {
+                    std::process::ExitCode::SUCCESS
+                } else {
+                    std::process::ExitCode::FAILURE
+                };
+            }
+            if args
+                .get(1)
+                .is_some_and(|arg| arg == casper::files::worker::OBSERVE)
+            {
+                let reply = match args
+                    .get(2)
+                    .ok_or_else(|| "native observation needs a path".to_owned())
+                    .and_then(|path| {
+                        casper::files::worker::observe(path).map_err(|why| why.to_string())
+                    }) {
+                    Ok(snapshot) => Reply::of(serde_json::to_value(snapshot).unwrap_or_default()),
+                    Err(why) => Reply::refused(why),
+                };
+                return if say(how, &reply) {
+                    std::process::ExitCode::SUCCESS
+                } else {
+                    std::process::ExitCode::FAILURE
+                };
+            }
+            if args.get(1).is_some_and(|arg| arg == casper::source::FLAG)
+                && let Some(path) = args
+                    .get(2)
+                    .filter(|path| !matches!(path.as_str(), "--json" | "--cbor"))
+            {
+                let reply = match casper::source::read(path) {
+                    Ok(source) => Reply::of(serde_json::to_value(source).unwrap_or_default()),
+                    Err(why) => Reply::refused(why.to_string()),
+                };
+                return if say(how, &reply) {
+                    std::process::ExitCode::SUCCESS
+                } else {
+                    std::process::ExitCode::FAILURE
+                };
+            }
             let reply = args
                 .get(1)
                 .ok_or_else(|| "code needs a file or directory path".to_owned())
@@ -119,7 +270,38 @@ fn main() -> std::process::ExitCode {
             )
         }
         "grammar" => say(how, &casper::grammars::verb(&args)),
-        "run" => say(how, &ran()),
+        "run" => {
+            if args.iter().any(|arg| arg == "--mcp-read-render") {
+                let reply = match casper::mcp::render_input(std::io::stdin().lock()) {
+                    Ok(ran) => answer(&ran),
+                    Err(why) => Reply::refused(why),
+                };
+                return if say(how, &reply) {
+                    std::process::ExitCode::SUCCESS
+                } else {
+                    std::process::ExitCode::FAILURE
+                };
+            }
+            if args.iter().any(|arg| arg == "--file-admission") && !file_admission() {
+                return std::process::ExitCode::FAILURE;
+            }
+            say(how, &ran())
+        }
+        "replace-source" => {
+            let reply = match args.get(1) {
+                Some(path) => match casper::source::store(path) {
+                    Ok(stored) => Reply::of(serde_json::to_value(stored).unwrap_or_default()),
+                    Err(casper::source::Error::TooLarge | casper::source::Error::InvalidText) => {
+                        Reply::refused(
+                            "replacement must be UTF-8 without NUL bytes and smaller than 1 MiB",
+                        )
+                    }
+                    Err(why) => Reply::failed(why.to_string()),
+                },
+                None => Reply::refused("replace-source needs an existing file path"),
+            };
+            say(how, &reply)
+        }
         "serve" => serve(how, &args),
         "needs" => say(how, &listing(needs())),
         // A package under `site/pack/` runs once you have said it may, and stops the moment it
@@ -421,11 +603,24 @@ fn on_socket(call: &casper::wire::Call) -> Reply {
 fn listening(at: &str) {
     use std::io::Write;
     let line = format!(
-        "{{\"event\":\"listening\",\"at\":{}}}\n",
-        serde_json::Value::from(at)
+        "{{\"event\":\"listening\",\"at\":{},\"file_admission\":1{}}}\n",
+        serde_json::Value::from(at),
+        if casper::events::request_context_revision() == Some(1) {
+            ",\"request_context\":1"
+        } else {
+            ""
+        }
     );
     let mut out = std::io::stdout().lock();
     let _ = out.write_all(line.as_bytes()).and_then(|()| out.flush());
+}
+
+fn file_admission() -> bool {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    out.write_all(b"{\"event\":\"file-admission\",\"revision_contract\":1}\n")
+        .and_then(|()| out.flush())
+        .is_ok()
 }
 
 /// One flag's value, as `--name value` or `--name=value`.
@@ -460,6 +655,8 @@ fn usage() -> bool {
          \n\
          \x20 casper tools        every tool it offers, with schemas\n\
          \x20 casper code PATH    a source file's skeleton, or a directory's entries\n\
+         \x20 casper code --source-text PATH   complete UTF-8 text below 1 MiB\n\
+         \x20 casper replace-source PATH   replace an existing source from bounded stdin\n\
          \x20 casper grammar fetch|build|list [--dir DIR] [LANG...]\n\
          \x20                     the parsers code reads with, built here as Helix does\n\
          \x20 casper image PATH   read and resize a raster attachment\n\

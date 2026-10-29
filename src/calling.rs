@@ -6,18 +6,30 @@ use crate::lua::engine::Engine;
 use crate::tools::{Call, Card, Ran};
 use luna::{Callback, CallbackReturn, Value};
 
+mod files;
+mod observing;
+
 /// An engine with the declarations loaded, and `casper.python` lent to them.
 ///
 /// # Errors
 /// When there are no declarations to load.
 pub fn loaded() -> Result<Engine, String> {
-    let mut engine = Engine::with_configuration(Some(serde_json::json!({
+    load(false)
+}
+
+fn load(declarations_only: bool) -> Result<Engine, String> {
+    let configuration = Some(serde_json::json!({
         "web":crate::setup::told("web"),
         "mcp_servers":crate::setup::told("mcp_servers"),
         "tools":crate::setup::told("tools"),
         "mcp_discovery_errors":crate::setup::told("mcp_discovery_errors"),
         "mcp_catalog":crate::setup::told("mcp_catalog"),
-    })));
+    }));
+    let mut engine = if declarations_only {
+        Engine::declarations(configuration)
+    } else {
+        Engine::with_configuration(configuration)
+    };
     engine.lend("python", python);
 
     // The declarations are installed files, not strings in the binary, and the directory is named
@@ -58,11 +70,22 @@ pub fn loaded() -> Result<Engine, String> {
                     continue;
                 }
                 if let Err(why) = engine.run(&source, &path.to_string_lossy()) {
+                    if declarations_only {
+                        return Err(format!(
+                            "file revision declarations cannot be admitted: {why}"
+                        ));
+                    }
                     crate::noted!("setup: {} will not run: {why}", path.display());
                     aside(format_args!("casper: {}: {why}", path.display()));
                 }
             }
             Err(why) => {
+                if declarations_only {
+                    return Err(format!(
+                        "file revision declarations cannot be read: {}: {why}",
+                        path.display()
+                    ));
+                }
                 crate::noted!("setup: {} cannot be read: {why}", path.display());
                 aside(format_args!("casper: {}: {why}", path.display()));
             }
@@ -70,6 +93,9 @@ pub fn loaded() -> Result<Engine, String> {
     }
 
     engine.harvest();
+    if !engine.declarations_clean() {
+        return Err("file revision declarations attempted an effectful API".into());
+    }
     Ok(engine)
 }
 
@@ -95,21 +121,57 @@ pub fn offered(engine: &Engine) -> Vec<Card> {
 /// # Errors
 /// The refusal, when there is no such tool or it is turned off.
 pub fn ran(call: &Call, inside: Option<&str>) -> Result<Ran, String> {
+    let mut trace = observing::Trace::new();
+    let result = perform(call, inside, &mut trace);
+    trace.finish(&result);
+    result
+}
+
+fn perform(call: &Call, inside: Option<&str>, trace: &mut observing::Trace) -> Result<Ran, String> {
+    let admission = call.revision.validate()?;
     let began = std::time::Instant::now();
-    let mut engine = loaded()?;
+    let mut engine = match load(true) {
+        Ok(engine) if call.revision.requested() || engine.native(&call.tool).is_some() => engine,
+        Err(error) if call.revision.requested() => return Err(error),
+        _ => loaded()?,
+    };
     // Off means gone, not merely unlisted: a model can guess at a tool it was never told about.
     if crate::setup::is_off(&call.tool) {
         crate::noted!("run: {} refused: it is turned off", call.tool);
         return Err(format!("no such tool: {}", call.tool));
     }
+    let native = engine.native(&call.tool);
+    if call.revision.requested() && native.is_none() {
+        return Err(
+            "file revision contract is not supported by this declaration; guarded calls cannot run"
+                .into(),
+        );
+    }
+    if let Some(operation) = native {
+        if !engine.is_declarations() {
+            return Err("file revision declarations could not be admitted without effects".into());
+        }
+        if admission
+            .as_ref()
+            .is_some_and(|claimed| claimed.operation != operation)
+        {
+            return Err("file revision operation changed since capability discovery".into());
+        }
+    }
     engine.caller(crate::tools::session().as_deref());
-    let result = if call.tool.starts_with("mcp__") || call.tool.starts_with("mcp_") {
+    let result = if let Some(operation) = native {
+        Some(files::run(call, inside, operation, &mut engine, trace)?)
+    } else if call.tool.starts_with("mcp__") || call.tool.starts_with("mcp_") {
+        trace.start();
         Some(crate::mcp_client::call(
             crate::setup::told("mcp_servers"),
             &call.tool,
             &call.args,
         ))
     } else {
+        if trace.enabled() && engine.declares(&call.tool) {
+            trace.start();
+        }
         engine.call(&call.tool, &given(call))
     };
     let Some(mut ran) = result else {
@@ -136,6 +198,32 @@ pub fn ran(call: &Call, inside: Option<&str>) -> Result<Ran, String> {
         ran.back.as_ref().map_or(0, String::len),
         ran.keep
     );
+    Ok(ran)
+}
+
+pub(crate) fn brokered_read(call: &Call, data: crate::tools::ReadData) -> Result<Ran, String> {
+    let mut trace = observing::Trace::new();
+    let result = present_brokered(call, data, &mut trace);
+    trace.finish(&result);
+    result
+}
+
+fn present_brokered(
+    call: &Call,
+    data: crate::tools::ReadData,
+    trace: &mut observing::Trace,
+) -> Result<Ran, String> {
+    if call.revision.requested() || crate::setup::is_off(&call.tool) {
+        return Err("broker data cannot authorize a guarded or disabled tool".into());
+    }
+    let mut engine = load(true)?;
+    if !engine.is_declarations()
+        || engine.native(&call.tool) != Some(crate::tools::FileOperation::Read)
+    {
+        return Err("broker data requires a declaration-only native read".into());
+    }
+    let mut ran = files::brokered(call, data, &mut engine, trace)?;
+    ran.said = crate::setup::bounded(ran.said);
     Ok(ran)
 }
 

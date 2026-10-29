@@ -10,6 +10,64 @@
 
 use luna::{Callback, CallbackReturn, Table, Value};
 
+pub fn replace_source(ctx: luna::Context<'_>) -> Callback<'_> {
+    Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
+        let (path, text): (Value, Value) = stack.consume(ctx)?;
+        let result = match (path, text) {
+            (Value::String(path), Value::String(text)) => {
+                let values = std::str::from_utf8(path.as_bytes())
+                    .and_then(|path| std::str::from_utf8(text.as_bytes()).map(|text| (path, text)));
+                values
+                    .map_err(|_| "source path and text must be UTF-8".to_owned())
+                    .and_then(|(path, text)| {
+                        crate::source::replace(path, text).map_err(|why| why.to_string())
+                    })
+            }
+            _ => Err("casper.replace_source(path, text): a path and text first".to_owned()),
+        };
+        match result {
+            Ok(()) => stack.replace(ctx, (Value::Boolean(true), Value::Nil)),
+            Err(why) => stack.replace(
+                ctx,
+                (
+                    Value::Nil,
+                    Value::String(luna::String::from_slice(&ctx, why.as_bytes())),
+                ),
+            ),
+        }
+        Ok(CallbackReturn::Return)
+    })
+}
+
+pub fn source(ctx: luna::Context<'_>) -> Callback<'_> {
+    Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
+        let path: Value = stack.consume(ctx)?;
+        let result = match path {
+            Value::String(path) => std::str::from_utf8(path.as_bytes())
+                .map_err(|_| "source path must be UTF-8".to_owned())
+                .and_then(|path| crate::source::jailed(path).map_err(|why| why.to_string())),
+            _ => Err("casper.source(path): a file path first".to_owned()),
+        };
+        match result {
+            Ok(text) => stack.replace(
+                ctx,
+                (
+                    Value::String(luna::String::from_slice(&ctx, text.as_bytes())),
+                    Value::Nil,
+                ),
+            ),
+            Err(why) => stack.replace(
+                ctx,
+                (
+                    Value::Nil,
+                    Value::String(luna::String::from_slice(&ctx, why.as_bytes())),
+                ),
+            ),
+        }
+        Ok(CallbackReturn::Return)
+    })
+}
+
 /// `casper.exec`, as a callable.
 #[must_use]
 pub fn table(ctx: luna::Context<'_>) -> Callback<'_> {

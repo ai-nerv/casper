@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+use utilities::native;
 
 #[path = "containment/agreement.rs"]
 mod agreement;
@@ -14,6 +15,8 @@ mod fetch;
 mod launcher;
 #[path = "containment/lifecycle.rs"]
 mod lifecycle;
+#[path = "containment/oauth.rs"]
+mod oauth;
 #[path = "containment/paths.rs"]
 mod paths;
 #[path = "containment/persistence.rs"]
@@ -24,6 +27,8 @@ mod reach;
 mod socket;
 #[path = "containment/surface.rs"]
 mod surface;
+#[path = "containment/utilities.rs"]
+mod utilities;
 
 fn installed(name: &str) -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?)
@@ -55,6 +60,7 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) -> String {
     }
     std::os::unix::fs::symlink(dir.join("data/magi"), dir.join("work/alias"))
         .expect("credential alias");
+    oauth::seed(&dir);
     std::fs::write(dir.join("outside"), "HOST_UNCHANGED").expect("outside fixture");
     aliases::prepare(&dir, variant);
     if matches!(variant, "persistence" | "agreement" | "window") {
@@ -88,7 +94,10 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) -> String {
         .expect("compiler input");
     }
     if variant == "git-init" {
-        let git = installed("git").expect("git unavailable");
+        let git = installed("git")
+            .expect("git unavailable")
+            .canonicalize()
+            .expect("canonical git");
         std::os::unix::fs::symlink(git, dir.join("work/git")).expect("git fixture");
     }
     if variant == "replaced-grant" {
@@ -119,6 +128,7 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) -> String {
         std::fs::remove_file(dir.join("home/.external")).expect("remove owned secret");
         std::fs::remove_file(dir.join("work/alias")).expect("remove owned alias");
     }
+    oauth::layout(&dir, variant);
     if bubblewrap {
         let Some(program) = installed("bwrap") else {
             assert!(
@@ -143,22 +153,24 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) -> String {
             }
         } else if variant == "refused" {
             let target = dir.join("bin/refused-backend");
-            std::fs::copy("/bin/false", &target).expect("owned failed backend");
+            std::fs::copy(native("/bin/false"), &target).expect("owned failed backend");
             target
         } else {
-            program
+            launcher::captured(program)
         };
         std::os::unix::fs::symlink(program, dir.join("bin/bwrap")).expect("bwrap fixture");
     }
     let mut command = Command::new(std::env::current_exe().expect("test executable"));
     command
         .args(["--exact", "contained_child", "--nocapture"])
+        .stdout(Stdio::null())
         .current_dir(dir.join("work"))
         .env_clear()
         .env("PATH", dir.join("bin"))
         .env("HOME", dir.join("home"))
         .env("XDG_CONFIG_HOME", dir.join("config"))
         .env("XDG_DATA_HOME", dir.join("data"))
+        .env("XDG_STATE_HOME", dir.join("state"))
         .env("TMPDIR", dir.join("tmp"))
         .env("OPENROUTER_API_KEY", "SYNTHETIC_ENV_SECRET")
         .env("BASH_ENV", dir.join("home/.external"))
@@ -166,6 +178,7 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) -> String {
         .env("CASPER_CONTAINMENT_CHILD", mode)
         .env("CASPER_CONTAINMENT_VARIANT", variant)
         .env("CASPER_FIXTURE_ROOT", &*dir)
+        .envs([utilities::environment()])
         .env(
             "CASPER_PROBE_PORT",
             network.local_addr().expect("listener").port().to_string(),
@@ -174,7 +187,8 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) -> String {
     if variant == "default-xdg" {
         command
             .env_remove("XDG_DATA_HOME")
-            .env_remove("XDG_CONFIG_HOME");
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_STATE_HOME");
     }
     if variant == "isolation-off" {
         command.env("CASPER_JAIL", "");
@@ -188,6 +202,7 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) -> String {
             serde_json::json!({ "write": [dir.join("data")], "reach": false }).to_string(),
         );
     }
+    oauth::command(&mut command, &dir, variant);
     if matches!(variant, "replaced-grant" | "replaced-directory") {
         command.env(
             "CASPER_JAIL",
@@ -236,7 +251,7 @@ fn fixture(mode: &str, bubblewrap: bool, variant: &str) -> String {
         lifecycle::inspect_descriptors(&mut child, &dir);
     }
     if variant == "parent-death" {
-        lifecycle::parent_dies(&mut child, &dir.join("work/ready"));
+        lifecycle::parent_dies(&mut child, &dir.join("work/ready"), mode, bubblewrap);
         return String::new();
     }
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -296,7 +311,7 @@ fn probe(root: &Path) -> String {
 set -e
 report="$PWD/report"
 if [ -n "$OPENROUTER_API_KEY$BASH_ENV" ]; then echo ENV_LEAK > "$report"; exit 10; fi
-for file in '{root}/home/.ssh/id' '{root}/data/magi/credentials.json' '{root}/home/.local/share/magi/credentials.json' '{root}/home/.external' "$PWD/alias/credentials.json" "$PWD/exposed"; do
+for file in '{root}/home/.ssh/id' '{root}/data/magi/credentials.json' '{root}/home/.local/share/magi/credentials.json' '{root}/home/.external' '{root}/state/casper/mcp-auth/credential.json' '{root}/home/.local/state/casper/mcp-auth/credential.json' "$PWD/auth-alias/credential.json" "$PWD/alias/credentials.json" "$PWD/exposed"; do
   contents=$(/bin/cat "$file" 2>/dev/null || true)
   case "$contents" in *SYNTHETIC_SECRET*) echo READ_LEAK > "$report"; exit 11;; esac
 done
@@ -400,9 +415,13 @@ fn contained_child() {
     if variant == "descriptor-probe" {
         script.push_str("\n./descriptor-probe --exact descriptor_probe --nocapture\n");
     }
-    if variant == "broad-grant" {
+    let script = native(&script);
+    if matches!(
+        variant.as_str(),
+        "broad-grant" | "oauth-grant" | "oauth-workspace"
+    ) {
         let refused = casper::jail::Jail::from_env().prepare(
-            "/bin/sh",
+            &native("/bin/sh"),
             &["-c".into(), script],
             None,
             &[],
@@ -420,7 +439,7 @@ fn contained_child() {
     if mode == "socket" {
         socket::run(&root, &script, false);
     } else if mode == "command" {
-        let done = casper::running::run("/bin/sh", &["-c".into(), script]);
+        let done = casper::running::run(&native("/bin/sh"), &["-c".into(), script]);
         if variant == "refused" {
             assert_ne!(done.code, 0, "failed backend must not run unjailed");
             assert!(!root.join("work/report").exists());
@@ -437,7 +456,7 @@ fn contained_child() {
     } else {
         let mut screen = casper::pty::Screen::open(
             &casper::pty::Spec {
-                command: "/bin/sh".into(),
+                command: native("/bin/sh"),
                 args: vec!["-c".into(), script],
                 env: vec![
                     ("OPENROUTER_API_KEY".into(), "SYNTHETIC_INJECTED_KEY".into()),
@@ -482,11 +501,12 @@ fn contained_child() {
 fn terminal_io(root: &Path) {
     let mut screen = casper::pty::Screen::open(
         &casper::pty::Spec {
-            command: "/bin/sh".into(),
+            command: native("/bin/sh"),
             args: vec![
                 "-c".into(),
-                "read -r value; /bin/stty size > report; printf '%s\\n' \"$value\" >> report"
-                    .into(),
+                native(
+                    "read -r value; /bin/stty size > report; printf '%s\\n' \"$value\" >> report",
+                ),
             ],
             ..Default::default()
         },

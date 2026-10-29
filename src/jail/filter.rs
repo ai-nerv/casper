@@ -8,6 +8,32 @@ use std::os::fd::OwnedFd;
 /// library's address lookups. Netlink is narrowed to `NETLINK_ROUTE` by [`families`].
 const NETWORK: &[i32] = &[libc::AF_INET, libc::AF_INET6, libc::AF_NETLINK];
 
+pub(super) fn syscalls(reach: bool, native_control: bool) -> seccompiler::BpfProgram {
+    use super::{FORBIDDEN, PERSONAS, Rules, UNREACHED, built, rule};
+    use seccompiler::SeccompCmpOp as Op;
+    let newuser = libc::CLONE_NEWUSER as u64;
+    let personas: Vec<_> = PERSONAS.iter().map(|p| (0, Op::Ne, *p)).collect();
+    let mut rules: Rules = vec![
+        (
+            libc::SYS_clone,
+            vec![rule(&[(0, Op::MaskedEq(newuser), newuser)])],
+        ),
+        (libc::SYS_personality, vec![rule(&personas)]),
+    ];
+    rules.extend(FORBIDDEN.iter().map(|nr| (*nr, Vec::new())));
+    if !reach {
+        rules.extend(UNREACHED.iter().map(|nr| {
+            let conditions = if native_control && *nr == libc::SYS_sendmsg {
+                vec![rule(&[(0, Op::Ne, 0)])]
+            } else {
+                Vec::new()
+            };
+            (*nr, conditions)
+        }));
+    }
+    built(rules, libc::EPERM)
+}
+
 /// The allowlist on `socket` and `socketpair`, answering `EAFNOSUPPORT` outside it: [`NETWORK`],
 /// netlink only as `NETLINK_ROUTE`, Unix sockets only when `unix`, and a `socketpair` only of
 /// Unix sockets. `unix` is the bubblewrap path, whose mount namespace hides the runtime directory.
@@ -69,7 +95,8 @@ mod tests {
         command
             .args(["--exact", "jail::filter::tests::probe", "--nocapture"])
             .env(PROBE, if unix { "unix" } else { "none" })
-            .env(SIX, if six { "1" } else { "" });
+            .env(SIX, if six { "1" } else { "" })
+            .stdout(std::process::Stdio::null());
         let filters = vec![filter(true), families(unix), absent()];
         crate::tied::confine(&mut command, filters);
         command.status().expect("probe runs")

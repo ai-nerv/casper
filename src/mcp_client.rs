@@ -1,8 +1,16 @@
 //! External MCP sessions, discovered tool cards, and calls through trusted server settings.
 
+mod admission;
+pub mod authentication;
+mod cancellation;
 mod config;
 mod directory;
 mod http;
+mod lifecycle;
+pub mod oauth;
+mod observing;
+mod pooling;
+pub mod read_broker;
 mod stdio;
 
 #[cfg(test)]
@@ -13,6 +21,10 @@ pub(crate) const NATIVE_ONLY: &str = "CASPER_MCP_NATIVE";
 
 /// The most one message from a server may hold: one stdio line, one SSE event, or one JSON body.
 const REPLY: usize = 4 * 1024 * 1024;
+
+pub(crate) fn server_input() -> impl tokio::io::AsyncRead + Unpin {
+    stdio::Capped::new(tokio::io::stdin(), REPLY, Arc::new(AtomicBool::new(false)))
+}
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,17 +47,25 @@ static HUB: Mutex<Option<Hub>> = Mutex::new(None);
 
 struct Hub {
     runtime: tokio::runtime::Runtime,
+    scope: Arc<lifecycle::Scope>,
     sessions: BTreeMap<String, Arc<Session>>,
 }
 
 struct Session {
     stamp: String,
+    auth_key: Option<String>,
+    auth: Option<Arc<oauth::Access>>,
     service: RunningService<RoleClient, Client>,
     catalog: BTreeMap<String, Target>,
     cards: Vec<Card>,
     /// Set once a server wrote a message past [`REPLY`]; the session is not used again.
     over: Arc<AtomicBool>,
-    _server: Option<stdio::Served>,
+    server: Mutex<Option<stdio::Served>>,
+    stopped: AtomicBool,
+    root: std::path::PathBuf,
+    sequence: std::sync::atomic::AtomicU64,
+    read_slots: tokio::sync::Semaphore,
+    trace: observing::Trace,
 }
 
 struct Client;
@@ -61,6 +81,7 @@ impl ClientHandler for Client {
 
 enum Target {
     Tool(String),
+    NativeRead(String),
     Resources,
     Prompts,
 }
@@ -74,129 +95,12 @@ fn servers(configuration: Option<&Value>) -> Result<BTreeMap<String, Server>, St
     Ok(servers)
 }
 
-impl Hub {
-    fn new() -> Result<Self, String> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .map_err(|why| format!("MCP runtime: {why}"))?;
-        Ok(Self {
-            runtime,
-            sessions: BTreeMap::new(),
-        })
-    }
-
-    fn session(&mut self, name: &str, server: &Server) -> Result<Arc<Session>, String> {
-        let stamp = format!(
-            "{}:{:?}:{:?}",
-            serde_json::to_string(server).map_err(|why| why.to_string())?,
-            std::env::current_dir(),
-            std::env::var_os(crate::jail::WANTED)
-        );
-        if let Some(session) = self.sessions.get(name)
-            && session.stamp == stamp
-            && !session.service.is_closed()
-            && !session.over.load(Ordering::Relaxed)
-        {
-            return Ok(Arc::clone(session));
-        }
-        if let Some(old) = self.sessions.remove(name) {
-            close(&self.runtime, old);
-        }
-        let session = self
-            .runtime
-            .block_on(async {
-                let jail = crate::jail::Jail::from_env();
-                if (server.url.is_some() || server.network || server.needs == "reach")
-                    && !jail.allows_network()
-                {
-                    return Err("MCP connection requires a network grant".to_owned());
-                }
-                let timeout = Duration::from_secs(server.timeout_secs);
-                let over = Arc::new(AtomicBool::new(false));
-                let mut held = None;
-                let connected = if let Some(command) = &server.command {
-                    // Forked from a runtime worker: a child's death signal follows the thread that
-                    // forked it, and a `serve` connection's thread ends with its call.
-                    let (command, args, env) =
-                        (command.clone(), server.args.clone(), server.env.clone());
-                    let flag = Arc::clone(&over);
-                    let launched =
-                        tokio::spawn(
-                            async move { stdio::launch(&jail, &command, &args, &env, flag) },
-                        )
-                        .await
-                        .map_err(|why| format!("MCP stdio: {why}"))??;
-                    held = Some(stdio::Served(launched.prepared, launched.child));
-                    let transport = (launched.read, launched.write);
-                    tokio::time::timeout(timeout, Client.serve(transport)).await
-                } else {
-                    let url = server.url.as_deref().ok_or("MCP URL missing")?;
-                    let client = reqwest::Client::builder()
-                        .no_proxy()
-                        .no_gzip()
-                        .redirect(reqwest::redirect::Policy::none())
-                        .connect_timeout(Duration::from_secs(10))
-                        .build()
-                        .map_err(|why| format!("MCP HTTP client: {why}"))?;
-                    let mut config = StreamableHttpClientTransportConfig::with_uri(url)
-                        .max_concurrent_requests(8)
-                        .control_request_timeout(timeout);
-                    config.max_sse_event_size = REPLY;
-                    config.reinit_on_expired_session = false;
-                    config.retry_config = Arc::new(http::Patience::new(Arc::clone(&over)));
-                    for (key, value) in &server.headers {
-                        config.custom_headers.insert(
-                            key.parse()
-                                .map_err(|why| format!("MCP header name: {why}"))?,
-                            value
-                                .parse()
-                                .map_err(|why| format!("MCP header value: {why}"))?,
-                        );
-                    }
-                    let client = http::Bounded::new(client, REPLY, Arc::clone(&over));
-                    tokio::time::timeout(
-                        timeout,
-                        Client.serve(StreamableHttpClientTransport::with_client(client, config)),
-                    )
-                    .await
-                };
-                let service = connected
-                    .map_err(|_| "MCP initialization timed out".to_owned())?
-                    .map_err(|why| {
-                        oversized(&over).unwrap_or(format!("MCP initialization: {why}"))
-                    })?;
-                let mut session = Session {
-                    stamp,
-                    service,
-                    cards: Vec::new(),
-                    catalog: BTreeMap::new(),
-                    over,
-                    _server: held,
-                };
-                let discovered =
-                    tokio::time::timeout(timeout, session.discover(name, server)).await;
-                match discovered {
-                    Ok(Ok(())) => Ok(session),
-                    failure => {
-                        let _ = session.service.cancel().await;
-                        Err(oversized(&session.over).unwrap_or(match failure {
-                            Ok(Err(why)) => why,
-                            _ => "MCP discovery timed out".into(),
-                        }))
-                    }
-                }
-            })
-            .map_err(|why| format!("MCP server {name}: {why}"))?;
-        let session = Arc::new(session);
-        self.sessions.insert(name.to_owned(), Arc::clone(&session));
-        Ok(session)
-    }
-}
-
 /// End a session, waiting for it when no call still holds it.
 fn close(runtime: &tokio::runtime::Runtime, session: Arc<Session>) {
+    if let Some(auth) = &session.auth {
+        auth.stop();
+    }
+    session.trace.closing();
     match Arc::try_unwrap(session) {
         Ok(session) => {
             let _ = runtime.block_on(session.service.cancel());
@@ -232,6 +136,19 @@ impl Session {
                 .map_err(|why| format!("tools/list: {why}"))?;
             for tool in tools {
                 if server.permits(&tool.name) {
+                    let native = if server.command.is_some() {
+                        read_broker::negotiated(
+                            tool.meta
+                                .as_ref()
+                                .and_then(|meta| meta.get(read_broker::KEY)),
+                            &self.root,
+                        )?
+                    } else {
+                        false
+                    };
+                    if native && !matches!(server.needs.as_str(), "read" | "run") {
+                        return Err("native read broker requires read or command permission".into());
+                    }
                     self.insert(
                         Card {
                             name: tool_name(alias, &tool.name),
@@ -244,8 +161,13 @@ impl Session {
                             deferred: false,
                             group: format!("mcp:{alias}"),
                             script: false,
+                            file_revision: None,
                         },
-                        Target::Tool(tool.name.into_owned()),
+                        if native {
+                            Target::NativeRead(tool.name.into_owned())
+                        } else {
+                            Target::Tool(tool.name.into_owned())
+                        },
                     )?;
                 }
             }
@@ -255,7 +177,7 @@ impl Session {
                 name: format!("mcp_{alias}_resources"),
                 description: format!("List or read MCP resources and resource templates from {alias}"),
                 parameters: json!({"type":"object","properties":{"action":{"type":"string","enum":["list","templates","read"]},"uri":{"type":"string"}},"required":["action"],"additionalProperties":false}),
-                needs: Some(server.needs.clone()), deferred: false, group: format!("mcp:{alias}"), script: false,
+                needs: Some(server.needs.clone()), deferred: false, group: format!("mcp:{alias}"), script: false, file_revision: None,
             }, Target::Resources)?;
         }
         if has_prompts && server.tools.is_none() {
@@ -263,7 +185,7 @@ impl Session {
                 name: format!("mcp_{alias}_prompts"),
                 description: format!("List or retrieve MCP prompt templates from {alias}"),
                 parameters: json!({"type":"object","properties":{"action":{"type":"string","enum":["list","get"]},"name":{"type":"string"},"arguments":{"type":"object","additionalProperties":{"type":"string"}}},"required":["action"],"additionalProperties":false}),
-                needs: Some(server.needs.clone()), deferred: false, group: format!("mcp:{alias}"), script: false,
+                needs: Some(server.needs.clone()), deferred: false, group: format!("mcp:{alias}"), script: false, file_revision: None,
             }, Target::Prompts)?;
         }
         Ok(())
@@ -289,15 +211,59 @@ impl Session {
                 .cloned()
                 .ok_or("MCP arguments must be an object")?
         };
-        if let Target::Tool(remote) = target {
-            let request = ClientRequest::CallToolRequest(CallToolRequest::new(
-                CallToolRequestParams::new(remote.clone()).with_arguments(fields),
-            ));
+        if let Target::Tool(remote) | Target::NativeRead(remote) = target {
+            let began = std::time::Instant::now();
+            let mut params = CallToolRequestParams::new(remote.clone()).with_arguments(fields);
+            let _slot = if matches!(target, Target::NativeRead(_)) {
+                let prepare = async {
+                    let slot = self
+                        .read_slots
+                        .acquire()
+                        .await
+                        .map_err(|_| "native read broker stopping")?;
+                    let sequence = self
+                        .sequence
+                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                            value.checked_add(1)
+                        })
+                        .map_err(|_| "native read broker sequence exhausted")?
+                        + 1;
+                    let data = read_broker::acquire(&self.root, args).await?;
+                    let envelope = read_broker::Envelope::new(
+                        sequence,
+                        &self.root,
+                        remote,
+                        args.clone(),
+                        data,
+                    );
+                    let value = serde_json::to_value(envelope).map_err(|e| e.to_string())?;
+                    if value.to_string().len() > read_broker::LIMIT {
+                        return Err("native read broker envelope exceeds its bound".into());
+                    }
+                    let mut meta = RequestMetaObject::new();
+                    meta.insert(read_broker::KEY.into(), value);
+                    Ok::<_, String>((slot, meta))
+                };
+                let (slot, meta) =
+                    tokio::time::timeout(timeout, prepare).await.map_err(|_| {
+                        "native read broker acquisition exceeded its deadline; not retried"
+                            .to_owned()
+                    })??;
+                params.meta = Some(meta);
+                Some(slot)
+            } else {
+                None
+            };
+            let remaining = timeout
+                .checked_sub(began.elapsed())
+                .filter(|duration| !duration.is_zero())
+                .ok_or("MCP call deadline expired before dispatch; not retried")?;
+            let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
             let result = self
                 .service
                 .send_request_with_option(
                     request,
-                    rmcp::service::PeerRequestOptions::with_timeout(timeout),
+                    rmcp::service::PeerRequestOptions::with_timeout(remaining),
                 )
                 .await
                 .map_err(|why| why.to_string())?
@@ -477,11 +443,17 @@ fn tool_name(alias: &str, remote: &str) -> String {
 }
 
 fn using<T>(operation: impl FnOnce(&mut Hub) -> Result<T, String>) -> Result<T, String> {
-    let mut slot = HUB.lock().unwrap_or_else(PoisonError::into_inner);
+    let scope = lifecycle::enter()?;
+    let caller = crate::cancelling::capture();
+    let mut slot = cancellation::lock(&HUB, &caller, || scope.check())?;
+    cancellation::check(&caller)?;
+    scope.check()?;
     if slot.is_none() {
         *slot = Some(Hub::new()?);
     }
-    operation(slot.as_mut().ok_or("MCP runtime unavailable")?)
+    slot.as_mut()
+        .ok_or("MCP runtime unavailable")?
+        .admit(&caller, &scope, operation)
 }
 
 /// Discover configured external tools, resources and prompts.
@@ -618,7 +590,11 @@ pub fn manual(
 
 /// Run a discovered namespaced operation without replaying failed remote requests.
 pub fn call(configuration: Option<&Value>, name: &str, args: &Value) -> Ran {
+    let caller = crate::cancelling::capture();
     let result = (|| {
+        if caller.abandoned() {
+            return Err(cancellation::DISCONNECTED.into());
+        }
         let servers = servers(configuration)?;
         let unknown = || format!("no such configured MCP tool: {name}");
         let (owner, server) = alias(name)
@@ -626,23 +602,37 @@ pub fn call(configuration: Option<&Value>, name: &str, args: &Value) -> Ran {
             .filter(|(_, server)| !server.off)
             .ok_or_else(unknown)?;
         // The pool is held only to find the session: a slow call keeps no other caller waiting.
-        let (runtime, session) =
-            using(|hub| Ok((hub.runtime.handle().clone(), hub.session(owner, server)?)))?;
-        runtime
-            .block_on(session.call(name, args, Duration::from_secs(server.timeout_secs)))
+        let (runtime, scope, session) = using(|hub| {
+            Ok((
+                hub.runtime.handle().clone(),
+                hub.scope.clone(),
+                hub.session(owner, server)?,
+            ))
+        })?;
+        let result = runtime
+            .block_on(scope.run(cancellation::run(
+                &caller,
+                session.call(name, args, Duration::from_secs(server.timeout_secs)),
+            )))
             .map_err(|why| match oversized(&session.over) {
                 Some(said) => {
                     session.service.cancellation_token().cancel();
                     said
                 }
                 None => why,
-            })
+            });
+        if caller.abandoned() {
+            session.stop();
+            return Err(cancellation::DISCONNECTED.into());
+        }
+        result
     })();
     result.unwrap_or_else(Ran::failed)
 }
 
 /// Close pooled sessions before the process exits.
 pub fn shutdown() {
+    let _closing = lifecycle::closing();
     let pool = HUB.lock().unwrap_or_else(PoisonError::into_inner).take();
     drop(pool);
 }

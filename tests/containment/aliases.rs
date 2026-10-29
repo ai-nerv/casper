@@ -3,16 +3,22 @@ use std::path::Path;
 pub(super) fn refused(variant: &str) -> bool {
     matches!(
         variant,
-        "hardlinked-credential" | "hardlinked-nested" | "nested-credential" | "nested-directory"
+        "hardlinked-credential"
+            | "hardlinked-nested"
+            | "nested-credential"
+            | "nested-directory"
+            | "oauth-hardlink"
     )
 }
 
 pub(super) fn prepare(root: &Path, variant: &str) {
     let exposed = root.join("work/exposed");
     match variant {
-        "hardlinked-credential" | "hardlinked-nested" => {
+        "hardlinked-credential" | "hardlinked-nested" | "oauth-hardlink" => {
             let original = if variant == "hardlinked-credential" {
                 "home/.external"
+            } else if variant == "oauth-hardlink" {
+                "state/casper/mcp-auth/credential.json"
             } else {
                 "data/magi/credentials.json"
             };
@@ -46,14 +52,14 @@ pub(super) fn prepare(root: &Path, variant: &str) {
 }
 
 pub(super) fn check_refusal(root: &Path, mode: &str) {
-    let script = "/bin/cat exposed > report";
+    let script = super::native("/bin/cat exposed > report");
     match mode {
-        "socket" => super::socket::run(root, script, true),
+        "socket" => super::socket::run(root, &script, true),
         "screen" => {
             let result = casper::pty::Screen::open(
                 &casper::pty::Spec {
-                    command: "/bin/sh".into(),
-                    args: vec!["-c".into(), script.into()],
+                    command: super::native("/bin/sh"),
+                    args: vec!["-c".into(), script],
                     ..Default::default()
                 },
                 24,
@@ -68,7 +74,7 @@ pub(super) fn check_refusal(root: &Path, mode: &str) {
             }
         }
         _ => {
-            let done = casper::running::run("/bin/sh", &["-c".into(), script.into()]);
+            let done = casper::running::run(&super::native("/bin/sh"), &["-c".into(), script]);
             assert_ne!(done.code, 0, "credential alias was exposed");
             assert!(done.err.contains("credential"), "{}", done.err);
         }

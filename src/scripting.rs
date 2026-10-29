@@ -267,6 +267,7 @@ fn inner(
         args,
         cwd: String::new(),
         answered: None,
+        revision: Default::default(),
     })
     .map_err(named)?;
     flattened(&call.name, ran)
@@ -316,6 +317,7 @@ fn opened(path: &str, host: &Host<'_>, callable: &HashSet<String>) -> Result<Str
         args: serde_json::json!({ "path": path, "offset": 1, "limit": 1 }),
         cwd: String::new(),
         answered: None,
+        revision: Default::default(),
     };
     let ran = (host.run)(&check)?;
     if ran.failed {

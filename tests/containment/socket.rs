@@ -34,7 +34,8 @@ casper.tool("probe", {
 pub(super) fn replies(root: &std::path::Path, script: &str) -> Vec<serde_json::Value> {
     let config = root.join("config/casper");
     std::fs::create_dir_all(&config).expect("socket config");
-    std::fs::write(config.join("tools.lua"), DECLARATION).expect("socket declaration");
+    std::fs::write(config.join("tools.lua"), super::native(DECLARATION))
+        .expect("socket declaration");
     let path = root.join("r/casper/s");
     {
         use std::os::unix::fs::DirBuilderExt;

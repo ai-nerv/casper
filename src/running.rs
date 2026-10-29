@@ -22,6 +22,9 @@ fn binary_by(
     most: usize,
     limit: Duration,
 ) -> Result<Vec<u8>, String> {
+    if crate::cancelling::abandoned() {
+        return Err(DISCONNECTED.into());
+    }
     let jail = crate::jail::Jail::from_env();
     let mut prepared = jail
         .prepare(program, args, None, &[], false)
@@ -32,16 +35,13 @@ fn binary_by(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut child = command.spawn().map_err(|e| e.to_string())?;
-    let ([(bytes, past), (err, _)], code, overran) = drained(&mut child, limit, [most, WHY]);
+    let ([(bytes, past), (err, _)], code, stopped) = drained(&mut child, limit, [most, WHY]);
     let restored = prepared.restored();
     if !restored.is_empty() {
         return Err(restored.join("; "));
     }
-    if overran {
-        return Err(format!(
-            "{program}: stopped after {}s, the most one read may take",
-            limit.as_secs()
-        ));
+    if let Some(stopped) = stopped {
+        return Err(format!("{program}: {}", stopped.message(limit)));
     }
     if past > 0 {
         return Err("image exceeds the source byte limit".into());
@@ -68,6 +68,9 @@ pub fn piped(
     most: usize,
     limit: Duration,
 ) -> Result<Vec<u8>, String> {
+    if crate::cancelling::abandoned() {
+        return Err(DISCONNECTED.into());
+    }
     let jail = crate::jail::Jail::from_env();
     let mut prepared = jail
         .prepare(program, &[], None, &[], false)
@@ -86,7 +89,7 @@ pub fn piped(
             let _ = pipe.write_all(&input);
         });
     }
-    let ([(out, past), (err, _)], code, overran) = drained(&mut child, limit, [most; 2]);
+    let ([(out, past), (err, _)], code, stopped) = drained(&mut child, limit, [most; 2]);
     let restored = prepared.restored();
     if !restored.is_empty() {
         return Err(restored.join("; "));
@@ -96,8 +99,8 @@ pub fn piped(
         .next()
         .unwrap_or_default()
         .to_owned();
-    if overran {
-        return Err(format!("stopped after {}s", limit.as_secs()));
+    if let Some(stopped) = stopped {
+        return Err(stopped.message(limit));
     }
     if past > 0 {
         return Err(format!("wrote more than {most} bytes"));
@@ -160,6 +163,13 @@ pub fn fed(program: &str, args: &[String], input: Option<Vec<u8>>) -> Done {
 
 /// [`fed`], with the program's process group killed and reaped once `limit` has passed.
 fn fed_by(program: &str, args: &[String], input: Option<Vec<u8>>, limit: Duration) -> Done {
+    if crate::cancelling::abandoned() {
+        return Done {
+            out: String::new(),
+            err: DISCONNECTED.into(),
+            code: -1,
+        };
+    }
     let began = Instant::now();
     let jail = crate::jail::Jail::from_env();
     let asked = crate::noted::command(program, args.len());
@@ -202,7 +212,7 @@ fn fed_by(program: &str, args: &[String], input: Option<Vec<u8>>, limit: Duratio
             let _ = pipe.write_all(&bytes);
         });
     }
-    let (held, code, overran) = drained(&mut child, limit, [MOST; 2]);
+    let (held, code, stopped) = drained(&mut child, limit, [MOST; 2]);
     let restored = prepared.restored();
     let [out, err] = held;
     crate::noted!(
@@ -214,11 +224,8 @@ fn fed_by(program: &str, args: &[String], input: Option<Vec<u8>>, limit: Duratio
         err.0.len() + err.1
     );
     let mut err = said(&err.0, err.1);
-    if overran {
-        err.push_str(&format!(
-            "\n… stopped after {}s, the most one command may run",
-            limit.as_secs()
-        ));
+    if let Some(stopped) = stopped {
+        err.push_str(&format!("\n… {}", stopped.message(limit)));
     }
     let mut code = code.map_or(-1, i64::from);
     if !restored.is_empty() {
@@ -240,15 +247,31 @@ fn fed_by(program: &str, args: &[String], input: Option<Vec<u8>>, limit: Duratio
 /// What one pipe gave: the first bytes it had room for, and how many more there were.
 type Kept = (Vec<u8>, usize);
 
+const DISCONNECTED: &str = "stopped because the caller disconnected";
+
+enum Stop {
+    Deadline,
+    Abandoned,
+}
+
+impl Stop {
+    fn message(self, limit: Duration) -> String {
+        match self {
+            Self::Deadline => format!("stopped after {}s", limit.as_secs()),
+            Self::Abandoned => DISCONNECTED.into(),
+        }
+    }
+}
+
 /// Read both pipes as they fill, holding `most` bytes of standard output and of standard error,
 /// until the program has exited and its pipes have closed, or [`GRACE`] after it exited, whichever
 /// is first. Past `limit`, its whole process group is killed and the program reaped. Answers the
-/// two holds, the exit code, and whether it overran.
+/// two holds, the exit code, and any cancellation or deadline cause.
 fn drained(
     child: &mut std::process::Child,
     limit: Duration,
     most: [usize; 2],
-) -> ([Kept; 2], Option<i32>, bool) {
+) -> ([Kept; 2], Option<i32>, Option<Stop>) {
     let mut pipes: [Option<OwnedFd>; 2] = [
         child.stdout.take().map(OwnedFd::from),
         child.stderr.take().map(OwnedFd::from),
@@ -256,7 +279,10 @@ fn drained(
     let mut held: [Kept; 2] = Default::default();
     let deadline = Instant::now() + limit;
     let mut ended: Option<(Option<i32>, Instant)> = None;
-    loop {
+    let stopped = loop {
+        if ended.is_none() && crate::cancelling::abandoned() {
+            break Stop::Abandoned;
+        }
         if ended.is_none()
             && let Ok(Some(status)) = child.try_wait()
         {
@@ -265,7 +291,7 @@ fn drained(
         let until = ended.map_or(deadline, |(_, grace)| grace);
         let open = pipes.iter().any(Option::is_some);
         if (!open && ended.is_some()) || Instant::now() >= until {
-            break;
+            break Stop::Deadline;
         }
         let wait = until.saturating_duration_since(Instant::now()).min(TICK);
         if open {
@@ -273,14 +299,14 @@ fn drained(
         } else {
             std::thread::sleep(wait);
         }
-    }
+    };
     if let Some((code, _)) = ended {
-        return (held, code, false);
+        return (held, code, None);
     }
     let group = rustix::process::Pid::from_child(child);
     let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
     let code = child.wait().ok().and_then(|status| status.code());
-    (held, code, true)
+    (held, code, Some(stopped))
 }
 
 /// Wait up to `wait` for either pipe to have something, and read what is there, holding as many
@@ -432,7 +458,11 @@ mod tests {
         while alive(&pid) && Instant::now() < gone {
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert!(!alive(&pid), "the backgrounded {pid} outlived the deadline");
+        assert!(
+            !alive(&pid),
+            "the backgrounded {pid} outlived the deadline: {}",
+            std::fs::read_to_string(format!("/proc/{}/stat", pid.trim())).unwrap_or_default()
+        );
     }
 
     #[test]

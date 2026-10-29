@@ -5,6 +5,9 @@ use casper::scratch::Scratch;
 use image::ImageFormat;
 use serde_json::json;
 
+#[path = "support/native_namespace.rs"]
+mod native_namespace;
+
 fn raster(path: &std::path::Path) {
     image::DynamicImage::new_rgba8(2000, 1000)
         .save_with_format(path, ImageFormat::Png)
@@ -13,7 +16,10 @@ fn raster(path: &std::path::Path) {
 
 fn read(dir: &Scratch, path: &std::path::Path, jail: bool) -> casper::tools::Ran {
     use std::io::Write as _;
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_casper"));
+    let namespace = native_namespace::NativeNamespace::new(dir, &dir.join("work"));
+    let binary = std::env::var_os("CASPER_TEST_BINARY")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_casper").into());
+    let mut command = namespace.command(binary);
     command
         .arg("run")
         .current_dir(dir.join("work"))
@@ -60,7 +66,7 @@ fn read_delivers_a_typed_image_and_plain_text_still_works() {
     let dir = fixture("read");
     let image = dir.join("work/image.png");
     raster(&image);
-    let ran = read(&dir, &image, false);
+    let ran = read(&dir, &image, true);
     assert!(!ran.failed, "{}", ran.said);
     assert_eq!(ran.images.len(), 1);
     let decoded = STANDARD.decode(&ran.images[0].data).expect("base64");
@@ -69,7 +75,7 @@ fn read_delivers_a_typed_image_and_plain_text_still_works() {
     assert!(!ran.said.contains(&ran.images[0].data));
     let text = dir.join("work/plain.txt");
     std::fs::write(&text, "hello images\n").expect("text");
-    let ran = read(&dir, &text, false);
+    let ran = read(&dir, &text, true);
     assert!(!ran.failed, "{}", ran.said);
     assert!(ran.images.is_empty());
     assert_eq!(ran.said, "hello images");
@@ -84,7 +90,7 @@ fn read_refuses_a_bmp_by_name() {
         b"BM\x3a\0\0\0\0\0\0\0\x36\0\0\0\x28\0\0\0\x01\0\0\0\x01\0\0\0\x01\0\x18\0",
     )
     .expect("bmp");
-    let ran = read(&dir, &bmp, false);
+    let ran = read(&dir, &bmp, true);
     assert!(ran.failed, "{}", ran.said);
     assert!(ran.images.is_empty());
     assert!(ran.said.contains("BMP images are not read"), "{}", ran.said);

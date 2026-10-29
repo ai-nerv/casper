@@ -27,19 +27,30 @@ use sse_stream::SseStream;
 
 type Failure = StreamableHttpError<reqwest::Error>;
 
+mod identifiers;
+use identifiers::{Cipher, Kind};
+
 /// An HTTP client whose replies are refused past `cap` bytes, setting `over` when one is.
 #[derive(Clone)]
 pub(super) struct Bounded {
     inner: reqwest::Client,
     cap: usize,
     over: Arc<AtomicBool>,
+    auth: Option<Arc<super::oauth::Access>>,
+    identifiers: Option<Arc<Cipher>>,
 }
 
 /// rmcp's reconnection backoff for an SSE stream, given up once a message has run past the cap.
-#[derive(Debug)]
 pub(super) struct Patience {
     backoff: ExponentialBackoff,
     over: Arc<AtomicBool>,
+    auth: Option<Arc<super::oauth::Access>>,
+}
+
+impl std::fmt::Debug for Patience {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fmt.debug_struct("Patience").finish_non_exhaustive()
+    }
 }
 
 impl Patience {
@@ -47,13 +58,21 @@ impl Patience {
         Self {
             backoff: ExponentialBackoff::default(),
             over,
+            auth: None,
         }
+    }
+
+    pub(super) fn with_auth(mut self, auth: Option<Arc<super::oauth::Access>>) -> Self {
+        self.auth = auth;
+        self
     }
 }
 
 impl SseRetryPolicy for Patience {
     fn retry(&self, times: usize) -> Option<Duration> {
-        if self.over.load(Ordering::Relaxed) {
+        if self.over.load(Ordering::Relaxed)
+            || self.auth.as_ref().is_some_and(|auth| auth.stopped())
+        {
             return None;
         }
         self.backoff.retry(times)
@@ -113,7 +132,88 @@ impl Event {
 
 impl Bounded {
     pub(super) const fn new(inner: reqwest::Client, cap: usize, over: Arc<AtomicBool>) -> Self {
-        Self { inner, cap, over }
+        Self {
+            inner,
+            cap,
+            over,
+            auth: None,
+            identifiers: None,
+        }
+    }
+
+    pub(super) fn with_auth(
+        mut self,
+        auth: Option<Arc<super::oauth::Access>>,
+    ) -> Result<Self, Failure> {
+        self.identifiers = auth
+            .as_ref()
+            .map(|_| Cipher::new(self.cap).map(Arc::new))
+            .transpose()
+            .map_err(|_| {
+                Self::authenticated_failure("authenticated MCP identifier setup failed")
+            })?;
+        self.auth = auth;
+        Ok(self)
+    }
+
+    fn seal_identifier(&self, kind: Kind, value: String) -> Result<String, Failure> {
+        let Some(cipher) = &self.identifiers else {
+            return Ok(value);
+        };
+        cipher
+            .seal(kind, &value)
+            .map_err(|_| Self::authenticated_failure("authenticated MCP identifier refused"))
+    }
+
+    fn open_identifier(&self, kind: Kind, value: &str) -> Result<String, Failure> {
+        let Some(cipher) = &self.identifiers else {
+            return Ok(value.to_owned());
+        };
+        cipher
+            .open(kind, value)
+            .map_err(|_| Self::authenticated_failure("authenticated MCP identifier refused"))
+    }
+
+    fn identifier_header(
+        &self,
+        request: reqwest::RequestBuilder,
+        name: &'static str,
+        kind: Kind,
+        value: &str,
+    ) -> Result<reqwest::RequestBuilder, Failure> {
+        if self.auth.is_none() {
+            return Ok(request.header(name, value));
+        }
+        let raw = self.open_identifier(kind, value)?;
+        let mut header = HeaderValue::from_str(&raw).map_err(|_| {
+            Self::authenticated_failure("authenticated MCP identifier header refused")
+        })?;
+        header.set_sensitive(true);
+        Ok(request.header(name, header))
+    }
+
+    async fn authorized(
+        &self,
+        uri: &str,
+        original: Option<String>,
+        headers: &HashMap<HeaderName, HeaderValue>,
+    ) -> Result<Option<String>, Failure> {
+        let Some(auth) = self.auth.as_ref().map(Arc::clone) else {
+            return Ok(original);
+        };
+        if original.is_some() || headers.contains_key(&reqwest::header::AUTHORIZATION) {
+            return Err(StreamableHttpError::UnexpectedServerResponse(
+                Cow::Borrowed("conflicting MCP authentication"),
+            ));
+        }
+        auth.destination(uri).map_err(|_| {
+            StreamableHttpError::UnexpectedServerResponse(Cow::Borrowed(
+                "MCP authentication destination mismatch",
+            ))
+        })?;
+        auth.token().await.map(Some).map_err(|error| {
+            StreamableHttpError::UnexpectedServerResponse(Cow::Owned(error.to_string()))
+        })
     }
 
     fn refused(&self) -> Failure {
@@ -122,6 +222,32 @@ impl Bounded {
             "MCP HTTP message over {} bytes",
             self.cap
         )))
+    }
+
+    async fn admitted<T>(
+        &self,
+        future: impl std::future::Future<Output = Result<T, Failure>>,
+    ) -> Result<T, Failure> {
+        let Some(auth) = &self.auth else {
+            return future.await;
+        };
+        tokio::select! {
+            biased;
+            _ = auth.cancelled() => Err(StreamableHttpError::UnexpectedServerResponse(Cow::Borrowed("MCP authentication cancelled"))),
+            result = future => result.map_err(|_| Self::authenticated_failure("authenticated MCP transport failed")),
+        }
+    }
+
+    fn authenticated_failure(message: &'static str) -> Failure {
+        StreamableHttpError::UnexpectedServerResponse(Cow::Borrowed(message))
+    }
+
+    fn unexpected_content(&self, kind: Option<String>) -> Failure {
+        if self.auth.is_some() {
+            Self::authenticated_failure("authenticated MCP response has unexpected content type")
+        } else {
+            StreamableHttpError::UnexpectedContentType(kind)
+        }
     }
 
     /// `request` with the headers every request carries. A custom header may not stand in for
@@ -161,7 +287,7 @@ impl Bounded {
             return Err(self.refused());
         }
         let mut body = Vec::new();
-        while let Some(chunk) = response.chunk().await? {
+        while let Some(chunk) = self.admitted(async { Ok(response.chunk().await?) }).await? {
             if body.len().saturating_add(chunk.len()) > self.cap {
                 return Err(self.refused());
             }
@@ -173,8 +299,15 @@ impl Bounded {
     /// An SSE body as the events it carries, ending in a failure at the first event past the cap.
     fn events(&self, response: reqwest::Response) -> BoxedSseResponse {
         let (cap, over) = (self.cap, Arc::clone(&self.over));
+        let auth = self.auth.clone();
         let bytes = response
             .bytes_stream()
+            .take_until(async move {
+                match auth {
+                    Some(auth) => auth.cancelled().await,
+                    None => std::future::pending().await,
+                }
+            })
             .scan(Event::new(cap), move |event, chunk| {
                 let passed = match chunk {
                     _ if event.ended => None,
@@ -193,7 +326,72 @@ impl Bounded {
                 };
                 futures::future::ready(passed)
             });
-        SseStream::from_bytes_stream(bytes).boxed()
+        let auth = self.auth.clone();
+        let identifiers = self.identifiers.clone();
+        SseStream::from_bytes_stream(bytes)
+            .scan(false, move |ended, result| {
+                let Some(auth) = &auth else {
+                    return futures::future::ready(Some(result));
+                };
+                if *ended {
+                    return futures::future::ready(None);
+                }
+                let result = match result {
+                    Ok(mut event) => {
+                        let message = matches!(event.event.as_deref(), None | Some("" | "message"));
+                        if !message
+                            || event
+                                .data
+                                .as_deref()
+                                .is_some_and(|data| data.trim().is_empty())
+                        {
+                            event.data = None;
+                        }
+                        if event.data.as_deref().is_some_and(|data| {
+                            !data.trim().is_empty()
+                                && serde_json::from_str::<ServerJsonRpcMessage>(data).is_err()
+                        }) {
+                            *ended = true;
+                            auth.stop();
+                            Err(sse_stream::Error::Body(Box::new(std::io::Error::other(
+                                "authenticated MCP SSE reply is not JSON-RPC",
+                            ))))
+                        } else {
+                            match event
+                                .id
+                                .take()
+                                .map(|id| {
+                                    identifiers
+                                        .as_ref()
+                                        .ok_or(identifiers::Invalid)?
+                                        .seal(Kind::Cursor, &id)
+                                })
+                                .transpose()
+                            {
+                                Ok(id) => {
+                                    event.id = id;
+                                    Ok(event)
+                                }
+                                Err(_) => {
+                                    *ended = true;
+                                    auth.stop();
+                                    Err(sse_stream::Error::Body(Box::new(std::io::Error::other(
+                                        "authenticated MCP identifier refused",
+                                    ))))
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        *ended = true;
+                        Err(sse_stream::Error::Body(Box::new(std::io::Error::other(
+                            "authenticated MCP SSE transport failed",
+                        ))))
+                    }
+                };
+                futures::future::ready(Some(result))
+            })
+            .boxed()
     }
 }
 
@@ -228,13 +426,29 @@ impl StreamableHttpClient for Bounded {
         custom_headers: HashMap<HeaderName, HeaderValue>,
         _: usize,
     ) -> Result<StreamableHttpPostResponse, Failure> {
+        let auth_header = self.authorized(&uri, auth_header, &custom_headers).await?;
         let mut request = Self::headed(self.inner.post(uri.as_ref()), auth_header, custom_headers)?;
         let attached = session_id.is_some();
         if let Some(session) = session_id {
-            request = request.header(HEADER_SESSION_ID, session.as_ref());
+            request =
+                self.identifier_header(request, HEADER_SESSION_ID, Kind::Session, &session)?;
         }
-        let response = request.json(&message).send().await?;
+        let response = self
+            .admitted(async { Ok(request.json(&message).send().await?) })
+            .await?;
         let status = response.status();
+        if self.auth.is_some() && !status.is_success() {
+            if let Some(auth) = &self.auth {
+                auth.stop();
+            }
+            return Err(StreamableHttpError::UnexpectedServerResponse(
+                Cow::Borrowed(if status == StatusCode::UNAUTHORIZED {
+                    "authentication_required"
+                } else {
+                    "authenticated MCP request failed"
+                }),
+            ));
+        }
         if matches!(status, StatusCode::ACCEPTED | StatusCode::NO_CONTENT) {
             return Ok(StreamableHttpPostResponse::Accepted);
         }
@@ -248,7 +462,10 @@ impl StreamableHttpClient for Bounded {
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned)
         };
-        let (kind, session) = (header(CONTENT_TYPE.as_str()), header(HEADER_SESSION_ID));
+        let kind = header(CONTENT_TYPE.as_str());
+        let session = header(HEADER_SESSION_ID)
+            .map(|value| self.seal_identifier(Kind::Session, value))
+            .transpose()?;
         let json = kind
             .as_deref()
             .is_some_and(|kind| kind.starts_with(JSON_MIME_TYPE));
@@ -277,12 +494,15 @@ impl StreamableHttpClient for Bounded {
             ));
         }
         if !json {
-            return Err(StreamableHttpError::UnexpectedContentType(kind));
+            return Err(self.unexpected_content(kind));
         }
         let body = self.whole(response).await?;
         match serde_json::from_slice::<ServerJsonRpcMessage>(&body) {
             Ok(reply) => Ok(StreamableHttpPostResponse::Json(reply, session)),
             Err(_) if !asks => Ok(StreamableHttpPostResponse::Accepted),
+            Err(_) if self.auth.is_some() => Err(Self::authenticated_failure(
+                "authenticated MCP HTTP reply is not JSON-RPC",
+            )),
             Err(why) => Err(StreamableHttpError::UnexpectedServerResponse(Cow::Owned(
                 format!("MCP HTTP reply is not JSON-RPC: {why}"),
             ))),
@@ -296,9 +516,27 @@ impl StreamableHttpClient for Bounded {
         auth_header: Option<String>,
         custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<(), Failure> {
-        self.inner
-            .delete_session(uri, session_id, auth_header, custom_headers)
-            .await
+        let auth_header = self.authorized(&uri, auth_header, &custom_headers).await?;
+        if self.auth.is_some() {
+            let request =
+                Self::headed(self.inner.delete(uri.as_ref()), auth_header, custom_headers)?;
+            let request =
+                self.identifier_header(request, HEADER_SESSION_ID, Kind::Session, &session_id)?;
+            return self
+                .admitted(async {
+                    let response = request.send().await?;
+                    if response.status() != StatusCode::METHOD_NOT_ALLOWED {
+                        response.error_for_status()?;
+                    }
+                    Ok(())
+                })
+                .await;
+        }
+        self.admitted(
+            self.inner
+                .delete_session(uri, session_id, auth_header, custom_headers),
+        )
+        .await
     }
 
     async fn get_stream(
@@ -332,18 +570,35 @@ impl StreamableHttpClient for Bounded {
         if self.over.load(Ordering::Relaxed) {
             return Err(self.refused());
         }
+        let auth_header = self.authorized(&uri, auth_header, &custom_headers).await?;
         let mut request = Self::headed(self.inner.get(uri.as_ref()), auth_header, custom_headers)?;
         if let Some(session) = session_id {
-            request = request.header(HEADER_SESSION_ID, session.as_ref());
+            request =
+                self.identifier_header(request, HEADER_SESSION_ID, Kind::Session, &session)?;
         }
         if let Some(last) = last_event_id {
-            request = request.header(HEADER_LAST_EVENT_ID, last);
+            request = self.identifier_header(request, HEADER_LAST_EVENT_ID, Kind::Cursor, &last)?;
         }
-        let response = request.send().await?;
+        let response = self.admitted(async { Ok(request.send().await?) }).await?;
+        if self.auth.is_some()
+            && matches!(
+                response.status(),
+                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+            )
+        {
+            if let Some(auth) = &self.auth {
+                auth.stop();
+            }
+            return Err(StreamableHttpError::UnexpectedServerResponse(
+                Cow::Borrowed("authentication_required"),
+            ));
+        }
         if response.status() == StatusCode::METHOD_NOT_ALLOWED {
             return Err(StreamableHttpError::ServerDoesNotSupportSse);
         }
-        let response = response.error_for_status()?;
+        let response = self
+            .admitted(async { Ok(response.error_for_status()?) })
+            .await?;
         let kind = response
             .headers()
             .get(CONTENT_TYPE)
@@ -352,7 +607,7 @@ impl StreamableHttpClient for Bounded {
         if !kind.as_deref().is_some_and(|kind| {
             kind.starts_with(EVENT_STREAM_MIME_TYPE) || kind.starts_with(JSON_MIME_TYPE)
         }) {
-            return Err(StreamableHttpError::UnexpectedContentType(kind));
+            return Err(self.unexpected_content(kind));
         }
         Ok(self.events(response))
     }
@@ -360,3 +615,9 @@ impl StreamableHttpClient for Bounded {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod auth_tests;
+
+#[cfg(test)]
+mod identifier_tests;
