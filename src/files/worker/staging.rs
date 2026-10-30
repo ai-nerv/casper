@@ -23,7 +23,7 @@ impl<'a> Stage<'a> {
             libc::TMPFS_MAGIC,
             libc::EXT4_SUPER_MAGIC,
             libc::BTRFS_SUPER_MAGIC,
-            libc::XFS_SUPER_MAGIC,
+            crate::files::XFS_SUPER_MAGIC,
         ]
         .contains(&filesystem.f_type)
         {
