@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1] - 2026-10-30
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Name the XFS magic for musl builds
+- Include the declared test targets
+
 ## [0.9.0] - 2026-10-29
 
 ### <!-- 7 -->⚙️ Miscellaneous Tasks
