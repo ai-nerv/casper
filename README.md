@@ -363,19 +363,23 @@ oslo make build
 
 ## Nix
 
-Each release tag publishes a static build for x86_64 and aarch64 Linux to the `ai-nerv` cache,
+Each release tag publishes a static build for x86_64 and aarch64 Linux to the `bresilla` cache,
 with `config/` under `share/casper/`. casper reads its declarations from `$XDG_CONFIG_HOME/casper`,
 so copy `share/casper/config/` there, as `make install` does from a checkout.
 
 ```sh
-cachix use ai-nerv
 nix run github:ai-nerv/casper -- verbs
 nix build github:ai-nerv/casper
 ```
 
-The flake names the cache itself, so `--accept-flake-config` does the same as `cachix use`. In
+The flake names the cache itself; pass `--accept-flake-config` or answer yes when Nix prompts. In
 another flake, take `inputs.casper.packages.${system}.default`, and configure the cache on the
-consuming machine: an input's `nixConfig` is not inherited.
+consuming machine: an input's `nixConfig` is not inherited. Add to `/etc/nix/nix.conf`:
+
+```ini
+extra-substituters = https://cache.bresilla.com/bresilla
+extra-trusted-public-keys = bresilla:zsecaZYIrjCJQS4AuGPmEVU5PRkiMmB/Mds3KaCzTvE=
+```
 
 The package carries no grammars, and Nix builds none: the first time `code` meets a language it
 says to run `casper grammar fetch`, as anywhere else.
