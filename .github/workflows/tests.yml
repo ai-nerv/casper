@@ -52,6 +52,12 @@ jobs:
             exit 1
           }
 
+      # The unprivileged user namespaces the jail is made of, which this image's AppArmor withholds.
+      - name: Namespaces
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          nix develop --command bwrap --ro-bind / / --unshare-net true
+
       - name: Verify
         run: |
           nix develop --command cargo fmt --all -- --check
