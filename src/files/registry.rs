@@ -77,7 +77,7 @@ fn validate_anchor(fd: &OwnedFd) -> Result<()> {
         libc::TMPFS_MAGIC,
         libc::EXT4_SUPER_MAGIC,
         libc::BTRFS_SUPER_MAGIC,
-        libc::XFS_SUPER_MAGIC,
+        super::XFS_SUPER_MAGIC,
     ];
     if !local.contains(&filesystem.f_type) {
         return Err(Error::other(
