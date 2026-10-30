@@ -49,6 +49,9 @@
                 ./grammars.lock
                 ./src
                 ./config
+                # The `[[test]]` targets Cargo.toml declares.
+                ./tests/event_tools.rs
+                ./tests/event_servers.rs
               ];
             };
 
