@@ -23,13 +23,22 @@ fn alone() -> std::io::Result<()> {
     Ok(())
 }
 
-// SAFETY: descriptor inheritance, session creation, and parent-death setup use raw syscalls
-// on prebuilt data, without allocating between fork and exec.
+// SAFETY: sealing and inheriting descriptors, session creation, and parent-death setup use raw
+// syscalls on prebuilt data, without allocating between fork and exec.
 #[allow(unsafe_code)]
 pub fn running(command: &mut std::process::Command, descriptors: Vec<std::os::fd::OwnedFd>) {
     let casper = rustix::process::getpid();
     unsafe {
         command.pre_exec(move || {
+            if libc::syscall(
+                libc::SYS_close_range,
+                3u32,
+                u32::MAX,
+                libc::CLOSE_RANGE_CLOEXEC,
+            ) != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
             inherit(&descriptors)?;
             alone()?;
             arm(casper)
@@ -196,8 +205,8 @@ pub(crate) fn supervised(
     Ok(writer.into())
 }
 
-// SAFETY: the server retains its supervisor death tie and only inherits prebuilt descriptors
-// and establishes its own session before exec.
+// SAFETY: the server retains its supervisor death tie, seals all but prebuilt descriptors with a
+// raw syscall and establishes its own session before exec.
 #[allow(unsafe_code)]
 pub(crate) fn inside_supervisor(
     command: &mut std::process::Command,
@@ -205,13 +214,23 @@ pub(crate) fn inside_supervisor(
 ) {
     unsafe {
         command.pre_exec(move || {
+            if libc::syscall(
+                libc::SYS_close_range,
+                3u32,
+                u32::MAX,
+                libc::CLOSE_RANGE_CLOEXEC,
+            ) != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
             inherit(&descriptors)?;
             alone()
         });
     }
 }
 
-// SAFETY: enforcement and parent-death hooks use prebuilt data and raw syscalls after PTY setup.
+// SAFETY: descriptor sealing, enforcement and parent-death hooks use prebuilt data and raw
+// syscalls after PTY setup.
 #[allow(unsafe_code)]
 #[must_use]
 pub fn on_a_screen(
@@ -223,6 +242,15 @@ pub fn on_a_screen(
     let casper = rustix::process::getpid();
     unsafe {
         command.pre_exec(move || {
+            if libc::syscall(
+                libc::SYS_close_range,
+                3u32,
+                u32::MAX,
+                libc::CLOSE_RANGE_CLOEXEC,
+            ) != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
             inherit(&descriptors)?;
             enforce(&filters, ruleset.as_ref())?;
             arm(casper)
@@ -399,5 +427,35 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
         assert!(started.elapsed() < Duration::from_secs(2));
         drop(lifetime);
+    }
+
+    #[test]
+    fn a_child_keeps_only_the_descriptors_it_is_given() {
+        use std::os::fd::OwnedFd;
+        let (stray, _peer) = std::os::unix::net::UnixStream::pair().expect("stray socket");
+        rustix::io::fcntl_setfd(&stray, rustix::io::FdFlags::empty()).expect("inheritable");
+        let (given, _other) = std::os::unix::net::UnixStream::pair().expect("given socket");
+        let socket = |fd: &dyn std::os::fd::AsFd| {
+            format!("socket:[{}]", rustix::fs::fstat(fd).expect("stat").st_ino)
+        };
+        let (stray_name, given_name) = (socket(&stray), socket(&given));
+        let mut command = Command::new("sh");
+        command
+            .args([
+                "-c",
+                "for f in /proc/$$/fd/*; do readlink \"$f\" || :; done",
+            ])
+            .stdout(Stdio::piped());
+        running(&mut command, vec![OwnedFd::from(given)]);
+        let out = command.output().expect("child");
+        let open = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            !open.contains(&stray_name),
+            "a stray descriptor reached the child: {open}"
+        );
+        assert!(
+            open.contains(&given_name),
+            "the given descriptor did not: {open}"
+        );
     }
 }

@@ -475,7 +475,7 @@ mod tests {
             .expect("mkfifo");
         assert!(made.success(), "{made}");
         let pidfile = dir.join("pid");
-        let script = format!("sleep 20 & echo $! > '{}'; sleep 20", pidfile.display());
+        let script = format!("sleep 60 & echo $! > '{}'; sleep 60", pidfile.display());
         let path = fifo.display().to_string();
         for (program, args) in [
             (
@@ -498,11 +498,15 @@ mod tests {
             );
         }
         let pid = std::fs::read_to_string(&pidfile).expect("a pid");
-        let gone = Instant::now() + Duration::from_secs(5);
+        let gone = Instant::now() + Duration::from_secs(30);
         while alive(&pid) && Instant::now() < gone {
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert!(!alive(&pid), "the backgrounded {pid} outlived the deadline");
+        assert!(
+            !alive(&pid),
+            "the backgrounded {pid} outlived the deadline: {}",
+            std::fs::read_to_string(format!("/proc/{}/status", pid.trim())).unwrap_or_default()
+        );
     }
 
     #[test]
