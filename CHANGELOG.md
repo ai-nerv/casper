@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.9.2] - 2026-11-22
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Keep stray descriptors out of children
+
+### <!-- 6 -->🧪 Testing
+
+- Allow a slow exit, show a survivor
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Publish to cache.bresilla.com
+- Build the kernel-failure fixture first
+- Let the jail make its user namespaces
+
+### Build
+
+- Patch the rustls-webpki advisories
+
 ## [0.9.1] - 2026-10-30
 
 ### <!-- 1 -->🐛 Bug Fixes
