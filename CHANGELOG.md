@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.3] - 2026-11-25
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Allow root-owned read-only hardlinked launchers and bind NixOS system paths
+
 ## [0.9.2] - 2026-11-22
 
 ### <!-- 1 -->🐛 Bug Fixes
