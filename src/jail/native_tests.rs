@@ -108,7 +108,15 @@ mod cases {
                 0,
                 "backend must be captured before parallel tests"
             );
-            assert_eq!(metadata.nlink(), 1, "backend has hardlink aliases");
+            assert!(
+                crate::jail::policy::launcher_hardlink_safe(
+                    metadata.nlink(),
+                    metadata.uid(),
+                    metadata.mode(),
+                    rustix::process::geteuid().as_raw(),
+                ),
+                "backend has writable hardlink aliases"
+            );
             paths.insert(0, launcher.parent().expect("backend parent").to_owned());
         }
         let (coordinator, worker) = control::pair().expect("private socket");
