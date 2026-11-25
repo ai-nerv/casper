@@ -338,6 +338,8 @@ const SYSTEM_READ: &[&str] = &[
     "/etc",
     "/opt",
     "/nix/store",
+    "/nix/var/nix/profiles/default",
+    "/run/current-system/sw",
 ];
 
 /// Every directory a jailed command may read: the system ones, and wherever this machine keeps its

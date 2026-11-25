@@ -202,14 +202,31 @@ pub(super) fn executable(
         .map_err(std::io::Error::other)
 }
 
+pub(super) fn launcher_hardlink_safe(
+    nlink: impl Into<u64>,
+    uid: u32,
+    mode: u32,
+    euid: u32,
+) -> bool {
+    let nlink = nlink.into();
+    if nlink == 1 {
+        return true;
+    }
+    // Deduplicated system stores (NixOS `/nix/store/.links`, Guix, OSTree) hardlink read-only
+    // root-owned binaries. Hardlinks share one inode, so a root-owned non-writable regular file
+    // cannot be modified through any alias.
+    nlink > 1 && uid == 0 && (mode & 0o022) == 0 && (euid != 0 || (mode & 0o222) == 0)
+}
+
 pub(super) fn launcher(path: &Path, protected: &[PathBuf]) -> std::io::Result<PathBuf> {
     let fd = validated_fd(path, protected)?;
     let metadata = rustix::fs::fstat(&fd)?;
+    let euid = rustix::process::geteuid().as_raw();
     if rustix::fs::FileType::from_raw_mode(metadata.st_mode) != rustix::fs::FileType::RegularFile
-        || metadata.st_nlink != 1
+        || !launcher_hardlink_safe(metadata.st_nlink, metadata.st_uid, metadata.st_mode, euid)
     {
         return Err(std::io::Error::other(
-            "sandbox launcher must be a regular file without hardlink aliases",
+            "sandbox launcher must be a regular file without writable hardlink aliases",
         ));
     }
     super::credentials::opened_path(&fd)
@@ -420,5 +437,30 @@ mod tests {
     #[test]
     fn a_machine_without_either_location_asks_for_nothing() {
         assert!(toolchain_in(None, None).is_empty());
+    }
+
+    #[test]
+    fn root_owned_readonly_hardlinks_are_allowed_but_user_or_writable_aliases_are_refused() {
+        // NixOS `/nix/store` (0555 root:root, nlink=2): safe for both non-root and root.
+        assert!(launcher_hardlink_safe(2_u64, 0, 0o100555, 1000));
+        assert!(launcher_hardlink_safe(2_u64, 0, 0o100555, 0));
+        // OSTree / Silverblue (0755 root:root, nlink=2): safe for non-root, refused for root.
+        assert!(launcher_hardlink_safe(2_u64, 0, 0o100755, 1000));
+        assert!(!launcher_hardlink_safe(2_u64, 0, 0o100755, 0));
+        // Standard single-link launcher (Debian/Ubuntu/Arch): always allowed.
+        assert!(launcher_hardlink_safe(1_u64, 1000, 0o100755, 1000));
+        // User-owned or group/world-writable hardlink aliases: strictly refused.
+        assert!(!launcher_hardlink_safe(2_u64, 1000, 0o100555, 1000));
+        assert!(!launcher_hardlink_safe(2_u64, 0, 0o100775, 1000));
+        assert!(!launcher_hardlink_safe(2_u64, 0, 0o100757, 1000));
+        assert!(!launcher_hardlink_safe(0_u64, 0, 0o100555, 1000));
+
+        // Real filesystem check: a user-owned hardlinked launcher is still refused.
+        let root = crate::scratch::Scratch::new("launcher", "hardlink");
+        let bwrap = root.join("bwrap");
+        std::fs::write(&bwrap, "synthetic").expect("write");
+        std::fs::hard_link(&bwrap, root.join("alias")).expect("hardlink");
+        let err = launcher(&bwrap, &[]).expect_err("user hardlink must be refused");
+        assert!(err.to_string().contains("hardlink"), "{err}");
     }
 }
