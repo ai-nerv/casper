@@ -282,8 +282,12 @@ fn main() -> std::process::ExitCode {
                     std::process::ExitCode::FAILURE
                 };
             }
-            if args.iter().any(|arg| arg == "--file-admission") && !file_admission() {
-                return std::process::ExitCode::FAILURE;
+            if args.iter().any(|arg| arg == "--file-admission") {
+                if !file_admission() {
+                    return std::process::ExitCode::FAILURE;
+                }
+            } else {
+                casper::cancelling::arm_sigterm();
             }
             say(how, &ran())
         }
