@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.4] - 2026-11-27
+
+### <!-- 0 -->⛰️  Features
+
+- Keep head+tail output and preserve partial output on cancel
+
 ## [0.9.3] - 2026-11-25
 
 ### <!-- 1 -->🐛 Bug Fixes
