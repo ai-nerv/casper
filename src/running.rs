@@ -35,7 +35,7 @@ fn binary_by(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut child = command.spawn().map_err(|e| e.to_string())?;
-    let ([(bytes, past), (err, _)], code, stopped) = drained(&mut child, limit, [most, WHY]);
+    let ([(bytes, past), (err, _)], code, stopped) = drained_exact(&mut child, limit, [most, WHY]);
     let restored = prepared.restored();
     if !restored.is_empty() {
         return Err(restored.join("; "));
@@ -89,7 +89,7 @@ pub fn piped(
             let _ = pipe.write_all(&input);
         });
     }
-    let ([(out, past), (err, _)], code, stopped) = drained(&mut child, limit, [most; 2]);
+    let ([(out, past), (err, _)], code, stopped) = drained_exact(&mut child, limit, [most; 2]);
     let restored = prepared.restored();
     if !restored.is_empty() {
         return Err(restored.join("; "));
@@ -212,7 +212,7 @@ fn fed_by(program: &str, args: &[String], input: Option<Vec<u8>>, limit: Duratio
             let _ = pipe.write_all(&bytes);
         });
     }
-    let (held, code, stopped) = drained(&mut child, limit, [MOST; 2]);
+    let (held, code, stopped) = drained(&mut child, limit, [MOST; 2], KeepMode::HeadTail);
     let restored = prepared.restored();
     let [out, err] = held;
     crate::noted!(
@@ -220,10 +220,10 @@ fn fed_by(program: &str, args: &[String], input: Option<Vec<u8>>, limit: Duratio
         jail.on(),
         code.map_or_else(|| "killed".to_owned(), |c| c.to_string()),
         began.elapsed().as_millis(),
-        out.0.len() + out.1,
-        err.0.len() + err.1
+        out.total(),
+        err.total()
     );
-    let mut err = said(&err.0, err.1);
+    let mut err = err.render();
     if let Some(stopped) = stopped {
         err.push_str(&format!("\n… {}", stopped.message(limit)));
     }
@@ -238,20 +238,115 @@ fn fed_by(program: &str, args: &[String], input: Option<Vec<u8>>, limit: Duratio
         }
     }
     Done {
-        out: said(&out.0, out.1),
+        out: out.render(),
         err,
         code,
     }
 }
 
-/// What one pipe gave: the first bytes it had room for, and how many more there were.
-type Kept = (Vec<u8>, usize);
+#[derive(Clone, Copy)]
+enum KeepMode {
+    Exact,
+    HeadTail,
+}
+
+#[derive(Default)]
+struct Kept {
+    head: Vec<u8>,
+    tail: Vec<u8>,
+    tail_pos: usize,
+    dropped: usize,
+}
+
+impl Kept {
+    fn total(&self) -> usize {
+        self.head.len() + self.tail.len() + self.dropped
+    }
+
+    fn push(&mut self, bytes: &[u8], most: usize, mode: KeepMode) {
+        match mode {
+            KeepMode::Exact => {
+                let room = most.saturating_sub(self.head.len()).min(bytes.len());
+                if let Some(slice) = bytes.get(..room) {
+                    self.head.extend_from_slice(slice);
+                }
+                self.dropped += bytes.len() - room;
+            }
+            KeepMode::HeadTail => {
+                let head_cap = most / 2;
+                let tail_cap = most.saturating_sub(head_cap);
+                let head_room = head_cap.saturating_sub(self.head.len()).min(bytes.len());
+                if let Some(slice) = bytes.get(..head_room) {
+                    self.head.extend_from_slice(slice);
+                }
+                let rest = bytes.get(head_room..).unwrap_or_default();
+                if rest.is_empty() {
+                    return;
+                }
+                if tail_cap == 0 {
+                    self.dropped += rest.len();
+                    return;
+                }
+                if rest.len() >= tail_cap {
+                    self.dropped += self.tail.len() + (rest.len() - tail_cap);
+                    self.tail.clear();
+                    if let Some(slice) = rest.get(rest.len() - tail_cap..) {
+                        self.tail.extend_from_slice(slice);
+                    }
+                    self.tail_pos = 0;
+                    return;
+                }
+                for &byte in rest {
+                    if self.tail.len() < tail_cap {
+                        self.tail.push(byte);
+                    } else {
+                        if let Some(slot) = self.tail.get_mut(self.tail_pos) {
+                            *slot = byte;
+                        }
+                        self.tail_pos = (self.tail_pos + 1) % tail_cap;
+                        self.dropped += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    fn tail_bytes(&self) -> Vec<u8> {
+        if self.tail_pos == 0 || self.tail.is_empty() {
+            return self.tail.clone();
+        }
+        let mut ordered = Vec::with_capacity(self.tail.len());
+        if let Some(second) = self.tail.get(self.tail_pos..) {
+            ordered.extend_from_slice(second);
+        }
+        if let Some(first) = self.tail.get(..self.tail_pos) {
+            ordered.extend_from_slice(first);
+        }
+        ordered
+    }
+
+    fn render(&self) -> String {
+        let tail = self.tail_bytes();
+        if self.dropped == 0 {
+            if tail.is_empty() {
+                return String::from_utf8_lossy(&self.head).into_owned();
+            }
+            let mut both = Vec::with_capacity(self.head.len() + tail.len());
+            both.extend_from_slice(&self.head);
+            both.extend_from_slice(&tail);
+            return String::from_utf8_lossy(&both).into_owned();
+        }
+        said_head_tail(&self.head, &tail, self.dropped)
+    }
+}
 
 const DISCONNECTED: &str = "stopped because the caller disconnected";
+const CANCELLED: &str = "stopped (cancelled; partial output)";
 
 enum Stop {
     Deadline,
     Abandoned,
+    Interrupted,
 }
 
 impl Stop {
@@ -259,8 +354,24 @@ impl Stop {
         match self {
             Self::Deadline => format!("stopped after {}s", limit.as_secs()),
             Self::Abandoned => DISCONNECTED.into(),
+            Self::Interrupted => CANCELLED.into(),
         }
     }
+}
+
+type ExactKept = [(Vec<u8>, usize); 2];
+
+fn drained_exact(
+    child: &mut std::process::Child,
+    limit: Duration,
+    most: [usize; 2],
+) -> (ExactKept, Option<i32>, Option<Stop>) {
+    let ([out, err], code, stopped) = drained(child, limit, most, KeepMode::Exact);
+    (
+        [(out.head, out.dropped), (err.head, err.dropped)],
+        code,
+        stopped,
+    )
 }
 
 /// Read both pipes as they fill, holding `most` bytes of standard output and of standard error,
@@ -271,6 +382,7 @@ fn drained(
     child: &mut std::process::Child,
     limit: Duration,
     most: [usize; 2],
+    mode: KeepMode,
 ) -> ([Kept; 2], Option<i32>, Option<Stop>) {
     let mut pipes: [Option<OwnedFd>; 2] = [
         child.stdout.take().map(OwnedFd::from),
@@ -280,8 +392,13 @@ fn drained(
     let deadline = Instant::now() + limit;
     let mut ended: Option<(Option<i32>, Instant)> = None;
     let stopped = loop {
-        if ended.is_none() && crate::cancelling::abandoned() {
-            break Stop::Abandoned;
+        if ended.is_none()
+            && let Some(reason) = crate::cancelling::status()
+        {
+            break match reason {
+                crate::cancelling::Reason::Interrupted => Stop::Interrupted,
+                crate::cancelling::Reason::Disconnected => Stop::Abandoned,
+            };
         }
         if ended.is_none()
             && let Ok(Some(status)) = child.try_wait()
@@ -295,7 +412,7 @@ fn drained(
         }
         let wait = until.saturating_duration_since(Instant::now()).min(TICK);
         if open {
-            read_ready(&mut pipes, &mut held, wait, most);
+            read_ready(&mut pipes, &mut held, wait, most, mode);
         } else {
             std::thread::sleep(wait);
         }
@@ -306,6 +423,13 @@ fn drained(
     let group = rustix::process::Pid::from_child(child);
     let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
     let code = child.wait().ok().and_then(|status| status.code());
+    // Drain whatever buffered bytes remain in the pipes before returning partial output.
+    for _ in 0..4 {
+        if !pipes.iter().any(Option::is_some) {
+            break;
+        }
+        read_ready(&mut pipes, &mut held, Duration::from_millis(10), most, mode);
+    }
     (held, code, Some(stopped))
 }
 
@@ -316,6 +440,7 @@ fn read_ready(
     held: &mut [Kept; 2],
     wait: Duration,
     most: [usize; 2],
+    mode: KeepMode,
 ) {
     use rustix::event::{PollFd, PollFlags, Timespec};
     let readable = PollFlags::IN | PollFlags::HUP | PollFlags::ERR;
@@ -342,30 +467,45 @@ fn read_ready(
             Err(rustix::io::Errno::INTR) => {}
             Ok(0) | Err(_) => *pipe = None,
             Ok(read) => {
-                let room = most.saturating_sub(kept.0.len()).min(read);
-                kept.0.extend(buffer.iter().take(room));
-                kept.1 += read - room;
+                if let Some(chunk) = buffer.get(..read) {
+                    kept.push(chunk, most, mode);
+                }
             }
         }
     }
 }
 
-/// What one stream came back as: what was held, and a line saying how much was not.
-fn said(held: &[u8], dropped: usize) -> String {
-    if dropped == 0 {
-        return String::from_utf8_lossy(held).into_owned();
-    }
-    // Back to where a character last ended: the hold stops wherever the room ran out.
-    let valid = match std::str::from_utf8(held) {
-        Ok(_) => held.len(),
+/// What one stream came back as when cut from the middle: valid UTF-8 head, count of omitted
+/// bytes, and valid UTF-8 tail.
+fn said_head_tail(head: &[u8], tail: &[u8], dropped: usize) -> String {
+    let head_valid = match std::str::from_utf8(head) {
+        Ok(_) => head.len(),
         Err(bad) => bad.valid_up_to(),
     };
-    let (whole, cut) = held.split_at_checked(valid).unwrap_or((held, &[]));
-    format!(
-        "{}\n… {} more bytes, not shown",
-        String::from_utf8_lossy(whole),
-        dropped + cut.len()
-    )
+    let (head_whole, head_cut) = head.split_at_checked(head_valid).unwrap_or((head, &[]));
+    let mut tail_skip = 0;
+    while let Some(byte) = tail.get(tail_skip) {
+        if byte & 0xC0 != 0x80 {
+            break;
+        }
+        tail_skip += 1;
+    }
+    let tail_whole = tail.get(tail_skip..).unwrap_or_default();
+    let total_dropped = dropped + head_cut.len() + tail_skip;
+    if tail_whole.is_empty() {
+        format!(
+            "{}\n… {} more bytes, not shown",
+            String::from_utf8_lossy(head_whole),
+            total_dropped
+        )
+    } else {
+        format!(
+            "{}\n… {} bytes cut from the middle\n{}",
+            String::from_utf8_lossy(head_whole),
+            total_dropped,
+            String::from_utf8_lossy(tail_whole)
+        )
+    }
 }
 
 #[cfg(test)]
@@ -405,13 +545,17 @@ mod tests {
     fn output_is_cut_to_what_a_turn_can_carry_and_says_it_was() {
         let done = run(
             "sh",
-            &["-c".to_owned(), "head -c 600000 /dev/zero".to_owned()],
+            &[
+                "-c".to_owned(),
+                "printf 'HEAD-MARK\\n'; head -c 400000 /dev/zero | tr '\\0' 'x'; printf '\\nTAIL-MARK\\n'".to_owned(),
+            ],
         );
-        assert!(done.out.len() < 600_000, "{} bytes", done.out.len());
+        assert!(done.out.len() < 400_000, "{} bytes", done.out.len());
+        assert!(done.out.starts_with("HEAD-MARK\n"), "missing head");
+        assert!(done.out.ends_with("TAIL-MARK\n"), "missing tail");
         assert!(
-            done.out.ends_with("337856 more bytes, not shown"),
-            "{}",
-            &done.out[done.out.len() - 40..]
+            done.out.contains("bytes cut from the middle"),
+            "missing cut marker"
         );
     }
 
@@ -520,21 +664,21 @@ mod tests {
 
     #[test]
     fn what_fits_is_left_exactly_as_it_was() {
-        assert_eq!(said(b"short", 0), "short");
+        let mut kept = Kept::default();
+        kept.push(b"short", MOST, KeepMode::HeadTail);
+        assert_eq!(kept.render(), "short");
     }
 
     #[test]
     fn cutting_lands_on_a_character_boundary() {
-        // Three bytes to a character and `MOST` not a multiple of three, so the hold splits one.
         let huge = "€".repeat(MOST);
-        let cut = said(&huge.as_bytes()[..MOST], 12);
+        let mut kept = Kept::default();
+        kept.push(huge.as_bytes(), MOST, KeepMode::HeadTail);
+        let cut = kept.render();
         assert!(cut.starts_with('€'));
+        assert!(cut.ends_with('€'));
         assert!(!cut.contains('\u{fffd}'), "a character was split");
-        assert!(
-            cut.ends_with("13 more bytes, not shown"),
-            "{}",
-            &cut[cut.len() - 40..]
-        );
+        assert!(cut.contains("bytes cut from the middle"));
     }
 
     /// This process's peak resident size, in kilobytes.

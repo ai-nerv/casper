@@ -1,4 +1,43 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{cell::RefCell, os::unix::net::UnixStream};
+
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reason {
+    Interrupted,
+    Disconnected,
+}
+
+/// Listen for `SIGTERM` on a background thread so `casper run` can stop a running command and
+/// still emit partial output before exiting.
+pub fn arm_sigterm() {
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+    let _ = std::thread::Builder::new()
+        .name("casper-sigterm".into())
+        .spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                let _ = ready_tx.send(());
+                return;
+            };
+            rt.block_on(async move {
+                let Ok(mut term) =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                else {
+                    let _ = ready_tx.send(());
+                    return;
+                };
+                let _ = ready_tx.send(());
+                if term.recv().await.is_some() {
+                    INTERRUPTED.store(true, Ordering::Release);
+                }
+            });
+        });
+    let _ = ready_rx.recv_timeout(std::time::Duration::from_millis(200));
+}
 
 enum Watch {
     Off,
@@ -26,18 +65,43 @@ pub(crate) fn with_peer<T>(peer: &UnixStream, work: impl FnOnce() -> T) -> T {
     work()
 }
 
-pub(crate) fn abandoned() -> bool {
+fn peer_state(peer: &UnixStream) -> Option<Reason> {
     use rustix::event::{PollFd, PollFlags, Timespec};
-    CURRENT.with_borrow(|watch| match watch {
-        Watch::Off => false,
-        Watch::Unavailable => true,
-        Watch::Peer(peer) => {
-            let mut fds = [PollFd::new(peer, PollFlags::empty())];
-            let polled = rustix::event::poll(&mut fds, Some(&Timespec::default()));
-            polled.is_ok_and(|ready| ready > 0)
-                && fds.iter().any(|fd| fd.revents().contains(PollFlags::HUP))
+    let mut fds = [PollFd::new(peer, PollFlags::IN)];
+    let polled = rustix::event::poll(&mut fds, Some(&Timespec::default()));
+    let Ok(ready) = polled else {
+        return Some(Reason::Disconnected);
+    };
+    if ready == 0 {
+        return None;
+    }
+    let revents = fds.first().map_or(PollFlags::empty(), PollFd::revents);
+    if revents.intersects(PollFlags::HUP | PollFlags::ERR | PollFlags::NVAL) {
+        return Some(Reason::Disconnected);
+    }
+    if revents.contains(PollFlags::IN) {
+        let mut byte = [0_u8; 1];
+        let flags = rustix::net::RecvFlags::PEEK | rustix::net::RecvFlags::DONTWAIT;
+        if matches!(rustix::net::recv(peer, &mut byte, flags), Ok((0, _))) {
+            return Some(Reason::Interrupted);
         }
+    }
+    None
+}
+
+pub(crate) fn status() -> Option<Reason> {
+    if INTERRUPTED.load(Ordering::Acquire) {
+        return Some(Reason::Interrupted);
+    }
+    CURRENT.with_borrow(|watch| match watch {
+        Watch::Off => None,
+        Watch::Unavailable => Some(Reason::Disconnected),
+        Watch::Peer(peer) => peer_state(peer),
     })
+}
+
+pub(crate) fn abandoned() -> bool {
+    status().is_some()
 }
 
 pub(crate) struct Captured(Watch);
@@ -52,18 +116,13 @@ pub(crate) fn capture() -> Captured {
 
 impl Captured {
     pub(crate) fn abandoned(&self) -> bool {
-        use rustix::event::{PollFd, PollFlags, Timespec};
+        if INTERRUPTED.load(Ordering::Acquire) {
+            return true;
+        }
         match &self.0 {
             Watch::Off => false,
             Watch::Unavailable => true,
-            Watch::Peer(peer) => {
-                let mut fds = [PollFd::new(peer, PollFlags::empty())];
-                rustix::event::poll(&mut fds, Some(&Timespec::default())).is_err()
-                    || fds.iter().any(|fd| {
-                        fd.revents()
-                            .intersects(PollFlags::HUP | PollFlags::ERR | PollFlags::NVAL)
-                    })
-            }
+            Watch::Peer(peer) => peer_state(peer).is_some(),
         }
     }
 
@@ -149,5 +208,39 @@ mod tests {
         let pid = std::fs::read_to_string(pid).expect("native PID");
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
         assert_eq!(crate::running::run("true", &[]).code, 0);
+    }
+
+    #[test]
+    fn half_close_cancels_and_preserves_partial_output() {
+        use std::net::Shutdown;
+        use std::time::{Duration, Instant};
+        let root = crate::scratch::Scratch::new("casper", "half-close");
+        let ready = root.join("ready");
+        let script = format!(
+            "printf 'partial-line-1\\n'; : > '{}'; exec sleep 30",
+            ready.display()
+        );
+        let (ours, peer) = UnixStream::pair().expect("connection");
+        let (done, answer) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            with_peer(&ours, || {
+                let result = crate::running::run("sh", &["-c".into(), script]);
+                done.send(result).expect("result");
+            })
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(ready.exists());
+        std::thread::sleep(Duration::from_millis(50));
+        peer.shutdown(Shutdown::Write).expect("half-close");
+        let result = answer
+            .recv_timeout(Duration::from_secs(3))
+            .expect("cancelled result");
+        worker.join().expect("worker");
+        assert_ne!(result.code, 0);
+        assert!(result.out.contains("partial-line-1"), "{}", result.out);
+        assert!(result.err.contains("cancelled"), "{}", result.err);
     }
 }

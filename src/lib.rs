@@ -4,7 +4,7 @@
 
 pub mod acknowledged;
 pub mod calling;
-mod cancelling;
+pub mod cancelling;
 pub mod events;
 pub mod files;
 pub mod framing;
