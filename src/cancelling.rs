@@ -101,7 +101,7 @@ pub(crate) fn status() -> Option<Reason> {
 }
 
 pub(crate) fn abandoned() -> bool {
-    status().is_some()
+    matches!(status(), Some(Reason::Disconnected))
 }
 
 pub(crate) struct Captured(Watch);
@@ -122,7 +122,7 @@ impl Captured {
         match &self.0 {
             Watch::Off => false,
             Watch::Unavailable => true,
-            Watch::Peer(peer) => peer_state(peer).is_some(),
+            Watch::Peer(peer) => matches!(peer_state(peer), Some(Reason::Disconnected)),
         }
     }
 
