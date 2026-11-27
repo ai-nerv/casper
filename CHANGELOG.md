@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.5] - 2026-11-27
+
+### Build
+
+- Bump rmcp to 3.12 and url to 2.5.9 for security advisories
+
 ## [0.9.4] - 2026-11-27
 
 ### <!-- 0 -->⛰️  Features
