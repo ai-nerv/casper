@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.6] - 2026-11-27
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Treat write half-close as interrupted, not disconnected
+
 ## [0.9.5] - 2026-11-27
 
 ### Build
