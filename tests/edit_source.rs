@@ -96,7 +96,7 @@ casper.tool("capture_probe", {
   parameters = {type="object", properties={}}, needs="run",
   run = function()
     local done = casper.exec("sh", {"-c", "head -c 600000 /dev/zero | tr '\\0' x"})
-    local cut = done.out:match("[^\n]*bytes cut from the middle")
+    local cut = done.out:find("337856 bytes cut from the middle", 1, true) ~= nil
     return {said=casper.json.encode({code=done.code, bytes=#done.out, cut=cut, tail=done.out:sub(-100)})}
   end,
 })
@@ -437,12 +437,7 @@ fn complete_source(bubblewrap: bool, socket: bool) {
     let captured: Value = serde_json::from_str(&captured.said).expect("capture metadata");
     assert_eq!(captured["code"], 0);
     assert!(captured["bytes"].as_u64().expect("byte count") <= (casper::running::MOST + 64) as u64);
-    assert!(
-        captured["cut"]
-            .as_str()
-            .expect("omission marker")
-            .ends_with("337856 bytes cut from the middle")
-    );
+    assert_eq!(captured["cut"].as_bool(), Some(true));
     assert_eq!(
         captured["tail"].as_str().expect("output tail"),
         "x".repeat(100)
